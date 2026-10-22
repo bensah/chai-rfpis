@@ -4,10 +4,16 @@
 On 2026-09-08 the upstream Debian mirror's `bullseye-security` **release file expired**
 (`E: Release file … is expired (invalid since 15h…)`), so `apt-get update` returned a
 non-zero exit and Streamlit aborted the whole deploy — "Oh no. Error running app."
+The host image lists that bullseye repository alongside its own (trixie) ones, and
+bullseye's security support has since ended, so **do not re-enable this file**: the apt
+step is likely to fail the same way and take the whole app offline again.
 
-The listed packages are only the **headless-Chromium system libraries for PDF export**,
-and PDF export already falls back to HTML when Chromium isn't available (#242). So skipping
-apt keeps the app running; only native PDF export degrades to the HTML fallback.
+**How PDF export gets Chromium's libraries instead:** `core/chromium_libs.py`. When the
+first PDF export finds Chromium cannot start for a missing system library, it reads the
+host's own Debian release index from deb.debian.org, resolves what Chromium needs that the
+host lacks, downloads those `.deb`s and unpacks them (in Python, no root, no apt) into a
+private directory, then launches Chromium with `LD_LIBRARY_PATH` pointing there. The first
+export on a fresh container takes a minute or two; later ones reuse the unpacked files.
 
-**To re-enable** (once the Debian mirror's release metadata is fresh again, or Streamlit
-updates its base image): `git mv packages.txt.disabled packages.txt` and push.
+`packages.txt.disabled` is still the list of packages that fetch starts from — edit it
+there if Chromium ever needs a new library.

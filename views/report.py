@@ -3129,12 +3129,13 @@ else:
     _gen_by = _gen_name or _gen_email or "unknown user"
 
 def _report_pdf_engine_ready() -> bool:
-    """Is the headless browser already on disk? This only picks the spinner wording, so any
-    doubt answers False — over-warning about a wait costs nothing, under-warning looks like
-    a hang."""
+    """Has the headless browser already started in this process? This only picks the spinner
+    wording, so any doubt answers False — over-warning about a wait costs nothing,
+    under-warning looks like a hang. (On disk is not enough: on Streamlit Cloud the browser's
+    system libraries are fetched on the first export, which is the slow part.)"""
     try:
         from core import playwright_setup
-        return bool(playwright_setup.chromium_ready())
+        return bool(playwright_setup.launch_verified())
     except Exception:
         return False
 
