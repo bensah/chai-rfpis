@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from core import deep_read, source_resolver, live_check, seen_ledger
@@ -1507,6 +1507,9 @@ def screen_all_tenants(*, dry_run: bool = False, triggered_by: str = "cron",
         if t.get("is_platform"):
             log.info("screen_all_tenants: skipping platform tenant %s", t.get("name"))
             continue
+        # Stamped the way _build_row stamps submitted_at (naive local clock labelled UTC),
+        # so the digest's ">= since" compares like with like; a minute's slack either side.
+        since = (datetime.now() - timedelta(minutes=1)).replace(tzinfo=timezone.utc).isoformat()
         try:
             out[str(tid)] = run_screening(dry_run=dry_run, status=status,
                                           triggered_by=triggered_by, tenant_id=str(tid))
@@ -1515,4 +1518,16 @@ def screen_all_tenants(*, dry_run: bool = False, triggered_by: str = "cron",
             log.error("screen_all_tenants: tenant %s (%s) failed: %s",
                       t.get("name"), tid, exc)
             out[str(tid)] = {"error": str(exc)}
+            continue
+        # Tell the team when the run added something worth reviewing (Proceed / Park).
+        if not dry_run and (out[str(tid)] or {}).get("added"):
+            try:
+                from core import pipeline_digest
+                if pipeline_digest.enabled():
+                    _d = pipeline_digest.send_pipeline_digest(
+                        str(tid), since, only_to=pipeline_digest.test_recipients())
+                    out[str(tid)]["digest"] = _d
+                    log.info("screen_all_tenants: %s digest → %s", t.get("name"), _d)
+            except Exception as exc:              # an email must never fail the scan
+                log.error("screen_all_tenants: digest for %s failed: %s", t.get("name"), exc)
     return out

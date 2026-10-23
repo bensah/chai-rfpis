@@ -67,6 +67,20 @@ jobs:
           LLM_SYNTH_BASE_URL: ${{ secrets.LLM_SYNTH_BASE_URL }}
           LLM_SYNTH_API_KEY: ${{ secrets.LLM_SYNTH_API_KEY }}
           LLM_SYNTH_MODEL: ${{ secrets.LLM_SYNTH_MODEL }}
+          # New-opportunity email (core/pipeline_digest.py): after each tenant is screened,
+          # members are emailed the new Proceed / Park calls. Same Resend sender as the app's
+          # account emails — add RESEND_API_KEY and RESEND_FROM_EMAIL as repo Actions secrets
+          # with the app's values. APP_PUBLIC_URL is the fallback for the links if the
+          # app_public_url setting is not stored in the database.
+          # Without the Resend pair the scan still runs and the email is skipped.
+          # OFF until switched on: set the repo VARIABLE RFPIS_PIPELINE_DIGEST to 1. While
+          # testing, also set RFPIS_PIPELINE_DIGEST_TO to a comma-separated list of addresses
+          # so only they receive it; leave it empty to email every member.
+          RFPIS_PIPELINE_DIGEST: ${{ vars.RFPIS_PIPELINE_DIGEST || '0' }}
+          RFPIS_PIPELINE_DIGEST_TO: ${{ vars.RFPIS_PIPELINE_DIGEST_TO }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
+          APP_PUBLIC_URL: ${{ secrets.APP_PUBLIC_URL }}
           RFPIS_DEEP_READ: "1"
           SCAN_INCLUDE_SEEDS: "1"
           SCAN_PARALLELISM: "6"
