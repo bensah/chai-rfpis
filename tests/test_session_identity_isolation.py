@@ -1,4 +1,4 @@
-"""Regression tests for the cross-account session bleed (and the membership gate).
+﻿"""Regression tests for the cross-account session bleed (and the membership gate).
 
 THE BUG: Streamlit's session_state belongs to the browser tab, not to the signed-in user.
 Sign-out cleared `app_user` and five auth keys but left `tenant_id`, the minted tenant JWT
@@ -10,8 +10,8 @@ is a cross-tenant data breach, not a cosmetic landing bug.
 THE FIX, tested here:
   * tenant state is STAMPED with the identity that set it and destroyed when a different
     account takes the session over (also when the stamp is missing entirely);
-  * no session is ever scoped to a tenant the account has no ACTIVE membership in —
-    super_users included — and a refusal degrades to tenant-less (zero rows), never to
+  * no session is ever scoped to a tenant the account has no ACTIVE membership in â€”
+    super_users included â€” and a refusal degrades to tenant-less (zero rows), never to
     somebody else's data;
   * a membership revoked mid-session is not renewed by the near-expiry refresh.
 
@@ -19,7 +19,6 @@ Run:  python -m unittest tests.test_session_identity_isolation
 """
 import os
 import sys
-import types
 import unittest
 from unittest import mock
 
@@ -28,10 +27,15 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 # A fake `streamlit` must precede the import of auth.tenant_context (module-level
-# `import streamlit as st`). Same approach as tests/test_tenant_isolation.py.
-_fake_st = types.ModuleType("streamlit")
-_fake_st.session_state = {}
-sys.modules["streamlit"] = _fake_st
+# `import streamlit as st`). Same approach as tests/test_tenant_isolation.py: the stub is
+# SHARED across the modules that need one, so the dict this module clears is the dict the
+# app code actually reads, whatever the import order was. See tests/_fake_streamlit.py.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import _fake_streamlit                       # noqa: E402
+
+_fake_st = _fake_streamlit.install()
 
 os.environ["SUPABASE_JWT_SECRET"] = "test-secret"          # multi-tenant ON
 os.environ.setdefault("SUPABASE_URL", "https://dummy.supabase.co")
@@ -229,7 +233,7 @@ class MembershipGateTests(unittest.TestCase):
 
 
 class SignOutSourceTests(unittest.TestCase):
-    """The sign-out handler is UI code; assert on the source that it drops tenant state —
+    """The sign-out handler is UI code; assert on the source that it drops tenant state â€”
     a regression here silently restores the bleed."""
 
     def test_signout_clears_the_tenant_context(self):

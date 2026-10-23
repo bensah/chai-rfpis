@@ -1,7 +1,7 @@
-"""A workbook belongs to the tenant that uploaded it, and to nobody else.
+﻿"""A workbook belongs to the tenant that uploaded it, and to nobody else.
 
 THE LEAK: an uploaded workbook was written to the repo root and resolved with a glob over
-that same directory — one filesystem path for the whole deployment. So a workbook uploaded
+that same directory â€” one filesystem path for the whole deployment. So a workbook uploaded
 by one organisation showed up in every other tenant's Settings, under its owner's name, and
 any admin pressing "Sync Excel" would have imported that organisation's pipeline into their
 own. Visibility was the symptom; a cross-tenant data import was the consequence.
@@ -9,19 +9,25 @@ own. Visibility was the symptom; a cross-tenant data import was the consequence.
 Run:  python -m unittest tests.test_workbook_isolation
 """
 import os
-import shutil
 import sys
-import types
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-_fake_st = types.ModuleType("streamlit")
-_fake_st.session_state = {}
-_fake_st.secrets = {}
-sys.modules["streamlit"] = _fake_st
+# Shared with the other modules that install a stub `streamlit`; a private one here would
+# leave core.excel_sync bound to whichever stub was installed first, so the session_state
+# cleared in setUp would not be the one it reads. See tests/_fake_streamlit.py.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import _fake_streamlit                       # noqa: E402
+
+_fake_st = _fake_streamlit.install()
 
 os.environ["SUPABASE_JWT_SECRET"] = "test-secret"          # multi-tenant ON
 os.environ.setdefault("SUPABASE_URL", "https://dummy.supabase.co")
@@ -37,10 +43,20 @@ TENANT_B = "bbbbbbbb-0000-0000-0000-00000000000b"
 class _Base(unittest.TestCase):
     def setUp(self):
         _fake_st.session_state.clear()
-        shutil.rmtree(xs.REPO_ROOT / xs.WORKBOOK_DIRNAME, ignore_errors=True)
+        # Every test gets a throwaway REPO_ROOT. It used to run against the REAL one
+        # (core/excel_sync.py:34 resolves it from the source file), and setUp/tearDown
+        # rmtree'd REPO_ROOT/.workbooks — so running the suite deleted the checkout's own
+        # tenant workbook uploads, which are gitignored and untracked and therefore not
+        # recoverable, and two concurrent runs fought over one directory. The stray-file
+        # tests below also wrote into the real root. A tmp root removes all of that, and
+        # nothing here needs the checkout: xs reads REPO_ROOT at call time.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        _patched = mock.patch.object(xs, "REPO_ROOT", Path(tmp.name))
+        _patched.start()
+        self.addCleanup(_patched.stop)
 
     def tearDown(self):
-        shutil.rmtree(xs.REPO_ROOT / xs.WORKBOOK_DIRNAME, ignore_errors=True)
         _fake_st.session_state.clear()
 
     def _as(self, tenant_id):
@@ -144,7 +160,7 @@ class ManualScanSurfaceTests(unittest.TestCase):
         # Asserted as a CONTRACT, not as one line of source. The old form pinned the exact
         # string "if _dev_admin and extr_logs.empty:", which stopped being true the moment
         # the Extraction history moved inside an `if _dev_admin:` block and rendered through
-        # `_extract_area`. The gating never weakened — the literal just went stale, and a
+        # `_extract_area`. The gating never weakened â€” the literal just went stale, and a
         # test that fails for that reason teaches people to ignore it.
         self.assertIn("if _ext and not _dev_admin:", self.src)
         # The history is unreachable for a client-tenant admin by construction: it renders
@@ -168,7 +184,7 @@ if __name__ == "__main__":
 class ManualScanLayoutTests(unittest.TestCase):
     """Manual Scan is three sub-tabs: Search | Eligibility Scan | Excel Sync.
 
-    The split exists so search — the thing every tenant does constantly — is reachable
+    The split exists so search â€” the thing every tenant does constantly â€” is reachable
     where people look for scanning tools, WITHOUT rearranging the working scan page around
     it. So these assertions are as much about what stayed put as what moved."""
 
@@ -199,10 +215,10 @@ class ManualScanLayoutTests(unittest.TestCase):
             self.assertIn(label, client_tabs, f"client layout lost {label}")
         self.assertIn("Extraction", dev_tabs)
         self.assertNotIn("Extraction", client_tabs,
-                         "extraction is a platform job — not for a client tenant admin")
+                         "extraction is a platform job â€” not for a client tenant admin")
 
     def test_search_reuses_the_existing_engine_rather_than_a_second_one(self):
-        # It hands off to the results page on the same contract the header 🔍 uses: query
+        # It hands off to the results page on the same contract the header ðŸ” uses: query
         # in the URL, session copy as fallback. No second relevance ranking to maintain.
         self.assertIn('st.session_state["site_search_query"] = _q', self.src)
         self.assertIn('st.switch_page("app_pages/search.py")', self.src)
