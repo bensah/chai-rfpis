@@ -1273,6 +1273,14 @@ def scan_source(source: dict[str, Any], *, extract_only: bool = False,
                                                or "procnotices" in url.lower()):
             return _scan_worldbank_procurement(
                 name, "https://search.worldbank.org/api/v2/procnotices")
+        # The Global Fund — start at the business page, follow its "Open tenders"
+        # button to the Oracle Fusion negotiation list (or take that list directly).
+        # (Oracle Fusion is a shared product, so a bare NegotiationAbstracts URL is
+        # only taken as the Global Fund's when the source says so.)
+        if ("theglobalfund.org/en/business-opportunities" in url.lower()
+                or ("negotiationabstracts" in url.lower()
+                    and "global fund" in name.lower())):
+            return _scan_global_fund(name, url)
         # Global Health EDCTP3 JU — the RSS feed carries title+link only (no budget
         # /deadline). Route to the SEDIA API filtered to EDCTP3 so we get structured
         # budget + deadline + identifier. (Per-source handler — DATA_SCHEMA_ETL §5.2.)
@@ -2570,6 +2578,213 @@ def _scan_ungm(name: str, url: str) -> list[dict[str, Any]]:
                 _enrich_ungm_notice(nid, cand)
                 enriched += 1
             out.append(cand)
+    return _dedup_by_link_or_title(out)
+
+
+# ---------------------------------------------------------------------------
+# The Global Fund — business page → Oracle Fusion "Negotiation Abstracts"
+# ---------------------------------------------------------------------------
+# The Global Fund's own Business Opportunities page lists only stale items. Its
+# "Open tenders" button points at a public Oracle Fusion Sourcing page that lists
+# every RFP/RFI with status and dates. We always START at the business page (so a
+# dead page is noticed on every scan) and follow whatever that button points at
+# today, so if Oracle or the Global Fund moves the portal the scan follows it.
+_GF_BUSINESS_PAGE = "https://www.theglobalfund.org/en/business-opportunities/"
+# Last known target of the button. Used ONLY when the business page is down or has
+# lost the link; the live link always wins.
+_GF_TENDERS_FALLBACK = ("https://fa-enmo-saasfaprod1.fa.ocs.oraclecloud.com/fscmUI/"
+                        "faces/NegotiationAbstracts?prcBuId=300000003071579")
+_GF_DETAIL_CAP = 25
+_GF_DONE_STATUSES = {"closed", "awarded", "canceled", "cancelled", "amended"}
+# "TGF-26-34", amendments "TGF-26-34,2" / "TGF-26-27-2" (both forms seen live).
+_GF_NEG_RE = re.compile(r"^([A-Z]{2,6}-\d{2}-\d+)(?:[,.\-](\d+))?$")
+_ADF_EVENT_ACTION = ('<m xmlns="http://oracle.com/richClient/comm"><k v="type">'
+                     '<s>action</s></k></m>')
+
+
+def _gf_tenders_url() -> str:
+    """The business page's current "Open tenders" target, ADF session noise
+    stripped. Falls back to the last known URL (with a warning) when the business
+    page is unreachable or no longer carries the link."""
+    try:
+        r = _http.get(_GF_BUSINESS_PAGE, headers={"User-Agent": USER_AGENT},
+                      timeout=HTTP_TIMEOUT)
+        r.raise_for_status()
+    except Exception as exc:
+        log.warning("Global Fund business page unreachable (%s) — using last known "
+                    "tenders URL", exc)
+        return _GF_TENDERS_FALLBACK
+    soup = BeautifulSoup(r.text, "html.parser")
+    href = None
+    for a in soup.find_all("a", href=True):
+        h = a["href"]
+        if "NegotiationAbstracts" in h:
+            href = h
+            break
+        if href is None and re.search(r"open\s+tenders?", a.get_text(" ", strip=True), re.I) \
+                and "theglobalfund.org" not in urljoin(_GF_BUSINESS_PAGE, h):
+            href = h
+    if not href:
+        log.warning("Global Fund business page has no 'Open tenders' link — using last "
+                    "known tenders URL")
+        return _GF_TENDERS_FALLBACK
+    p = urlsplit(urljoin(_GF_BUSINESS_PAGE, html.unescape(href)))
+    keep = "&".join(kv for kv in p.query.split("&")
+                    if kv and not kv.startswith(("_afr", "_adf.")))
+    return p._replace(query=keep, fragment="").geturl()
+
+
+def _adf_open(sess: requests.Session, url: str) -> requests.Response:
+    """GET an Oracle ADF page. The first response is a loopback script that only
+    carries an `_afrLoop` token; requesting the URL again with that token (same
+    session cookies) returns the rendered page."""
+    r = sess.get(url, timeout=HTTP_TIMEOUT * 2)
+    r.raise_for_status()
+    m = re.search(r'"_afrLoop",\s*"(\d+)"', r.text)
+    if not m:
+        return r
+    extra = f"_afrLoop={m.group(1)}&_afrWindowMode=0&_afrWindowId=null"
+    ctrl = re.search(r"'_adf\.ctrl-state'\s*:\s*'([^']+)'", r.text)
+    if ctrl:
+        extra += f"&_adf.ctrl-state={ctrl.group(1)}"
+    r = sess.get(url + ("&" if "?" in url else "?") + extra, timeout=HTTP_TIMEOUT * 2)
+    r.raise_for_status()
+    return r
+
+
+def _gf_date(s: str) -> date | None:
+    """'13/Nov/2026 5:00 PM' or '22/Oct/2026' → date."""
+    m = re.search(r"\d{1,2}/[A-Za-z]{3}/\d{4}", s or "")
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(0), "%d/%b/%Y").date()
+    except ValueError:
+        return None
+
+
+def _gf_detail(sess: requests.Session, action: str, fields: dict[str, str],
+               link_id: str) -> dict[str, Any]:
+    """Open one row's Details popup (an ADF partial-page postback) and read its
+    labelled fields: full Title, Synopsis, Buyer, Email, Attachments. Updates
+    `fields` with the fresh ViewState. Best-effort; {} on failure."""
+    data = dict(fields)
+    data.update({
+        "event": link_id,
+        f"event.{link_id}": _ADF_EVENT_ACTION,
+        "oracle.adf.view.rich.PROCESS": link_id.split(":resId1", 1)[0],
+    })
+    try:
+        r = sess.post(action, data=data, timeout=HTTP_TIMEOUT * 2,
+                      headers={"Adf-Rich-Message": "true", "Adf-Ads-Page-Id": "1"})
+        r.raise_for_status()
+        r.encoding = "utf-8"
+    except Exception as exc:
+        log.debug("Global Fund detail %s failed: %s", link_id, exc)
+        return {}
+    vs = re.search(r'name="javax\.faces\.ViewState" value="([^"]+)"', r.text)
+    if vs:
+        fields["javax.faces.ViewState"] = vs.group(1)
+    frag = " ".join(re.findall(r"<!\[CDATA\[(.*?)\]\]>", r.text, re.S))
+    lines = BeautifulSoup(frag, "html.parser").get_text("\n", strip=True).split("\n")
+    try:
+        start = next(i for i, ln in enumerate(lines) if ln.startswith("Abstract:"))
+    except StopIteration:
+        return {}
+    labels = {"Title", "Negotiation Type", "Status", "Buyer", "Email", "Synopsis",
+              "Attachments", "Open Date", "Close Date", "Posting Date"}
+    out: dict[str, Any] = {}
+    cur = None
+    for ln in lines[start + 1:]:
+        if ln in labels:
+            cur = ln
+            out.setdefault(cur, [])
+            continue
+        if ln == "O" or (cur == "Posting Date" and out.get(cur)):
+            break                                   # end of the popup ("O","K" button)
+        if cur:
+            out[cur].append(ln)
+    return out
+
+
+def _scan_global_fund(name: str, url: str) -> list[dict[str, Any]]:
+    """The Global Fund's open tenders (RFP / RFI), read from the Oracle Fusion
+    Negotiation Abstracts page reached through the business page's "Open tenders"
+    button. Plain HTTP, no browser: the page is server-rendered once ADF's loopback
+    token is echoed back, and each row's Details popup is one form postback.
+
+    Amendments ("TGF-26-34,2") collapse onto their base negotiation, keeping the
+    latest version. Closed / awarded / cancelled negotiations are skipped."""
+    tenders_url = url if "NegotiationAbstracts" in url else _gf_tenders_url()
+    sess = requests.Session()
+    sess.headers.update({"User-Agent": USER_AGENT})
+    try:
+        page = _adf_open(sess, tenders_url)
+    except Exception as exc:
+        log.warning("Global Fund tenders page failed (%s): %s", tenders_url, exc)
+        return []
+    soup = BeautifulSoup(page.text, "html.parser")
+
+    latest: dict[str, tuple[int, list[str], str | None]] = {}
+    for tr in soup.select("tr[_afrrk]"):
+        cells = [_clean(td.get_text(" ", strip=True))
+                 for td in tr.find_all("td", recursive=False)]
+        m = _GF_NEG_RE.match(cells[0]) if len(cells) >= 7 else None
+        if not m:
+            continue
+        version = int(m.group(2) or 0)
+        link = tr.select_one("a[id$=':commandLink1']")
+        if m.group(1) not in latest or version > latest[m.group(1)][0]:
+            latest[m.group(1)] = (version, cells, link.get("id") if link else None)
+    if not latest:
+        log.warning("Global Fund tenders page parsed 0 negotiations (%s) — layout "
+                    "changed?", tenders_url)
+        return []
+
+    form = soup.find("form", id="f1")
+    action = urljoin(page.url, form.get("action")) if form and form.get("action") else None
+    fields = {i["name"]: i.get("value") or "" for i in (form.find_all("input") if form else [])
+              if i.get("name") and i.get("type", "text") in ("hidden", "text")}
+
+    today = date.today()
+    out: list[dict[str, Any]] = []
+    for base, (_v, cells, link_id) in latest.items():
+        neg, title, neg_type, status = cells[0], cells[1], cells[2], cells[3]
+        deadline = _gf_date(cells[6])
+        if status.lower() in _GF_DONE_STATUSES or (deadline and deadline < today):
+            continue
+        detail = (_gf_detail(sess, action, fields, link_id)
+                  if action and link_id and len(out) < _GF_DETAIL_CAP else {})
+        synopsis = _clean(" ".join(detail.get("Synopsis") or []))
+        docs = [d for d in (detail.get("Attachments") or [])
+                if not re.fullmatch(r"\([\d.,]+\s*[KMG]?B\)", d)]
+        buyer = _clean(" ".join(detail.get("Buyer") or []))
+        email = _clean(" ".join(detail.get("Email") or []))
+        cand = {
+            "opportunity_title": _clean(" ".join(detail.get("Title") or [])) or title,
+            # No per-tender URL exists (rows open via postback), so key each tender
+            # on the listing URL plus its negotiation number — distinct per call
+            # for the store and reject log, and still opens the live list.
+            "opportunity_link": (f"{tenders_url}{'&' if '?' in tenders_url else '?'}"
+                                 f"negotiation={neg}"),
+            "opportunity_id": neg,
+            "funding_agency": "The Global Fund",
+            "brief_description": synopsis[:1800] or None,
+            "date_posted": _gf_date(cells[4]),
+            "call_submission_deadline": deadline,
+            "solicitation_type": neg_type or None,
+            "_source_origin": name,
+        }
+        # Attachment downloads are signed links that expire within hours, so only
+        # their names are kept (in the page text below), never as documents.
+        if buyer or email:
+            cand["_contacts"] = [{"name": buyer, "email": email, "phone": "",
+                                  "role": "Buyer"}]
+        if synopsis or docs:
+            cand["_page_text"] = _clean(" ".join(
+                [cand["opportunity_title"], f"{neg_type} {neg}", synopsis,
+                 "Attachments: " + "; ".join(docs) if docs else ""]))
+        out.append(cand)
     return _dedup_by_link_or_title(out)
 
 
