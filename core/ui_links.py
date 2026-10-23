@@ -112,6 +112,36 @@ def internal_link(label: str, path: str, *, bold: bool = False,
             f"style='{css}'>{text}</a>")
 
 
+def new_tab_link(label: str, path: str, **params: object) -> str:
+    """HTML for a link to another page of THIS app that opens in a NEW TAB.
+
+    A plain anchor on purpose. `st.column_config.LinkColumn` opens its links with
+    ``window.open(url, "_blank", "noopener,noreferrer")``, and a non-empty features string
+    is a POPUP request to Chrome/Edge — so a table link opened a separate browser window,
+    not a tab. An anchor with `target="_blank"` carries no features, so it opens a tab.
+    """
+    return (f"<a href='{internal_href(path, **params)}' target='_blank' rel='noopener' "
+            f"style='{_STYLE}'>{html.escape(str(label or ''))}</a>")
+
+
+def switch_with_params(script: str, params: dict | None) -> None:
+    """`st.switch_page` that KEEPS the query string.
+
+    Called bare, `st.switch_page` clears every query parameter on the way. That is how a
+    super_user's ``/organization?tenant=client`` opened in a new tab lost its ``?tenant=``
+    when the cold sign-in bounce resumed it, and landed on their own tenant instead.
+    """
+    import streamlit as st
+
+    clean = {k: v for k, v in (params or {}).items() if v not in (None, "")}
+    try:
+        st.switch_page(script, query_params=clean)
+    except TypeError:               # a Streamlit that predates the query_params argument
+        for k, v in clean.items():
+            st.query_params[k] = v
+        st.switch_page(script)
+
+
 def internal_button(label: str, path: str, **params: object) -> str:
     """A link styled as a button, for sitting in a row of real buttons. Same tab."""
     return (f"<a href='{internal_href(path, **params)}' target='_self' "

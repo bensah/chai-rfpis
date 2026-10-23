@@ -831,13 +831,12 @@ def render_manage_tenants(user: dict, sb, *, can_manage: bool | None = None) -> 
     pending_ct = Counter(m["tenant_id"] for m in mems if m.get("status") == "pending")
 
     st.markdown("---")
-    # One row per tenant. The Organization NAME is itself the entry link (opens the
-    # tenant's Organization page in a NEW TAB). That page — and every page navigated
-    # from it — runs in a STICKY super_user 'view-as' of the tenant: scoped across all
-    # pages and reflected in the browser URL (?tenant=<slug>) until Return to my account.
-    # The `&label=<name>` suffix on the href lets the LinkColumn show the tenant NAME as
-    # the clickable text (regex-extracted); the app reads only ?tenant= and ignores label.
-    # Tick rows to Suspend / Activate in bulk.
+    # One row per tenant. The entry links sit ABOVE the table (opening the tenant's
+    # Organization page in a NEW TAB). That page — and every page navigated from it — runs
+    # in a STICKY super_user 'view-as' of the tenant: scoped across all pages and reflected
+    # in the browser URL (?tenant=<slug>) until Return to my account. They are plain anchors,
+    # not a LinkColumn: the grid opens its links as a popup WINDOW (see
+    # core.ui_links.new_tab_link). Tick rows to Suspend / Activate in bulk.
     _name_by_id = {t["id"]: (t.get("name") or "—") for t in tenants}
     _rows = []
     for t in tenants:
@@ -850,8 +849,7 @@ def render_manage_tenants(user: dict, sb, *, can_manage: bool | None = None) -> 
             "id": tid,
             "slug": _key,
             "name": _name,
-            "Organization": (f"/organization?tenant={_key}&label={_name}"
-                             if can_manage else _name),
+            "Organization": _name,
             "Kind": "🧑 Individual" if t.get("kind") == "individual" else "🏢 Org",
             "Dev": "🛠 Dev" if t.get("is_developer") else "🙂 Regular",
             "_is_dev": bool(t.get("is_developer")),
@@ -870,15 +868,17 @@ def render_manage_tenants(user: dict, sb, *, can_manage: bool | None = None) -> 
         })
     _df = pd.DataFrame(_rows)
 
-    _org_col = (
-        st.column_config.LinkColumn(
-            "Organization", display_text=r"label=(.+)$", width="large",
-            help="Click a tenant name to open its Organization page in a new tab. "
-                 "That tab runs as a sticky super_user 'view-as' of the tenant — "
-                 "scoped across every page and shown in the URL (?tenant=…) until "
-                 "you Return to your account (banner up top).")
-        if can_manage else
-        st.column_config.TextColumn("Organization", width="large"))
+    if can_manage:
+        from core.ui_links import new_tab_link
+        st.markdown(
+            "**View a tenant** (opens in a new tab): "
+            + " · ".join(new_tab_link(r["name"], "organization", tenant=r["slug"])
+                         for r in _rows),
+            unsafe_allow_html=True,
+            help="Each tab runs as a sticky super_user 'view-as' of that tenant — scoped "
+                 "across every page and shown in the URL (?tenant=…) until you Return to "
+                 "your account (banner up top).")
+    _org_col = st.column_config.TextColumn("Organization", width="large")
     _cols = (["Organization", "Kind", "Dev", "Parent", "Sharing", "Status", "Members",
               "Pending", "Profile", "Created"] if can_manage else
              ["Organization", "Kind", "Status", "Members", "Pending", "Profile", "Created"])
@@ -922,9 +922,9 @@ def render_manage_tenants(user: dict, sb, *, can_manage: bool | None = None) -> 
     _sel_ids = [r["id"] for r in _sel_rows]
 
     if not _sel_ids:
-        st.caption("**Click a tenant name** to open its Organization page in a new tab "
-                   "(super_user view-as). Tick one or more rows to **Suspend** / "
-                   "**Activate** them.")
+        st.caption("**Click a tenant name above the table** to open its Organization page "
+                   "in a new tab (super_user view-as). Tick one or more rows to "
+                   "**Suspend** / **Activate** them.")
         return
 
     st.markdown(f"**{len(_sel_ids)} selected:** "
