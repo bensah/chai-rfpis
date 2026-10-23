@@ -243,6 +243,26 @@ _TENANT_SCOPED_TABLES = {
 # tenant boundary, rather than an invisible widening of every read of these tables.
 _PUBLIC_VISIBLE_TABLES: set[str] = set()
 
+# SHARED tables that migration 098 closes to the anon and authenticated roles entirely:
+# password hashes, reset requests, one-time password tokens, and the global / per-tenant
+# config blobs (which hold the team roster and person-name maps). Only the service role can
+# reach them, so a live session's JWT client must never be the one that queries them — the
+# proxy below hands them to service_client(). None of them is tenant-scoped, so this changes
+# which key answers, not which rows come back. Keep in sync with migration 098.
+_SERVICE_ONLY_TABLES = {
+    "users", "password_reset_requests", "user_password_tokens",
+    "app_settings", "tenant_settings",
+}
+
+# SHARED reference tables that migration 098 makes READ-ONLY for authenticated (anon gets
+# nothing). Reads stay on the session's client; inserts/upserts/updates/deletes go to the
+# service client. Who may change them is still decided in the app (core.permissions), as it
+# was under the permissive 023/066 baseline. Keep in sync with migration 098.
+_SERVICE_WRITE_TABLES = {
+    "donor_intel", "donor_sources", "donor_source_seeds", "source_registry",
+    "extracted_solicitations", "scan_logs", "scan_blacklist",
+}
+
 
 def _stamp_tenant(rows, tid: str):
     """Add tenant_id to insert/upsert payload rows that don't already set it."""
@@ -312,15 +332,44 @@ class _ScopedTable:
         return getattr(self._b, name)
 
 
+class _ServiceWriteTable:
+    """Reads on the session's builder, writes on the service-role builder — for the
+    _SERVICE_WRITE_TABLES, which authenticated may read but not change (migration 098)."""
+
+    def __init__(self, read_builder, write_builder):
+        self._r = read_builder
+        self._w = write_builder
+
+    def insert(self, *a, **k):
+        return self._w.insert(*a, **k)
+
+    def upsert(self, *a, **k):
+        return self._w.upsert(*a, **k)
+
+    def update(self, *a, **k):
+        return self._w.update(*a, **k)
+
+    def delete(self, *a, **k):
+        return self._w.delete(*a, **k)
+
+    def __getattr__(self, name):
+        return getattr(self._r, name)
+
+
 class _TenantScopedClient:
     """Thin proxy over a Supabase client that returns tenant-scoped table builders for
-    the per-tenant data tables and delegates everything else unchanged."""
+    the per-tenant data tables, routes the shared tables migration 098 locks down to the
+    service client, and delegates everything else unchanged."""
 
     def __init__(self, real, tid: str):
         self._real = real
         self._tid = tid
 
     def table(self, name):
+        if name in _SERVICE_ONLY_TABLES:
+            return service_client().table(name)
+        if name in _SERVICE_WRITE_TABLES:
+            return _ServiceWriteTable(self._real.table(name), service_client().table(name))
         b = self._real.table(name)
         return _ScopedTable(b, self._tid, name) if name in _TENANT_SCOPED_TABLES else b
 
