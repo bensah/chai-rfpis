@@ -178,15 +178,12 @@ if not st.session_state.get("_post_login_nav_synced"):
 # we are not already there.
 _dest = st.session_state.pop("_post_login_dest", None)
 if isinstance(_dest, dict) and _dest.get("page") and _dest["page"] != _here:
-    from core.ui_links import PAGE_SCRIPTS as _PAGE_SCRIPTS
+    from core.ui_links import PAGE_SCRIPTS as _PAGE_SCRIPTS, switch_with_params
     _script = _PAGE_SCRIPTS.get(str(_dest["page"]))
     if _script:
-        try:
-            for _k, _v in (_dest.get("params") or {}).items():
-                st.query_params[_k] = _v
-        except Exception:
-            pass
-        st.switch_page(_script)
+        # The query must travel WITH the switch: a bare st.switch_page clears it, which
+        # dropped a super_user's ?tenant= and landed them on their own tenant.
+        switch_with_params(_script, _dest.get("params"))
 
 # Note where we are, for the Back control the header renders. Before the header, so the
 # trail is already correct when it draws.
