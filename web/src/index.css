@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/* Same palette as the Streamlit app (.streamlit/config.toml + the donor dialog CSS). */
+@theme {
+  --color-brand: #00703c;
+  --color-brand-dark: #005a30;
+  --color-brand-soft: #e6f2eb;
+  --color-navy: #0f3d6e;
+  --color-surface: #f4f6f4;
+  --font-sans: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+html {
+  color: #1b1b1b;
+  background: #fff;
+}
+
+body {
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* "Print / save as PDF" on a donor profile prints just the dialog. */
+@media print {
+  body.printing-dialog > *:not(.print-root) {
+    display: none !important;
+  }
+  .print-root {
+    position: static !important;
+    background: none !important;
+  }
+  .print-root .dialog-panel {
+    box-shadow: none !important;
+    max-height: none !important;
+    overflow: visible !important;
+    width: 100% !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
