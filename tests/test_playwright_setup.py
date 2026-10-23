@@ -173,7 +173,7 @@ class EnsureChromiumTests(_Reset):
 
 class MissingLibraryTests(_Reset):
     """A downloaded browser that cannot link its system libraries is a THIRD failure, with
-    a different fix (packages.txt + reboot) from "not installed" (wait for the download)."""
+    a different fix (fetch the libraries) from "not installed" (wait for the download)."""
 
     def test_the_library_name_is_extracted_from_the_launch_error(self):
         err = ("/root/.cache/ms-playwright/chromium_headless_shell-1234/chrome-headless-"
@@ -185,7 +185,7 @@ class MissingLibraryTests(_Reset):
         self.assertIsNone(ps.missing_library("Target page crashed"))
         self.assertIsNone(ps.missing_library(None))
 
-    def test_launch_probe_names_the_library_and_points_at_packages_txt(self):
+    def test_launch_probe_names_the_library(self):
         err = "error while loading shared libraries: libnss3.so: cannot open shared object"
         with mock.patch.object(ps.subprocess, "run",
                                return_value=_completed(stderr=err, code=3)):
@@ -193,19 +193,51 @@ class MissingLibraryTests(_Reset):
         self.assertFalse(ok)
         self.assertEqual(lib, "libnss3.so")
         self.assertIn("libnss3.so", why)
-        self.assertIn("packages.txt", why)
 
     def test_a_browser_that_exists_but_cannot_launch_is_not_ready(self):
         # And it must NOT be re-downloaded: reinstalling never supplies a system library.
+        from core import chromium_libs
         with mock.patch.object(ps, "probe", return_value=(True, "/browsers/chrome")), \
              mock.patch.object(ps, "launch_probe",
                                return_value=(False, "cannot start",
                                              "libglib-2.0.so.0")), \
+             mock.patch.object(ps.sys, "platform", "linux"), \
+             mock.patch.object(chromium_libs, "install",
+                               return_value=(False, "mirror unreachable")), \
              mock.patch.object(ps.subprocess, "run",
                                side_effect=AssertionError("must not install")):
             ok, msg = ps.ensure_chromium()
         self.assertFalse(ok)
         self.assertIn("cannot start", msg)
+        self.assertIn("mirror unreachable", msg)
+
+    def test_a_missing_library_is_fetched_and_the_launch_retried(self):
+        # The deployed failure: Chromium on disk, libglib missing. packages.txt cannot be
+        # used on that host (#271), so the libraries are fetched and the browser relaunched.
+        from core import chromium_libs
+        answers = [(False, "cannot start", "libglib-2.0.so.0"),
+                   (True, "Chromium launches.", None)]
+        with mock.patch.object(ps, "probe", return_value=(True, "/browsers/chrome")), \
+             mock.patch.object(ps, "launch_probe", side_effect=lambda: answers.pop(0)), \
+             mock.patch.object(ps.sys, "platform", "linux"), \
+             mock.patch.object(chromium_libs, "install",
+                               return_value=(True, "unpacked 40 packages")) as inst:
+            ok, _msg = ps.ensure_chromium()
+        self.assertTrue(ok)
+        self.assertEqual(inst.call_count, 1)
+        self.assertEqual(answers, [])
+
+    def test_a_launch_failure_that_is_not_a_library_fetches_nothing(self):
+        from core import chromium_libs
+        with mock.patch.object(ps, "probe", return_value=(True, "/browsers/chrome")), \
+             mock.patch.object(ps, "launch_probe",
+                               return_value=(False, "Target crashed", None)), \
+             mock.patch.object(ps.sys, "platform", "linux"), \
+             mock.patch.object(chromium_libs, "install",
+                               side_effect=AssertionError("must not fetch")):
+            ok, msg = ps.ensure_chromium()
+        self.assertFalse(ok)
+        self.assertIn("Target crashed", msg)
 
     def test_status_separates_installed_from_launches(self):
         with mock.patch.object(ps, "probe", return_value=(True, "/browsers/chrome")), \
@@ -255,7 +287,7 @@ class RenderPdfWiringTests(_Reset):
                               footer_text="f")
         msg = str(caught.exception)
         self.assertIn("libglib-2.0.so.0", msg)
-        self.assertIn("packages.txt", msg)
+        self.assertNotIn("packages.txt", msg)    # that route is closed on this host (#271)
         self.assertNotIn("ScreenshotNewSurface", msg)      # not the raw command line
 
     def test_render_hands_the_browsers_path_to_the_child(self):

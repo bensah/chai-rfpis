@@ -29,9 +29,10 @@ Two things are wrong in that message and this module fixes both.
    loading shared libraries: libglib-2.0.so.0: cannot open shared object file` buried under
    a 40-line command line — a message that never mentions Playwright. So the bootstrap
    TEST-LAUNCHES the browser, not merely checks the file exists, and names the missing
-   library. The libraries themselves come from `packages.txt` at the repository root, which
-   is how Streamlit Community Cloud installs apt packages; the app must be rebooted after
-   that file changes.
+   library. When one is missing, the libraries are fetched from Debian's mirror into a
+   private directory (core/chromium_libs.py) and the launch is retried. `packages.txt` is
+   NOT used for this: on Streamlit Cloud its apt step aborts the whole deploy whenever a
+   repository the host image lists has gone stale (#271), which is worse than no PDF.
 
 Everything is best-effort and returns a reason instead of raising: a missing browser must
 degrade to "this export is unavailable, here is why", never take a page down.
@@ -134,6 +135,13 @@ def child_env() -> dict[str, str]:
     install into — the exact mismatch in the reported traceback."""
     env = dict(os.environ)
     env["PLAYWRIGHT_BROWSERS_PATH"] = browsers_path()
+    # Chromium's system libraries, when this host lacks them and they were fetched into a
+    # private directory (core/chromium_libs.py). Empty on a host that has them already.
+    try:
+        from core import chromium_libs
+        env.update(chromium_libs.env_overlay())
+    except Exception:
+        pass
     return env
 
 
@@ -172,6 +180,12 @@ def probe() -> tuple[bool, str]:
 
 def chromium_ready() -> bool:
     return probe()[0]
+
+
+def launch_verified() -> bool:
+    """True once this process has seen the browser actually start. Cheap, no subprocess.
+    On disk is not enough on a host whose libraries still have to be fetched."""
+    return _state.get("ready") is True
 
 
 _LAUNCH_PROBE = """
@@ -227,11 +241,26 @@ def launch_probe() -> tuple[bool, str, str | None]:
     if lib:
         return False, (
             f"Chromium is installed but cannot start: this host is missing the system "
-            f"library {lib}. System packages come from `packages.txt` at the repository "
-            f"root (this repo ships one with Chromium's dependencies) — if you are seeing "
-            f"this, the app has not been rebooted since that file was added, or the host "
-            f"could not install every package in it."), lib
+            f"library {lib}."), lib
     return False, f"Chromium failed to launch: {text[-600:] or 'no output'}", None
+
+
+def _launch_or_repair() -> tuple[bool, str]:
+    """Test-launch the browser; if it fails for a missing system library, fetch Chromium's
+    libraries into a private directory (no apt, no root — see core/chromium_libs.py) and
+    launch again. `packages.txt` cannot be the fix on Streamlit Cloud: its apt step aborts
+    the whole deploy whenever any repository the host image lists has gone stale (#271)."""
+    launched, why, lib = launch_probe()
+    if launched or not lib or not sys.platform.startswith("linux"):
+        return launched, why
+    from core import chromium_libs
+    fetched, how = chromium_libs.install()
+    if not fetched:
+        return False, f"{why} Fetching it automatically did not work: {how}."
+    launched, why2, _lib = launch_probe()
+    if launched:
+        return True, f"Chromium launches ({how})."
+    return False, f"{why2} (after fetching Chromium's libraries: {how})"
 
 
 def ensure_chromium(*, force: bool = False) -> tuple[bool, str]:
@@ -252,7 +281,7 @@ def ensure_chromium(*, force: bool = False) -> tuple[bool, str]:
             # Present on disk — but a downloaded browser that cannot link its system
             # libraries is not a usable one, and finding that out inside the render (as a
             # wall of Chromium command line) helps nobody. Test-launch it here.
-            launched, why, _lib = launch_probe()
+            launched, why = _launch_or_repair()
             if launched:
                 _state.update(ready=True, message=f"Chromium present at {detail}")
                 return True, str(_state["message"])
@@ -270,7 +299,7 @@ def ensure_chromium(*, force: bool = False) -> tuple[bool, str]:
             return False, msg
         ok, detail = probe()
         if ok:
-            launched, why, _lib = launch_probe()
+            launched, why = _launch_or_repair()
             if launched:
                 _state.update(ready=True, message=f"Chromium installed at {detail}")
                 return True, str(_state["message"])
@@ -390,4 +419,9 @@ def status() -> dict[str, object]:
     out["chromium_ready"] = bool(ok and out["chromium_launches"])
     out["host_libraries"] = host_libraries()
     out["packages_txt"] = packages_txt()
+    try:
+        from core import chromium_libs
+        out["fetched_libraries"] = chromium_libs.status()
+    except Exception as exc:
+        out["fetched_libraries"] = {"error": f"{type(exc).__name__}: {exc}"}
     return out

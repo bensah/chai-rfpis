@@ -324,31 +324,25 @@ def verdicts(snap: dict[str, Any]) -> list[tuple[str, str]]:
                     "The first export downloads it into "
                     f"{pdf.get('browsers_path')} (~150MB, once per container) and takes a "
                     f"couple of minutes."))
-    elif pdf.get("chromium_launches") is False and (pdf.get("host_libraries") or {}).get(
-            "missing") and len((pdf["host_libraries"]["missing"])) >= 5:
-        # Nearly everything missing means the apt step did not take effect at all — apt
-        # installs NOTHING if a single name in packages.txt is unresolvable on the image,
-        # so one bad name looks exactly like no file at all.
-        hl = pdf["host_libraries"]
-        pk = pdf.get("packages_txt") or {}
-        out.append(("error",
-                    f"The PDF engine cannot start and {len(hl['missing'])} of "
-                    f"{hl['checked']} of Chromium's system libraries are missing from this "
-                    f"host — so the apt step either never ran or aborted, not just one bad "
-                    f"package. packages.txt in the deployed tree: "
-                    f"{'present with ' + str(pk.get('entries')) + ' entries' if pk.get('present') else 'NOT PRESENT'}"
-                    f". Base image: {hl.get('os_release', {}).get('PRETTY_NAME') or 'unknown'}"
-                    f". Check the host's build log for the apt-get output — a single "
-                    f"unresolvable package name there explains all of these."))
     elif pdf.get("chromium_launches") is False:
-        # Downloaded but unable to link its system libraries — no amount of re-downloading
-        # fixes that, so it is an error, not a wait.
+        # Downloaded but unable to link its system libraries. Those are fetched from Debian's
+        # mirror on the first export (core/chromium_libs.py) — packages.txt is deliberately
+        # not used, because its apt step aborts the whole deploy when the host image lists a
+        # stale repository (#271). Say what the fetch did, so the cause is on the page.
         lib = pdf.get("missing_library")
+        fetched = pdf.get("fetched_libraries") or {}
+        hl = pdf.get("host_libraries") or {}
+        if fetched.get("installed"):
+            how = (f"{fetched.get('packages')} package(s) were fetched into "
+                   f"{fetched.get('dir')}, and it still cannot start")
+        else:
+            how = ("its libraries have not been fetched yet — the next PDF export fetches "
+                   "them (a minute or two, once per container)")
         out.append(("error",
                     (f"The PDF export engine is installed but cannot start: this host is "
-                     f"missing the system library {lib}. System packages come from "
-                     f"`packages.txt` at the repository root; reboot the app after adding "
-                     f"or changing it.") if lib else
+                     f"missing the system library {lib} "
+                     f"({len(hl.get('missing') or [])} of {hl.get('checked') or '?'} checked "
+                     f"libraries absent from the system); {how}.") if lib else
                     f"The PDF export engine is installed but cannot start: "
                     f"{pdf.get('launch_detail')}"))
     if mt.get("tenants_query_error"):
