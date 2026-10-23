@@ -82,8 +82,9 @@
     <div class="node who-super"><div class="k">Automatic</div><b>Friday scan</b>
       <span>Every Friday at 06:00 UTC a scheduled scan crawls the sources again and screens
         each organisation.</span></div>
-    <div class="node"><div class="k">You get alerted</div><b>Raw records ready</b>
-      <span>The 🔔 bell shows "Scan completed" when new raw records are in the store.</span></div>
+    <div class="node"><div class="k">You get alerted</div><b>New calls ready</b>
+      <span>The 🔔 bell shows "Scan completed", and an email lists any new Proceed or Park
+        calls.</span></div>
     <div class="node who-team"><div class="k">You</div><b>Eligibility Scan</b>
       <span>Click <b>🎯 Eligibility Scan</b> to pull the calls that fit your organisation into
         your pipeline.</span></div>
@@ -101,7 +102,7 @@
   <h3>The weekly rhythm</h3>
   <div class="week">
     <div><div class="d">Friday</div><b>Scan runs</b><span>The automatic scan refreshes the store.
-      Watch the 🔔 bell for "Scan completed".</span></div>
+      Watch the 🔔 bell, and your inbox for the new-opportunities email.</span></div>
     <div><div class="d">Friday – Sunday</div><b>Screen &amp; submit</b><span>Run the Eligibility
       Scan. Submit any RFP you found outside the scan.</span></div>
     <div><div class="d">Monday call</div><b>Team meeting</b><span>Walk through the Screen tab,
@@ -117,9 +118,10 @@
   <p class="where">Your role shows at the bottom of the left sidebar, under "Signed in as".</p>
 
   <p>Every account has one role. Most team members are <b>Contributors</b> or <b>Reviewers</b>.
-    Throughout this manual, steps that need more than a Contributor role are marked
-    <span class="tag admin">ADMIN ONLY</span> or <span class="tag admin">REVIEWER+</span>. Steps
-    for the platform owner are marked <span class="tag super">SUPER USER</span>.</p>
+    Throughout this manual, steps for administrators are marked
+    <span class="tag admin">ADMIN ONLY</span>, and steps for the platform owner are marked
+    <span class="tag super">SUPER USER</span>. Everything else, meeting notes included, is
+    open to every team member.</p>
 
   <table class="t">
     <thead><tr><th>What you want to do</th><th>Contributor</th><th>Reviewer</th><th>Admin</th><th>Super User</th></tr></thead>
@@ -128,7 +130,7 @@
       <tr><td>Submit an RFP, update a decision, edit an RFP</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
       <tr><td>Log engagements, resolve pending actions, edit the schedule</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
       <tr><td>Generate and download reports</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
-      <tr><td><b>Add meeting notes</b> and mark them resolved</td><td class="c no">—</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
+      <tr><td><b>Add, edit and resolve meeting notes</b></td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
       <tr><td>Delete an RFP</td><td class="c no">—</td><td class="c no">—</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
       <tr><td>Edit the organisation (Tenant) profile</td><td class="c no">—</td><td class="c no">—</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
       <tr><td>Open <b>Settings</b>: users, scan preferences, records, manual scans</td><td class="c no">—</td><td class="c no">—</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
@@ -227,9 +229,23 @@
   <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · 🔔 Notifications</span></div>
     <img src="img/08-bell.jpg" alt="Notifications panel"></div></figure>
 
-  <div class="callout tip"><b>Your administrator may also email you</b>
-    The bell is RFPIS's own alert. Your administrator may also email the team when a fresh
-    batch of raw records is ready to screen.</div>
+  <h3>The new-opportunities email</h3>
+  <p>After the Friday scan, if it added any calls rated <b>Proceed</b> or <b>Park</b> for your
+    organisation, every member gets an email from RFPIS's no-reply address. If the scan only
+    found calls to decline, no email is sent.</p>
+  <ol class="steps">
+    <li>Read the counts at the top: how many new calls are <b>Proceed</b>, <b>Park</b> and
+      <b>Declined</b>.</li>
+    <li>Each Proceed and Park call is listed with its funder, amount, deadline, Bid Strength
+      and a short note on what it is about.</li>
+    <li>Click <span class="ui">Open in RFPIS</span>, or the title, to land on that opportunity's
+      page. If you aren't signed in, RFPIS asks you to sign in first, then takes you
+      there.</li>
+    <li>Click <span class="ui">Review this week's pipeline</span> to open Pipelines.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>Email · New funding opportunities in your pipeline</span></div>
+    <img src="img/40-email-digest.jpg" alt="New funding opportunities email"></div>
+    <figcaption>The top of the email. Ratings are the system's suggestion until the team updates the decision.</figcaption></figure>
 
   <h3>The 👤 person menu</h3>
   <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · 👤 Person menu</span></div>
@@ -275,8 +291,8 @@
     so it takes <b>seconds</b>.</p>
 
   <ol class="steps">
-    <li>When the 🔔 bell shows <b>"Scan completed"</b>, or your administrator tells you new
-      records are ready, open <b>📚 Pipelines</b>.</li>
+    <li>When the 🔔 bell shows <b>"Scan completed"</b>, or the new-opportunities email
+      arrives, open <b>📚 Pipelines</b>.</li>
     <li>Stay on the <b>Screen</b> tab. At the top right, beside
       <span class="ui">📝 Submit New Funding</span>, click
       <span class="ui">🎯 Eligibility Scan</span>.</li>
@@ -532,8 +548,8 @@
     anything that's done.</div>
 
   <h3>A. Meetings: capture notes during the call</h3>
-  <p><span class="tag admin">REVIEWER+</span> Adding notes and changing their status needs the
-    <b>Reviewer</b> role or above. Contributors can read the notes and download them.</p>
+  <p>Anyone on the team can take notes, whatever their role, and anyone can come back later
+    to edit them.</p>
   <ol class="steps">
     <li>Open <b>🗒️ Actions → Meetings</b>. Check the <b>Review week</b>. The tiles show the
       <b>Meeting date</b>, <b>Note-taker</b>, <b>RFP presenter</b> and <b>Chair</b>.</li>
@@ -546,6 +562,8 @@
       Monday.</li>
     <li>Click <span class="ui">💾 Save note</span>. The note appears in <b>Notes for
       &lt;week&gt;</b>.</li>
+    <li>Need to correct or add to a note later? Click <span class="ui">✏️</span> at the end of its
+      row, change any field, and click <span class="ui">💾 Save changes</span>.</li>
     <li>When the action is done, click its red <span class="ui">Not Resolved</span> button. It
       turns green: <span class="ui">✓ Resolved</span>.</li>
     <li>Need a copy for the minutes? Click <span class="ui">⬇ Download &lt;week&gt; notes as CSV</span>.</li>
@@ -556,9 +574,9 @@
     <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>➕ Add a note</span></div>
       <img src="img/23-add-note.jpg" alt="Add a meeting note dialog"></div></figure>
   </div>
-  <div class="callout note"><b>Correcting a saved note</b>
-    You can't edit a saved note from this tab. Ask an administrator. They can change it under
-    <span class="ui">Settings → Records → Data → Meeting Logs</span>.</div>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>✏️ Edit meeting note</span></div>
+    <img src="img/23b-edit-note.jpg" alt="Edit meeting note dialog"></div>
+    <figcaption>✏️ reopens a saved note with every field editable, including Resolved.</figcaption></figure>
 
   <h3>B. Engagements: log a donor touchpoint</h3>
   <ol class="steps">
@@ -753,7 +771,7 @@
     <li>Go to <span class="ui">Settings → Accounts → Users</span> and click
       <span class="ui">➕ Add User</span>.</li>
     <li>Enter their name and email (for example <i>user@example.com</i>) and choose a role.
-      <b>Reviewer</b> lets them take meeting notes. <b>Contributor</b> is read-and-submit.</li>
+      <b>Contributor</b> suits most of the team. <b>Admin</b> adds Settings.</li>
     <li>Click <span class="ui">➕ Create user</span>. RFPIS emails them an activation link that
       works for 7 days.</li>
   </ol>
@@ -768,7 +786,7 @@
   <table class="t">
     <thead><tr><th>I want to…</th><th>Go to</th><th>Click</th></tr></thead>
     <tbody>
-      <tr><td>See if new records are ready</td><td>Top bar</td><td>🔔 → "Scan completed"</td></tr>
+      <tr><td>See if new records are ready</td><td>Top bar, or your inbox</td><td>🔔 → "Scan completed"; the new-opportunities email</td></tr>
       <tr><td>Screen new records for my organisation</td><td>Pipelines → Screen</td><td>🎯 Eligibility Scan</td></tr>
       <tr><td>See this week's opportunities</td><td>Pipelines → Screen</td><td>Review week</td></tr>
       <tr><td>Record the team's decision</td><td>Pipelines → Review</td><td>✏ Update Decision → 💾 Save changes</td></tr>
@@ -776,7 +794,8 @@
       <tr><td>Find an opportunity or donor</td><td>Top bar</td><td>🔍 → Search</td></tr>
       <tr><td>Look for new calls on the web</td><td>Search page</td><td>🌐 Search the web → ➕ Track</td></tr>
       <tr><td>Add an RFP the scan missed</td><td>Pipelines → Screen</td><td>📝 Submit New Funding → Submit RFP</td></tr>
-      <tr><td>Take meeting notes <span class="tag admin">REVIEWER+</span></td><td>Actions → Meetings</td><td>➕ Add a note → 💾 Save note</td></tr>
+      <tr><td>Take meeting notes</td><td>Actions → Meetings</td><td>➕ Add a note → 💾 Save note</td></tr>
+      <tr><td>Correct a saved note</td><td>Actions → Meetings</td><td>✏️ → 💾 Save changes</td></tr>
       <tr><td>Log a donor call</td><td>Actions → Engagements</td><td>💾 Save engagement</td></tr>
       <tr><td>Close an action I've finished</td><td>Actions → Pending</td><td>Not Resolved → ✓</td></tr>
       <tr><td>Download a report</td><td>Report</td><td>▶ Generate report → 📄 Export Report</td></tr>

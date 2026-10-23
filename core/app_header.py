@@ -998,11 +998,15 @@ def _render_org_identity() -> None:
     inside the bar (app logo + RFPIS + slogan): this is the deployment's own logo,
     uploaded by a user in Org setup, and changes per tenant."""
     import base64
+    # A super_user viewing another tenant must see THAT tenant's identity. Without the id,
+    # settings resolves current_tenant_id() - their HOME - so the badge kept naming the
+    # super's own tenant over every page of the tenant actually being shown.
+    _view_tid = st.session_state.get("su_view_tenant") or None
     try:
-        logo_bytes, logo_mime = settings.get_org_logo()
+        logo_bytes, logo_mime = settings.get_org_logo(_view_tid)
     except Exception:
         logo_bytes, logo_mime = None, None
-    name_full = settings.get_org_name() or ""
+    name_full = settings.get_org_name(_view_tid) or ""
     if " — " in name_full:
         primary, secondary = name_full.split(" — ", 1)
     else:

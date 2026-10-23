@@ -199,7 +199,7 @@ divider("How RFPIS works", "How RFPIS works", "Where opportunities come from, an
   const nodes = [
     ["SUPER USER", "Extraction", "A separate crawl of every donor source, run by the platform owner", "FDECEE", C.accent5],
     ["AUTOMATIC", "Friday scan", "Every Friday 06:00 UTC the sources are crawled again", "FDECEE", C.accent5],
-    ["YOU ARE ALERTED", "Raw records ready", "The bell shows “Scan completed”", "F4F7F5", C.accent1],
+    ["YOU ARE ALERTED", "New calls ready", "The bell shows “Scan completed”; an email lists new Proceed / Park calls", "F4F7F5", C.accent1],
     ["YOU", "Eligibility Scan", "Screens the raw records against your organisation", "E6F2EB", C.accent1],
     ["THE TEAM", "Review & decide", "Proceed, Park or Decline — then track it", "E6F2EB", C.accent1],
   ];
@@ -226,12 +226,12 @@ divider("How RFPIS works", "How RFPIS works", "Where opportunities come from, an
     + "rules and adds only what fits to your pipeline.", 0.6, 4.75, 12.1, 1.55, "blue");
   s.addNotes("Two separate jobs. Collecting is done for us: the Super User runs a separate extraction "
     + "elsewhere, and the Friday cron at 06:00 UTC crawls again. When raw records are ready you get "
-    + "alerted in the bell (and the admin may email). Then it's on us to run the Eligibility Scan.");
+    + "alerted in the bell, and everyone gets an email listing new Proceed / Park calls. Then it's on us to run the Eligibility Scan.");
 }
 {
   const s = content("How RFPIS works", "The weekly rhythm");
   const days = [
-    ["FRIDAY", "Scan runs", "The automatic scan refreshes the store. Watch the bell for “Scan completed”."],
+    ["FRIDAY", "Scan runs", "The automatic scan refreshes the store. Watch the bell and your inbox."],
     ["FRIDAY – SUNDAY", "Screen & submit", "Run the Eligibility Scan. Submit any RFP you found outside the scan."],
     ["MONDAY CALL", "Team meeting", "Walk through Screen, agree decisions, capture notes and actions."],
     ["MID-WEEK", "Follow through", "Work the Track tab, log donor engagements, close pending actions."],
@@ -261,7 +261,7 @@ divider("How RFPIS works", "How RFPIS works", "Where opportunities come from, an
     ["Run the Eligibility Scan, search, read the pipeline", Y, Y, Y, Y],
     ["Submit an RFP, update a decision, edit an RFP", Y, Y, Y, Y],
     ["Log engagements, resolve pending actions, reports", Y, Y, Y, Y],
-    ["Add meeting notes and mark them resolved", N, Y, Y, Y],
+    ["Add, edit and resolve meeting notes", Y, Y, Y, Y],
     ["Delete an RFP; edit the organisation profile", N, N, Y, Y],
     ["Open Settings: users, scan preferences, records", N, N, Y, Y],
     ["Run the full Extraction; manage organisations", N, N, N, Y],
@@ -273,8 +273,8 @@ divider("How RFPIS works", "How RFPIS works", "Where opportunities come from, an
   callout(s, "See a greyed-out button?",
     "Your role doesn't allow it. Ask your administrator — Settings → Accounts → Users.",
     0.6, 5.85, 12.1, 0.85, "amber");
-  s.addNotes("Most of the team are Contributors or Reviewers. Important: adding meeting notes needs "
-    + "Reviewer or above. If you are the note-taker and the Add a note button is grey, ask an admin.");
+  s.addNotes("Most of the team are Contributors or Reviewers. Anyone can take, edit and resolve "
+    + "meeting notes, whatever their role.");
 }
 
 // ── 3. Getting started ─────────────────────────────────────────────────────
@@ -315,7 +315,28 @@ divider("Getting started", "Getting started", "Sign in, find your way around, re
     "“New opportunity” → a teammate submitted an RFP",
     "Mark all as read clears the count",
   ], 8.4, 1.6, 4.3, { gap: 0.95, size: 14 });
-  s.addNotes("This is how you know raw records are ready. Your administrator may also email the team.");
+  s.addNotes("This is how you know raw records are ready. The new-opportunities email is the other signal (next slide).");
+}
+
+{
+  const s = content("Getting started", "The new-opportunities email");
+  // Portrait capture (1140 x 1197 px): fit by height.
+  const h = 5.25, w = h * 1140 / 1197;
+  s.addShape(pres.shapes.RECTANGLE, { x: 0.58, y: 1.43, w: w + 0.04, h: h + 0.04,
+    fill: { color: C.background1 }, line: { color: "D5DBE2", width: 1 },
+    shadow: { type: "outer", color: "14254F", opacity: 0.18, blur: 10, offset: 3, angle: 90 },
+    objectName: "frame-email" });
+  s.addImage({ path: IMG("40-email-digest"), x: 0.6, y: 1.45, w, h, objectName: "shot-email",
+    altText: "New funding opportunities email" });
+  steps(s, [
+    "Sent after the Friday scan, when it adds Proceed or Park calls for your organisation",
+    "Counts at the top: Proceed, Park, Declined",
+    "Each call: funder, amount, deadline, Bid Strength and a short note",
+    "Open in RFPIS lands on that opportunity (sign in first if asked)",
+    "No Proceed or Park calls that week? No email",
+  ], 6.3, 1.6, 6.4, { gap: 0.95, size: 15 });
+  s.addNotes("Everyone in the organisation gets this from the RFPIS no-reply address. Ratings are the "
+    + "system's suggestion until the team updates the decision on Monday.");
 }
 
 // ── 4. Screening & decisions ───────────────────────────────────────────────
@@ -454,20 +475,20 @@ divider("Team meetings", "Team meetings", "Where most of us work in RFPIS: notes
 }
 {
   const s = content("Team meetings", "Capture a meeting note");
-  tag(s, "REVIEWER+", 11.15, 0.6, "amber");
+  tag(s, "KEY TASK", 11.15, 0.6, "green");
   steps(s, [
     "Actions → Meetings; check the Review week",
     "Click ➕ Add a note",
     "Linked RFP (Proceed only), Issues, Actions / recommendations",
     "Owner and Due Date (defaults to next Monday)",
     "💾 Save note — then Not Resolved → ✓ Resolved when done",
-    "⬇ Download the week's notes as CSV for the minutes",
+    "Fix it later: ✏️ on the row reopens the note to edit",
   ], 0.6, 1.6, 5.4, { gap: 0.82 });
   shot(s, "23-add-note", 6.4, 1.55, 6.3, "➕ Add a note");
-  callout(s, "Contributor?", "Adding notes needs Reviewer or above — ask your admin.",
-    0.6, 6.25, 5.4, 0.7, "amber");
-  s.addNotes("Saved notes can't be edited here; an admin can fix them under Settings → Records → Data → "
-    + "Meeting Logs.");
+  callout(s, "Anyone can take notes", "Every role can add, edit and resolve meeting notes.",
+    0.6, 6.25, 5.4, 0.7, "green");
+  s.addNotes("Notes are open to every role. To correct one, click the pencil on its row, change it and "
+    + "Save changes. Download the week's notes as CSV for the minutes.");
 }
 {
   const s = content("Team meetings", "Engagements and pending actions");

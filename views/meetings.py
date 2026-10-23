@@ -1,7 +1,7 @@
 """Page 6 — Meetings (team call log).
 
 Monday team call notes. Per-week view: rota at top,
-"Add a note" button opens a modal. Unresolved actions carry forward as a
+"Add a note" button opens a modal; ✏️ on a row reopens that note for editing. Unresolved actions carry forward as a
 proper table with headers on top and a Status toggle (Not Resolved ↔
 Resolved). Notes for the selected week display below.
 """
@@ -22,7 +22,9 @@ from core.cache_scope import scope_key
 # auth handled by wrapper page
 user = st.session_state["app_user"]
 role = user.get("role", "collaborator")
-can_edit = role in ("super_user", "admin", "reviewer")
+# Anyone on the team takes notes, and anyone can come back to edit them (owner,
+# 2026-10-23) - the note-taker rota rotates through every member, Contributors included.
+can_edit = role in ("super_user", "admin", "reviewer", "collaborator")
 sb = get_client()
 
 _TITLE_COL, _BTN_COL = st.columns([5, 1])
@@ -209,6 +211,67 @@ def add_note_dialog() -> None:
         st.rerun()
 
 
+@st.dialog("Edit meeting note", width="large")
+def edit_note_dialog(note: dict) -> None:
+    """Same fields as Add, prefilled. The linked RFP keeps its current value even when that
+    RFP has since left Proceed, so editing an old note never silently relinks it."""
+    st.caption(f"Note from the meeting of {note.get('meeting_date') or '—'}.")
+    choices = [k for k in rfp_options.keys() if k != "(none)"]
+    cur_uid = note.get("rfp_uid")
+    cur_label = next((k for k, v in rfp_options.items() if v and v == cur_uid), None)
+    if cur_uid and not cur_label:
+        cur_label = f"{cur_uid} — (no longer Proceed)"
+        rfp_options[cur_label] = cur_uid
+        choices = [cur_label] + choices
+    rfp_pick = st.selectbox("Linked RFP (Proceed) *", choices,
+                            index=choices.index(cur_label) if cur_label in choices else 0)
+    remarks = st.text_area("Issues *", value=note.get("remarks") or "", height=90)
+    actions = st.text_area("Actions / recommendations *", value=note.get("actions") or "",
+                           height=110)
+    c_owner, c_due = st.columns([2, 1])
+    owners = ["—"] + team
+    cur_owner = note.get("owner") or "—"
+    if cur_owner not in owners:
+        owners.append(cur_owner)
+    owner = c_owner.selectbox("Owner *", owners, index=owners.index(cur_owner))
+    try:
+        cur_due = pd.to_datetime(note.get("deadline")).date()
+    except Exception:
+        cur_due = None
+    due_date = c_due.date_input("Due Date *", value=cur_due or (mon_date + timedelta(days=7)))
+    # str() rather than bool(): a NaN from the dataframe is truthy and would tick the box.
+    resolved = st.checkbox("Resolved", value=str(note.get("is_resolved")).lower() == "true")
+
+    bs, bc = st.columns([1, 1])
+    if bc.button("Cancel", width='stretch', key="edit_note_cancel"):
+        st.rerun()
+    if bs.button("💾 Save changes", type="primary", width='stretch', key="edit_note_save",
+                 disabled=not can_edit):
+        errors: list[str] = []
+        if not remarks.strip():
+            errors.append("Issues is required.")
+        if not actions.strip():
+            errors.append("Actions / recommendations is required.")
+        if owner == "—":
+            errors.append("Owner is required.")
+        if errors:
+            st.error("Please fix the following:\n\n- " + "\n- ".join(errors))
+            return
+        sb.table("meeting_logs").update(
+            {
+                "rfp_uid": rfp_options.get(rfp_pick) or cur_uid,
+                "remarks": remarks.strip(),
+                "actions": actions.strip(),
+                "owner": owner,
+                "deadline": due_date.isoformat() if isinstance(due_date, date) else None,
+                "is_resolved": resolved,
+            }
+        ).eq("id", note["id"]).execute()
+        st.cache_data.clear()
+        st.toast("Note updated", icon="✅")
+        st.rerun()
+
+
 # Render the button directly into the reserved top-right slot.
 if _ADD_NOTE_SLOT.button(
     "➕ Add a note",
@@ -301,7 +364,8 @@ if notes.empty:
 else:
     # One unified table — headers on top, then rows. No grouping, no
     # is_resolved filter, so toggling Status keeps the row visible.
-    h = st.columns([2, 3, 3, 1.3, 1.4, 1.4])
+    _COLS = [2, 3, 3, 1.3, 1.4, 1.4, 0.7]
+    h = st.columns(_COLS)
     h[0].markdown("**Linked RFP**")
     h[1].markdown("**Issues**")
     h[2].markdown("**Action**")
@@ -311,7 +375,10 @@ else:
     st.markdown("<hr style='margin:4px 0 8px'/>", unsafe_allow_html=True)
 
     for _, n in notes.iterrows():
-        row = st.columns([2, 3, 3, 1.3, 1.4, 1.4])
+        row = st.columns(_COLS)
+        if row[6].button("✏️", key=f"edit_note_{n['id']}", help="Edit this note",
+                         width='stretch', disabled=not can_edit):
+            edit_note_dialog(n.to_dict())
         row[0].markdown(_linked_label(n.to_dict()))
         row[1].markdown(n.get("remarks") or "—")
         row[2].markdown(n.get("actions") or "—")
