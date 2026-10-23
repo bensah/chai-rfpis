@@ -1,0 +1,801 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RFPIS User Manual</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="manual.css">
+</head>
+<body>
+
+<header class="cover">
+  <svg class="rings" viewBox="0 0 400 400" aria-hidden="true">
+    <circle cx="200" cy="200" r="190" fill="none" stroke="#9fd8b8" stroke-width="2"/>
+    <circle cx="200" cy="200" r="140" fill="none" stroke="#9fd8b8" stroke-width="2"/>
+    <circle cx="200" cy="200" r="90" fill="none" stroke="#9fd8b8" stroke-width="2"/>
+    <circle cx="200" cy="200" r="40" fill="#9fd8b8"/>
+  </svg>
+  <div class="inner">
+    <div class="mark">RFPIS · RFP INTELLIGENCE SYSTEM</div>
+    <h1>User Manual</h1>
+    <p class="lede">A step-by-step guide to finding, screening and deciding on funding
+      opportunities. It starts at the sign-in screen and covers every page.</p>
+    <div class="meta">
+      <span class="pill">For every team member</span>
+      <span class="pill">Admin-only steps are marked 🔒</span>
+      <span class="pill">Version 1.0 · October 2026</span>
+    </div>
+    <div class="downloads">
+      <a href="../../assets/help/RFPIS_User_Manual.pdf" download>⬇ Download this manual (PDF)</a>
+      <a class="alt" href="../../assets/help/RFPIS_Training_Deck.pptx" download>⬇ Training slides (PPTX)</a>
+    </div>
+  </div>
+</header>
+
+<main class="page">
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#how">How RFPIS works</a></li>
+    <li><a href="#roles">Roles: what you can and can't do</a></li>
+    <li><a href="#signin">Signing in for the first time</a></li>
+    <li><a href="#around">Finding your way around</a></li>
+    <li><a href="#home">The Home page</a></li>
+    <li><a href="#scan">Run the Eligibility Scan</a> <span class="tag all">KEY TASK</span></li>
+    <li><a href="#screen">Read the Screen tab</a></li>
+    <li><a href="#decide">Review and update a decision</a> <span class="tag all">KEY TASK</span></li>
+    <li><a href="#track">Track and Summary</a></li>
+    <li><a href="#opportunity">The Opportunity page</a></li>
+    <li><a href="#search">Search for opportunities</a> <span class="tag all">KEY TASK</span></li>
+    <li><a href="#submit">Submit an RFP you found elsewhere</a> <span class="tag all">KEY TASK</span></li>
+    <li><a href="#actions">Actions: meetings, notes and follow-ups</a> <span class="tag all">KEY TASK</span></li>
+    <li><a href="#report">Generate a report</a></li>
+    <li><a href="#grants">Grants</a></li>
+    <li><a href="#donors">Donors</a></li>
+    <li><a href="#tenant">Your organisation (Tenant)</a></li>
+    <li><a href="#profile">Your profile and password</a></li>
+    <li><a href="#help">The Help page and getting help</a></li>
+    <li><a href="#admin">Settings</a> <span class="tag admin">ADMIN ONLY</span></li>
+    <li><a href="#quick">Quick reference</a></li>
+  </ol>
+</nav>
+
+<!-- ═════════════════════════════════════════════════════════════════ 1 -->
+<section class="chapter" id="how">
+  <div class="chapter-head"><div class="chapter-num">1</div><h2>How RFPIS works</h2></div>
+  <p class="where">Read this first. It explains where opportunities come from and what you do with them.</p>
+
+  <p>RFPIS finds funding opportunities (RFPs, RFIs, EOIs, calls for proposals and grand
+    challenges) on donor websites and the open web. It checks each one against your
+    organisation's eligibility rules, and helps the team decide to
+    <b>Proceed</b>, <b>Park</b> or <b>Decline</b>.</p>
+
+  <h3>Where opportunities come from</h3>
+  <p>Collecting opportunities and screening them are two separate steps.</p>
+  <div class="flow">
+    <div class="node who-super"><div class="k">Super User</div><b>Extraction</b>
+      <span>The platform's Super User runs a separate crawl of every donor source and
+        pulls new RFPs into a shared store.</span></div>
+    <div class="node who-super"><div class="k">Automatic</div><b>Friday scan</b>
+      <span>Every Friday at 06:00 UTC a scheduled scan crawls the sources again and screens
+        each organisation.</span></div>
+    <div class="node"><div class="k">You get alerted</div><b>Raw records ready</b>
+      <span>The 🔔 bell shows "Scan completed" when new raw records are in the store.</span></div>
+    <div class="node who-team"><div class="k">You</div><b>Eligibility Scan</b>
+      <span>Click <b>🎯 Eligibility Scan</b> to pull the calls that fit your organisation into
+        your pipeline.</span></div>
+    <div class="node who-team"><div class="k">The team</div><b>Review &amp; decide</b>
+      <span>Proceed, Park or Decline, then track deadlines and follow-ups.</span></div>
+  </div>
+
+  <div class="callout note"><b>Raw records vs. your pipeline</b>
+    <b>Raw records</b> are every call the crawl found, from every country and theme, before
+    any screening. They sit in a shared, platform-wide pool. The <b>Eligibility Scan</b> reads
+    that pool against <i>your</i> organisation's rules and adds only the calls that fit to your
+    pipeline. A call that any user submits joins the same pool. Other organisations can then
+    find it on their next scan.</div>
+
+  <h3>The weekly rhythm</h3>
+  <div class="week">
+    <div><div class="d">Friday</div><b>Scan runs</b><span>The automatic scan refreshes the store.
+      Watch the 🔔 bell for "Scan completed".</span></div>
+    <div><div class="d">Friday – Sunday</div><b>Screen &amp; submit</b><span>Run the Eligibility
+      Scan. Submit any RFP you found outside the scan.</span></div>
+    <div><div class="d">Monday call</div><b>Team meeting</b><span>Walk through the Screen tab,
+      agree on decisions, and capture notes and actions.</span></div>
+    <div><div class="d">Mid-week</div><b>Follow through</b><span>Work the Track tab, log donor
+      engagements and close pending actions.</span></div>
+  </div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 2 -->
+<section class="chapter" id="roles">
+  <div class="chapter-head"><div class="chapter-num">2</div><h2>Roles: what you can and can't do</h2></div>
+  <p class="where">Your role shows at the bottom of the left sidebar, under "Signed in as".</p>
+
+  <p>Every account has one role. Most team members are <b>Contributors</b> or <b>Reviewers</b>.
+    Throughout this manual, steps that need more than a Contributor role are marked
+    <span class="tag admin">ADMIN ONLY</span> or <span class="tag admin">REVIEWER+</span>. Steps
+    for the platform owner are marked <span class="tag super">SUPER USER</span>.</p>
+
+  <table class="t">
+    <thead><tr><th>What you want to do</th><th>Contributor</th><th>Reviewer</th><th>Admin</th><th>Super User</th></tr></thead>
+    <tbody>
+      <tr><td>Run the Eligibility Scan, read the pipeline, search</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
+      <tr><td>Submit an RFP, update a decision, edit an RFP</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
+      <tr><td>Log engagements, resolve pending actions, edit the schedule</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
+      <tr><td>Generate and download reports</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
+      <tr><td><b>Add meeting notes</b> and mark them resolved</td><td class="c no">—</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
+      <tr><td>Delete an RFP</td><td class="c no">—</td><td class="c no">—</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
+      <tr><td>Edit the organisation (Tenant) profile</td><td class="c no">—</td><td class="c no">—</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
+      <tr><td>Open <b>Settings</b>: users, scan preferences, records, manual scans</td><td class="c no">—</td><td class="c no">—</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
+      <tr><td>Run the full Extraction, manage organisations, view as another organisation</td><td class="c no">—</td><td class="c no">—</td><td class="c no">—</td><td class="c yes">✓</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout admin"><b>See a greyed-out button?</b>
+    Your role doesn't allow that action. Ask your organisation's administrator to change your
+    role. They do this under <span class="ui">Settings → Accounts → Users</span>.</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 3 -->
+<section class="chapter" id="signin">
+  <div class="chapter-head"><div class="chapter-num">3</div><h2>Signing in for the first time</h2></div>
+  <p class="where">Pages: <code>/activate-account</code> · <code>/login</code> · <code>/password-reset</code></p>
+
+  <p>Nobody can sign themselves up. Your administrator creates your account, and RFPIS then
+    emails you an invitation.</p>
+
+  <h3>A. Activate your account</h3>
+  <ol class="steps">
+    <li>Open the email titled <b>"Activate your RFPIS APP account"</b>. It is sent to the
+      address your admin entered, for example <i>user@example.com</i>.</li>
+    <li>Click <span class="ui">Activate my account</span>. The link works for <b>7 days</b>.
+      The email also shows an activation code you can paste in instead.</li>
+    <li>On the <b>🔑 Activate your account</b> screen, check that the email is yours, then click
+      <span class="ui">Activate account</span>.</li>
+    <li>Type a new password twice and click <span class="ui">Save password</span>.</li>
+    <li>When you see <b>"Account activated"</b>, click <span class="ui">Go to sign in</span>.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Activate your account</span></div>
+    <img src="img/04-activate.jpg" alt="Activate your account screen"></div>
+    <figcaption>If you only have the code from the email, paste it here and click Continue.</figcaption></figure>
+
+  <h3>B. Sign in</h3>
+  <ol class="steps">
+    <li>Go to your RFPIS web address. If you aren't signed in, you land on the sign-in
+      screen.</li>
+    <li>In <b>Username</b>, type your <b>email address</b>.</li>
+    <li>Type your <b>Password</b> and click <span class="ui">Login</span>.</li>
+    <li>You arrive on <b>Home</b>. You stay signed in for about 8 hours.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Sign in</span></div>
+    <img src="img/01-login.jpg" alt="RFPIS sign-in screen"></div>
+    <figcaption>The sign-in screen. The two panels below the form handle codes and forgotten passwords.</figcaption></figure>
+
+  <h3>C. Forgot your password?</h3>
+  <ol class="steps">
+    <li>On the sign-in screen, open <span class="ui">🔐 Forgot password?</span>.</li>
+    <li>Type your email and click <span class="ui">📨 Request password reset</span>.</li>
+    <li>An administrator approves the request. You then get an email titled <b>"Change your
+      RFPIS APP password"</b>. Your old password keeps working until you use the new link.</li>
+    <li>Click <span class="ui">Set a new password</span> in the email. Or paste its code into
+      <span class="ui">🔑 Have an activation or reset code?</span>. The code expires in
+      <b>2 hours</b>.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Sign in → Forgot password?</span></div>
+    <img src="img/02-login-forgot.jpg" alt="Forgot password panel"></div></figure>
+
+  <div class="callout note"><b>If an admin reset your password</b>
+    The first time you sign in, RFPIS asks you to choose your own password. Enter the
+    temporary password, then your new one twice, and click <span class="ui">🔐 Save new password</span>.</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 4 -->
+<section class="chapter" id="around">
+  <div class="chapter-head"><div class="chapter-num">4</div><h2>Finding your way around</h2></div>
+  <p class="where">Every page has the same two navigation areas: the left sidebar and the top bar.</p>
+
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Navigation</span></div>
+    <img src="img/06-sidebar.jpg" alt="Expanded sidebar and top bar"></div>
+    <figcaption>Click «/» at the top of the sidebar to switch between icons only and full labels.</figcaption></figure>
+
+  <div class="grid2">
+    <div class="card"><span class="ico">📋</span><h4>Left sidebar: your work pages</h4>
+      <p>🏠 Home · 📚 Pipelines · 💼 Grants · 🗒️ Actions · 📊 Report · 🗺️ Donors ·
+        🏢 Tenant · 📝 Submit. Admins also see ⚙️ Settings. The bottom of the sidebar shows
+        who you're signed in as and your <b>Role</b>.</p></div>
+    <div class="card"><span class="ico">🔝</span><h4>Top bar: tools</h4>
+      <p>🔍 <b>Search</b> the app and the web · 🔔 <b>Notifications</b> (scan alerts and new
+        opportunities) · 👤 <b>Person menu</b> (Help, Tenant, Profile, Sign Out).</p></div>
+  </div>
+
+  <h3>The 🔔 Notifications bell: how you're alerted</h3>
+  <ol class="steps">
+    <li>A red number on the bell means there are new items since you last looked.</li>
+    <li>Click the bell. At the top, you'll see <b>⏰ Next auto-scan</b> (Friday 06:00 UTC) and
+      <b>📅 Next call</b> with this week's note-taker, presenter and chair.</li>
+    <li>When <b>"Scan completed"</b> or <b>"Auto-scan completed"</b> appears, new raw records
+      are ready. Go to <a href="#scan">Pipelines → Screen and run the Eligibility Scan</a>.</li>
+    <li><b>"📥 New opportunity"</b> means a teammate submitted an RFP. Click it to open the
+      opportunity.</li>
+    <li>Click <span class="ui">Mark all as read</span> to clear the count.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · 🔔 Notifications</span></div>
+    <img src="img/08-bell.jpg" alt="Notifications panel"></div></figure>
+
+  <div class="callout tip"><b>Your administrator may also email you</b>
+    The bell is RFPIS's own alert. Your administrator may also email the team when a fresh
+    batch of raw records is ready to screen.</div>
+
+  <h3>The 👤 person menu</h3>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · 👤 Person menu</span></div>
+    <img src="img/09-person-menu.jpg" alt="Person menu"></div>
+    <figcaption>Help, Tenant, Profile and Sign Out. <b>Settings</b> appears here only for administrators.</figcaption></figure>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 5 -->
+<section class="chapter" id="home">
+  <div class="chapter-head"><div class="chapter-num">5</div><h2>The Home page</h2></div>
+  <p class="where">Sidebar → 🏠 Home. This is where you land after signing in.</p>
+
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Home</span></div>
+    <img src="img/05b-home.jpg" alt="Home dashboard"></div></figure>
+
+  <ol class="steps">
+    <li><b>Read the numbers.</b> The top row shows <b>Total Unique RFPs</b>, <b>Proceed</b>,
+      <b>Park</b> and <b>Decline</b>. The second row shows <b>Due in 14 days</b>,
+      <b>Submitted</b>, <b>Past deadline</b> and <b>Awarded Grants</b>.</li>
+    <li><b>Jump in.</b> Under <b>Where to start</b>, click a card headline, for example
+      <span class="ui">📚 Pipeline</span>, to open that page.</li>
+    <li><b>Check the 🔴 Live Opportunity Feed</b> on the right. It has four lists: 🎯
+      Featured for you, ✅ Top Matches, 💰 Top Funding and ✨ Also Interesting. Click any title
+      to open it in full.</li>
+    <li>On a <b>Featured for you</b> card, click <span class="ui">➕ Add to pipeline</span> to
+      screen that call into your pipeline straight away.</li>
+    <li>Below <b>Where to start</b>, the <b>📘 New to RFPIS?</b> box has this manual and the
+      training slides to download.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Home → manual downloads</span></div>
+    <img src="img/05c-home-manual.jpg" alt="Home page manual and training downloads"></div></figure>
+  <div class="callout admin"><b>Settings card</b> <span class="tag admin">ADMIN ONLY</span>
+    Administrators see an extra ⚙️ Settings card. Everyone else doesn't, and that's expected.</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 6 -->
+<section class="chapter" id="scan">
+  <div class="chapter-head"><div class="chapter-num">6</div><h2>Run the Eligibility Scan</h2></div>
+  <p class="where">Sidebar → 📚 Pipelines → <b>Screen</b> tab. Every team member can do this.</p>
+
+  <p>The Eligibility Scan reads the shared store of raw records against your organisation's
+    eligibility rules. It adds the calls that fit to your pipeline. It doesn't crawl the web,
+    so it takes <b>seconds</b>.</p>
+
+  <ol class="steps">
+    <li>When the 🔔 bell shows <b>"Scan completed"</b>, or your administrator tells you new
+      records are ready, open <b>📚 Pipelines</b>.</li>
+    <li>Stay on the <b>Screen</b> tab. At the top right, beside
+      <span class="ui">📝 Submit New Funding</span>, click
+      <span class="ui">🎯 Eligibility Scan</span>.</li>
+    <li>Wait while the button shows <b>⏳ Scanning…</b>. Don't refresh the page.</li>
+    <li>Read the green banner at the top. For example: <i>"Screened <b>120</b> curated
+      solicitations → <b>8 eligible</b> for your org (5 newly added, 3 already in your
+      pipeline) · 112 not a fit."</i></li>
+    <li>Scroll down the Screen tab to see the new opportunities for this review week.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Pipelines → Screen</span></div>
+    <img src="img/10-screen-top.jpg" alt="Screen tab with the Eligibility Scan button"></div>
+    <figcaption>The <b>🎯 Eligibility Scan</b> and <b>📝 Submit New Funding</b> buttons sit at the top right of the Screen tab.</figcaption></figure>
+
+  <div class="callout tip"><b>Run it as often as you like</b>
+    Calls already in your pipeline aren't added twice. The result banner tells you how many
+    were already there.</div>
+  <div class="callout admin"><b>Extraction is different</b> <span class="tag super">SUPER USER</span>
+    The full <b>Extraction</b> crawls every donor site and takes 20–40 minutes. Only the
+    platform's Super User runs it, from <span class="ui">Settings → Manual Scan → ⛏ Extraction</span>.
+    The automatic Friday scan does the same job on a schedule. You never need to run it.</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 7 -->
+<section class="chapter" id="screen">
+  <div class="chapter-head"><div class="chapter-num">7</div><h2>Read the Screen tab</h2></div>
+  <p class="where">Sidebar → 📚 Pipelines → <b>Screen</b>. This is the week's list, which the team walks through on the Monday call.</p>
+
+  <ol class="steps">
+    <li>Pick the <b>Review week</b> at the top. It defaults to the current week.</li>
+    <li>Optional: open <span class="ui">Filters</span> to narrow by Decision, Feasibility,
+      Geographic scope or Program area.</li>
+    <li>Read the counters: <b>Total Screened</b>, <b>Proceed</b>, <b>Parked</b> and
+      <b>Declined</b>. Under them you'll see the Largest Opportunity, the Nearest Deadline,
+      and the Prime and Sub opportunities.</li>
+    <li>Scroll to <b>Proceed &amp; Parked RFPs — Rationale &amp; Risks</b>. Each row shows the
+      score, the system's suggestion (<b>Auto-rec</b>), the team's <b>Decision</b>, key risks
+      and confidence.</li>
+    <li>To discuss one opportunity in depth, go to the <a href="#decide">Review tab</a>.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Pipelines → Screen</span></div>
+    <img src="img/12-screen-table.jpg" alt="Screen tab table"></div></figure>
+  <div class="callout note"><b>Empty week?</b>
+    If you see "No RFPs recorded for this week", click the <span class="ui">Jump to …</span>
+    button. It takes you to the latest week that has records.</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 8 -->
+<section class="chapter" id="decide">
+  <div class="chapter-head"><div class="chapter-num">8</div><h2>Review an opportunity and update the decision</h2></div>
+  <p class="where">Sidebar → 📚 Pipelines → <b>Review</b> tab. Every team member can update a decision.</p>
+
+  <h3>How the score works</h3>
+  <p>Every opportunity is scored against <b>nine criteria</b>. The five <b>MUSTs</b> make up 65%
+    of the score: legal status, strategic fit, implementation capacity, geographic fit, and
+    co-financing &amp; compliance. The four <b>PREFERs</b> make up 35%: funding quality, donor
+    relationship, competitiveness and bid effort.</p>
+  <div class="verdicts">
+    <div class="p"><b>Proceed</b><span>Score of 90 or above</span></div>
+    <div class="k"><b>Park</b><span>70 to 89: worth a human look</span></div>
+    <div class="d"><b>Decline</b><span>Below 70, or a fatal eligibility gate</span></div>
+  </div>
+
+  <h3>Review an opportunity</h3>
+  <ol class="steps">
+    <li>Open the <b>Review</b> tab. Choose the <b>Review week</b>, then pick the RFP from the
+      <b>RFPs in &lt;week&gt;</b> list.</li>
+    <li>Read the cards across the top: <b>Key details</b>, <b>Value</b>, <b>Focus Areas</b>,
+      <b>Geographic Scope</b> and <b>Brief description</b>.</li>
+    <li>Look at the <b>Bid Strength</b> gauge, the <b>System suggestion</b> and the
+      <b>Confidence</b>.</li>
+    <li>Open any criterion in the <b>Eligibility criteria</b> grid, for example
+      "MUST 4 · Geographic fit", to see why it was met or not met.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Pipelines → Review</span></div>
+    <img src="img/13-review-top.jpg" alt="Review tab"></div></figure>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Review → Eligibility criteria</span></div>
+    <img src="img/14-review-criteria.jpg" alt="Eligibility criteria grid and Bid Strength gauge"></div>
+    <figcaption>The nine criteria on the left, and the Bid Strength gauge with the system's suggestion on the right.</figcaption></figure>
+
+  <h3>Update the decision</h3>
+  <ol class="steps">
+    <li>Scroll to <b>Team decision</b> and click <span class="ui">✏ Update Decision</span>.</li>
+    <li>Optional: correct any criterion component the system got wrong. The score and
+      suggestion follow your changes. A person who has read the call outranks the
+      system.</li>
+    <li>Set <b>Decline flags?</b> (No / Yes) and write the <b>Key risks</b> in one line.</li>
+    <li>Choose the <b>Decision</b>: <b>Proceed</b>, <b>Park</b> or <b>Decline</b>.</li>
+    <li>Write the <b>Decision rationale</b> in two or three lines.</li>
+    <li>Answer <b>Donor already engaged on this opportunity?</b> with Yes, Partial or No.</li>
+    <li>Click <span class="ui">💾 Save changes</span>. A confirmation shows the new score,
+      suggestion and decision.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Review → ✏ Update Decision</span></div>
+    <img src="img/16-update-decision.jpg" alt="Update Decision form"></div></figure>
+
+  <div class="callout tip"><b>More edits: ✏️ Edit RFP</b>
+    Beside Update Decision, <span class="ui">✏️ Edit RFP</span> opens the full record. Its tabs
+    are Opportunity, Eligibility, Decision &amp; Pipeline, Team, Submission &amp; Award and
+    Application. Use it to set the <b>Proposal lead</b>, <b>Assigned to</b>, <b>Next action</b>
+    and <b>Action deadline</b>.</div>
+  <div class="callout admin"><b>Deleting an RFP</b> <span class="tag admin">ADMIN ONLY</span>
+    The <span class="ui">🗑 Delete this RFP</span> button inside Edit RFP works for
+    administrators only. If something shouldn't be in the pipeline, <b>Decline</b> it instead.</div>
+  <p>At the bottom of the Review tab, rate the RFP with <span class="ui">👍 Good</span>,
+    <span class="ui">😐 Neutral</span> or <span class="ui">👎 Bad</span>. Your ratings teach the
+    scoring model what your team values.</p>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 9 -->
+<section class="chapter" id="track">
+  <div class="chapter-head"><div class="chapter-num">9</div><h2>Track and Summary</h2></div>
+  <p class="where">Sidebar → 📚 Pipelines → <b>Track</b> and <b>Summary</b> tabs.</p>
+
+  <h3>Track: opportunities you're pursuing</h3>
+  <ol class="steps">
+    <li>Open the <b>Track</b> tab. It lists every active <b>Proceed</b> RFP for the year.</li>
+    <li>Pick one in <b>Select RFP to review</b>, or click its row in the table.</li>
+    <li>Check <b>Days to deadline</b>, <b>Stage</b>, <b>Progress status</b> and
+      <b>Proposal lead(s)</b>. The <b>Next action</b> comes from the meeting notes.</li>
+    <li>Use <span class="ui">🚀 Apply on the funder's portal ↗</span> to go to the funder's
+      application site.</li>
+    <li>Click <span class="ui">✏️ Edit</span> to update the stage, progress or next action.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Pipelines → Track</span></div>
+    <img src="img/17-track.jpg" alt="Track tab"></div></figure>
+
+  <h3>Summary: the year at a glance</h3>
+  <p>The <b>Summary</b> tab has five sections. A is the Funding Calls Snapshot, B is Pipeline
+    health and C is Proposal development status. D is the Periodic Reflection (pick a week,
+    month or quarter) and E is Partner engagement KRs. It's read-only and good for
+    quarterly check-ins.</p>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Pipelines → Summary</span></div>
+    <img src="img/18-summary.jpg" alt="Summary tab"></div></figure>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 10 -->
+<section class="chapter" id="opportunity">
+  <div class="chapter-head"><div class="chapter-num">10</div><h2>The Opportunity page</h2></div>
+  <p class="where">Click any opportunity title: in the Live Opportunity Feed, a bell item, search results, or <b>🔍 View opportunity</b> on Review.</p>
+
+  <ol class="steps">
+    <li>Read the chips under the title. They show the deadline status, the type of call,
+      and whether it's <b>In your pipeline</b>, <b>Screened — not in a pipeline yet</b>, or
+      <b>Shared catalogue — not screened for you</b>.</li>
+    <li>Use <span class="ui">Open the call ↗</span> and <span class="ui">Apply ↗</span> to go to
+      the funder's own pages.</li>
+    <li>Read <b>1 · The opportunity</b>: award value, deadline, duration, overview and
+      documents.</li>
+    <li>Read <b>2 · Decision aid</b>: how the call fares against your organisation, its Bid
+      Strength, and <b>What's against it</b>.</li>
+    <li>At the bottom:
+      <ul>
+        <li>For an opportunity already in your pipeline, click <span class="ui">✏️ Open in Review</span>.</li>
+        <li>For one from the shared catalogue, click <span class="ui">➕ Add to my pipeline</span>,
+          or <span class="ui">✕ Not relevant</span> to dismiss it.</li>
+      </ul></li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Opportunity</span></div>
+    <img src="img/19-opportunity.jpg" alt="Opportunity page"></div></figure>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 11 -->
+<section class="chapter" id="search">
+  <div class="chapter-head"><div class="chapter-num">11</div><h2>Search for opportunities</h2></div>
+  <p class="where">Top bar → 🔍 Search, or the full page at <code>/search</code>.</p>
+
+  <p>One search box looks in two places. First it searches <b>inside RFPIS</b>: pages, tabs,
+    opportunities and donors. Then, if you ask it to, it searches <b>the web</b> for live,
+    recent funding calls.</p>
+
+  <h3>A. Search inside RFPIS</h3>
+  <ol class="steps">
+    <li>Click <b>🔍</b> in the top bar.</li>
+    <li>Type at least two characters, for example <i>malaria</i> or a donor's name, and click
+      <span class="ui">Search</span>. For more room, click <b>Open full search page</b>.</li>
+    <li>Results are grouped under <b>📑 Pages &amp; tabs</b>, <b>📄 Opportunities</b> and
+      <b>🗺️ Donors</b>. Open a group and click a result to go to it.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · 🔍 quick search</span></div>
+    <img src="img/07-search-pop.jpg" alt="Quick search box under the magnifier icon"></div>
+    <figcaption>The quick search box opens from 🔍 in the top bar on every page.</figcaption></figure>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · 🔍 Search</span></div>
+    <img src="img/20-search.jpg" alt="Search results"></div></figure>
+
+  <h3>B. Search the web for new calls</h3>
+  <ol class="steps">
+    <li>On the search page, scroll to <b>🌐 Opportunities on the web</b>.</li>
+    <li>Click <span class="ui">🌐 Search the web for "…"</span>.</li>
+    <li>Browse the results, 15 per page, with <span class="ui">‹ Prev</span> and
+      <span class="ui">Next ›</span>. Rate them with 👍 😐 👎 to improve future results.</li>
+    <li>Found a real opportunity? Click <span class="ui">➕ Track</span>. RFPIS scores it and
+      adds it to your pipeline. It tells you if the call is already tracked.</li>
+  </ol>
+  <div class="callout note"><b>"Web search isn't configured yet"?</b>
+    Web search needs a key that an administrator sets up. Ask them to enable it.</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 12 -->
+<section class="chapter" id="submit">
+  <div class="chapter-head"><div class="chapter-num">12</div><h2>Submit an RFP you found elsewhere</h2></div>
+  <p class="where">Pipelines → Screen → <b>📝 Submit New Funding</b>, or go to <code>/submit-new-rfp</code>. Every team member can do this.</p>
+
+  <p>The scans don't catch everything. A colleague might forward a call, or a donor might
+    publish it on a partner's website. When you find an RFP that isn't in RFPIS yet,
+    submit it here. It goes straight into your pipeline and joins the shared pool for
+    everyone else.</p>
+
+  <div class="callout tip"><b>Check first</b>
+    Search for the title or donor with 🔍 before submitting. It may already be in RFPIS.</div>
+
+  <ol class="steps">
+    <li>Go to <b>📚 Pipelines → Screen</b> and click <span class="ui">📝 Submit New Funding</span>.</li>
+    <li><b>Section 1 · Opportunity description.</b> Fill in the <b>Opportunity title *</b> and
+      the <b>Donor *</b>. If the donor isn't listed, choose <i>Other</i> and type its name.
+      Add the deadline, the <b>Opportunity link (URL)</b>, the estimated value and currency,
+      and the <b>Lead applicant *</b>.</li>
+    <li><b>Section 2 · Eligibility.</b> For each of the nine MUST / PREFER questions, pick your
+      best answer. Leave it as <i>Not sure</i> if you don't know.</li>
+    <li><b>Section 3 · Decline flags &amp; risks.</b> Answer <b>Decline flags present? *</b> and
+      write the key risks in one line.</li>
+    <li><b>Section 4 · Initial decision.</b> Choose your <b>Bid decision *</b> and add a short
+      rationale.</li>
+    <li><b>Section 5 · Team.</b> This appears for Proceed or Park only. Pick the
+      <b>Proposal lead *</b>, and optionally contributors and reviewers.</li>
+    <li>Click <span class="ui">Submit RFP</span>. You'll see <i>"✅ Submitted as
+      <b>UID</b> — alignment score X/100"</i>. The RFP is tagged to this review week, ready
+      for the team call.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · 📝 Submit New RFP</span></div>
+    <img src="img/21-submit.jpg" alt="Submit New RFP form"></div>
+    <figcaption>Fields marked * are required.</figcaption></figure>
+
+  <div class="callout warn"><b>Always paste the link</b>
+    RFPIS needs the <b>Opportunity link (URL)</b> to share the call with other organisations
+    and to check it later. If the deadline has already passed, RFPIS warns you and offers
+    <span class="ui">🔗 Open … to fix this</span>.</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 13 -->
+<section class="chapter" id="actions">
+  <div class="chapter-head"><div class="chapter-num">13</div><h2>Actions: meetings, notes and follow-ups</h2></div>
+  <p class="where">Sidebar → 🗒️ Actions. You'll use this page most during team meetings.</p>
+
+  <p>The Actions page has four tabs. <b>Meetings</b> holds the notes from each team call.
+    <b>Engagements</b> logs contact with donors. <b>Pending</b> gathers every open follow-up.
+    <b>Schedule</b> sets who runs each call.</p>
+
+  <div class="callout tip"><b>A good team-meeting routine</b>
+    <b>Chair:</b> opens Pipelines → Screen for this week. <b>Presenter:</b> walks through each
+    RFP on Review. <b>Team:</b> agrees on the decision, and someone clicks
+    <span class="ui">✏ Update Decision</span>. <b>Note-taker:</b> adds a note for each agreed
+    action, with an owner and due date. <b>Before the call ends:</b> open Pending and close
+    anything that's done.</div>
+
+  <h3>A. Meetings: capture notes during the call</h3>
+  <p><span class="tag admin">REVIEWER+</span> Adding notes and changing their status needs the
+    <b>Reviewer</b> role or above. Contributors can read the notes and download them.</p>
+  <ol class="steps">
+    <li>Open <b>🗒️ Actions → Meetings</b>. Check the <b>Review week</b>. The tiles show the
+      <b>Meeting date</b>, <b>Note-taker</b>, <b>RFP presenter</b> and <b>Chair</b>.</li>
+    <li>Click <span class="ui">➕ Add a note</span> at the top right.</li>
+    <li>In <b>Linked RFP (Proceed) *</b>, choose the opportunity being discussed. Only RFPs the
+      team has agreed to pursue are listed.</li>
+    <li>Write the <b>Issues *</b> raised, then the <b>Actions / recommendations *</b>
+      agreed.</li>
+    <li>Pick the <b>Owner *</b> and a <b>Due Date *</b>. The due date defaults to the next
+      Monday.</li>
+    <li>Click <span class="ui">💾 Save note</span>. The note appears in <b>Notes for
+      &lt;week&gt;</b>.</li>
+    <li>When the action is done, click its red <span class="ui">Not Resolved</span> button. It
+      turns green: <span class="ui">✓ Resolved</span>.</li>
+    <li>Need a copy for the minutes? Click <span class="ui">⬇ Download &lt;week&gt; notes as CSV</span>.</li>
+  </ol>
+  <div class="grid2">
+    <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>Actions → Meetings</span></div>
+      <img src="img/22-meetings.jpg" alt="Meetings tab"></div></figure>
+    <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>➕ Add a note</span></div>
+      <img src="img/23-add-note.jpg" alt="Add a meeting note dialog"></div></figure>
+  </div>
+  <div class="callout note"><b>Correcting a saved note</b>
+    You can't edit a saved note from this tab. Ask an administrator. They can change it under
+    <span class="ui">Settings → Records → Data → Meeting Logs</span>.</div>
+
+  <h3>B. Engagements: log a donor touchpoint</h3>
+  <ol class="steps">
+    <li>Open <b>Actions → Engagements</b>. The top shows how many engagements you've logged
+      this quarter against the 2–4 target.</li>
+    <li>In <b>Log an engagement</b>, set the <b>Engagement date *</b>, <b>Type *</b> and
+      <b>Format</b>.</li>
+    <li>Choose the <b>Donor *</b> and the <b>Internal lead *</b>. Pick <i>Other</i> to type a
+      name that isn't listed.</li>
+    <li>Add the donor contacts, the <b>Purpose</b> and the <b>Outcome / follow-up</b>. Link it
+      to an RFP if there is one.</li>
+    <li>Click <span class="ui">💾 Save engagement</span>.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>Actions → Engagements</span></div>
+    <img src="img/24-engagements.jpg" alt="Engagements tab"></div></figure>
+
+  <h3>C. Pending: close your open actions</h3>
+  <ol class="steps">
+    <li>Open <b>Actions → Pending</b>. It shows every unresolved meeting action and donor
+      follow-up, with a count by owner.</li>
+    <li>Open <span class="ui">Filters</span> and choose your name under <b>Owner</b> to see only
+      your items.</li>
+    <li>When an item is done, click <span class="ui">Not Resolved</span>. It's marked resolved
+      and drops off the list.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>Actions → Pending</span></div>
+    <img src="img/25-pending.jpg" alt="Pending tab"></div></figure>
+
+  <h3>D. Schedule: who runs each call</h3>
+  <ol class="steps">
+    <li>Open <b>Actions → Schedule</b>. Switch the <b>View</b> between Week, Month, Year and Day.
+      Browse with <span class="ui">◀ Prev</span>, <span class="ui">● Today</span> and
+      <span class="ui">Next ▶</span>.</li>
+    <li>To set up a call, open <span class="ui">➕ Add or update a call</span>. Pick the
+      <b>Call date</b>, <b>Note-taker</b>, <b>RFP presenter</b> and <b>Meeting chair</b>, then
+      click <span class="ui">💾 Save call</span>.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>Actions → Schedule</span></div>
+    <img src="img/26-schedule.jpg" alt="Schedule tab"></div></figure>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 14 -->
+<section class="chapter" id="report">
+  <div class="chapter-head"><div class="chapter-num">14</div><h2>Generate a report</h2></div>
+  <p class="where">Sidebar → 📊 Report.</p>
+
+  <ol class="steps">
+    <li>Choose the <b>Period</b>: This year, Year to date, a Specific month, Last 90 days,
+      Last 12 months or All time. Pick the <b>Year</b>, and the <b>Month</b> if you chose a
+      specific month.</li>
+    <li>Choose <b>View by</b>: Weekly, Monthly, Quarterly, Semestrial or Annually.</li>
+    <li>Optional: open <span class="ui">⚙️ Advanced filter</span> to choose which sections and
+      metrics to include. There are five sections: Scan activity, Team &amp; partners,
+      Insights, Reviews &amp; decisions, and Our results.</li>
+    <li>Click <span class="ui">▶ Generate report</span>. Nothing loads until you do. The
+      address bar then holds a link you can share with teammates.</li>
+    <li>To download it, click <span class="ui">📄 Export Report</span>, then
+      <span class="ui">⬇ Download PDF</span>. For the numbers in Excel, click
+      <span class="ui">📥 Export Data</span>.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · 📊 Report</span></div>
+    <img src="img/28-report-generated.jpg" alt="Report page"></div></figure>
+  <div class="callout note"><b>The first PDF can be slow</b>
+    The first PDF export after the app restarts can take a couple of minutes. If it fails,
+    use <span class="ui">⬇ Download the report as HTML instead</span> and print that.</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 15 -->
+<section class="chapter" id="grants">
+  <div class="chapter-head"><div class="chapter-num">15</div><h2>Grants</h2></div>
+  <p class="where">Sidebar → 💼 Grants. Applications you've submitted, and grants you've won.</p>
+  <ol class="steps">
+    <li>Read the totals: <b>Total Submitted</b>, <b>Approved</b>, <b>Under Review</b> and <b>Not
+      Approved</b>. Below them are the amounts requested and secured, in USD, and your win
+      rate.</li>
+    <li>Under <b>Per-grant detail</b>, choose one in <b>Pick an applied grant</b>. You'll see
+      its dates, amounts, reporting deadlines and recent meeting notes.</li>
+    <li>Click <span class="ui">✏️ Edit grant details</span> to record the donor's decision or
+      the reporting dates.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · 💼 Grants</span></div>
+    <img src="img/29-grants.jpg" alt="Grants page"></div></figure>
+  <p>An RFP appears here once its donor decision is set (Approved, Under Review or Not
+    Approved), or once its progress is marked <i>Completed</i>.</p>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 16 -->
+<section class="chapter" id="donors">
+  <div class="chapter-head"><div class="chapter-num">16</div><h2>Donors</h2></div>
+  <p class="where">Sidebar → 🗺️ Donors. The donor catalogue: focus areas, award ranges and contacts.</p>
+  <ol class="steps">
+    <li>Open <span class="ui">🔎 Filter &amp; search</span> to find a donor by name, focus area
+      or geography.</li>
+    <li>Tick a donor's row, then click <span class="ui">👁 View</span> to read its profile.</li>
+    <li>Click <span class="ui">⬇ Download / print (PDF)</span> in the profile for a donor
+      brief.</li>
+    <li>Spotted something wrong or missing? Tick the row and click
+      <span class="ui">💡 Suggest</span>, or use <span class="ui">💡 Suggest donor</span> to
+      propose a new one.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · 🗺️ Donors</span></div>
+    <img src="img/30-donors.jpg" alt="Donors page"></div></figure>
+  <div class="callout admin"><b>Editing donors</b> <span class="tag super">SUPER USER</span>
+    Only the platform owner edits the shared donor catalogue directly. Everyone else
+    suggests changes, and the owner reviews them.</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 17 -->
+<section class="chapter" id="tenant">
+  <div class="chapter-head"><div class="chapter-num">17</div><h2>Your organisation (Tenant)</h2></div>
+  <p class="where">👤 Person menu → <b>Tenant</b>. In this manual, the example organisation is called "RFPIS APP".</p>
+  <p>This page is your organisation's profile. RFPIS uses it to decide which calls fit you:
+    the countries you work in, your program areas, funders and team.</p>
+  <ol class="steps">
+    <li>Check the <b>profile completeness</b> bar. A fuller profile gives better matches.</li>
+    <li>Read the cards: 🏷 <b>Identity &amp; eligibility</b>, 💰 <b>Capacity &amp; funding
+      targets</b>, 🎯 <b>Program areas</b> (graded 0–5), 🌍 <b>Geography &amp; partners</b>,
+      🤝 <b>Funders &amp; languages</b> and 👥 <b>Team members</b>.</li>
+    <li>If something is wrong or out of date, tell your administrator.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Tenant</span></div>
+    <img src="img/31-tenant.jpg" alt="Organisation profile page"></div>
+    <figcaption>An example organisation profile.</figcaption></figure>
+  <div class="callout admin"><b>Editing the profile</b> <span class="tag admin">ADMIN ONLY</span>
+    Administrators see <span class="ui">✏️ Edit tenant</span>. Everyone else sees "View only".</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 18 -->
+<section class="chapter" id="profile">
+  <div class="chapter-head"><div class="chapter-num">18</div><h2>Your profile and password</h2></div>
+  <p class="where">👤 Person menu → <b>Profile</b>.</p>
+  <ol class="steps">
+    <li>On the <b>Profile</b> tab, update your name, phone, job title, department and location.
+      Choose your <b>Program areas</b> too. Click <span class="ui">💾 Save profile</span>.</li>
+    <li>To change your password, open the <b>Change Password</b> tab. Enter the current
+      password, then the new one twice, and click <span class="ui">🔐 Change password</span>.</li>
+    <li>Check <b>🔐 Recent sign-ins</b> on the right. If you don't recognise a sign-in, change
+      your password and tell your administrator.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Profile</span></div>
+    <img src="img/32-profile.jpg" alt="My Profile page"></div></figure>
+  <div class="callout warn"><b>Deleting your account</b>
+    <span class="ui">⚠️ Danger zone — delete my account</span> removes your login only. The
+    notes, decisions and records you added stay in RFPIS for the team.</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 19 -->
+<section class="chapter" id="help">
+  <div class="chapter-head"><div class="chapter-num">19</div><h2>The Help page and getting help</h2></div>
+  <p class="where">👤 Person menu → <b>Help</b>.</p>
+  <ol class="steps">
+    <li>Click <b>👤</b> at the top right, then <b>Help</b>.</li>
+    <li>At the top, download this <b>User Manual (PDF)</b> or the <b>Training slides (PPTX)</b>.</li>
+    <li>Read <b>Getting around</b>, <b>How an opportunity flows</b> and <b>How an opportunity is
+      scored</b> for a quick refresher.</li>
+    <li>Still stuck? Contact your administrator. The Help page shows the address to use.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · Help</span></div>
+    <img src="img/33-help.jpg" alt="Help page"></div></figure>
+  <div class="callout tip"><b>Also on Home</b>
+    The manual and training slides can also be downloaded from the <b>Home</b> page, in the
+    <b>📘 New to RFPIS? Start with the manual</b> box below <b>Where to start</b>.</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 20 -->
+<section class="chapter" id="admin">
+  <div class="chapter-head"><div class="chapter-num">20</div><h2>Settings <span class="tag admin">ADMIN ONLY</span></h2></div>
+  <p class="where">👤 Person menu → <b>Settings</b>, or the ⚙️ sidebar link. If you're not an administrator, you can skip this chapter. You won't see these options.</p>
+
+  <div class="callout admin"><b>Why you might not see Settings</b>
+    Settings is visible only to <b>Admins</b> and the <b>Super User</b>. If you open it without
+    that role, you'll see "Admins only."</div>
+
+  <div class="grid2">
+    <div class="card"><span class="ico">🏗</span><h4>Setup</h4>
+      <p>Organisation profile, bid fitness, team members, and <b>Scan Preferences</b>
+        (countries, themes, criteria, search terms, currency). These rules drive the
+        Eligibility Scan.</p></div>
+    <div class="card"><span class="ico">👥</span><h4>Accounts → Users</h4>
+      <p><span class="ui">➕ Add User</span> sends the invitation email. Each user has
+        <b>Edit</b> (change role), <b>Reset password</b>, <b>Delete</b> and <b>Blacklist</b>.</p></div>
+    <div class="card"><span class="ico">🗂</span><h4>Records</h4>
+      <p>The full data tables: Screened and Extracted Solicitations, Meeting Logs, Engagement
+        Logs, Applied Funding. You can view, edit, export and share them.</p></div>
+    <div class="card"><span class="ico">🎯</span><h4>Manual Scan</h4>
+      <p><b>Eligibility Scan</b> (the same as on Screen), with its history; <b>Search</b>; and
+        <b>Excel Sync</b>. ⛏ <b>Extraction</b> is for the Super User only.</p></div>
+  </div>
+
+  <h3>Add a teammate <span class="tag admin">ADMIN ONLY</span></h3>
+  <ol class="steps">
+    <li>Go to <span class="ui">Settings → Accounts → Users</span> and click
+      <span class="ui">➕ Add User</span>.</li>
+    <li>Enter their name and email (for example <i>user@example.com</i>) and choose a role.
+      <b>Reviewer</b> lets them take meeting notes. <b>Contributor</b> is read-and-submit.</li>
+    <li>Click <span class="ui">➕ Create user</span>. RFPIS emails them an activation link that
+      works for 7 days.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><div class="bar"><i></i><i></i><i></i><span>RFPIS · ⚙️ Settings</span></div>
+    <img src="img/35-manual-scan.jpg" alt="Settings page"></div></figure>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════════════ 21 -->
+<section class="chapter" id="quick">
+  <div class="chapter-head"><div class="chapter-num">21</div><h2>Quick reference</h2></div>
+  <p class="where">Print this page and keep it by your desk.</p>
+  <table class="t">
+    <thead><tr><th>I want to…</th><th>Go to</th><th>Click</th></tr></thead>
+    <tbody>
+      <tr><td>See if new records are ready</td><td>Top bar</td><td>🔔 → "Scan completed"</td></tr>
+      <tr><td>Screen new records for my organisation</td><td>Pipelines → Screen</td><td>🎯 Eligibility Scan</td></tr>
+      <tr><td>See this week's opportunities</td><td>Pipelines → Screen</td><td>Review week</td></tr>
+      <tr><td>Record the team's decision</td><td>Pipelines → Review</td><td>✏ Update Decision → 💾 Save changes</td></tr>
+      <tr><td>Set the proposal lead or next action</td><td>Pipelines → Review / Track</td><td>✏️ Edit RFP</td></tr>
+      <tr><td>Find an opportunity or donor</td><td>Top bar</td><td>🔍 → Search</td></tr>
+      <tr><td>Look for new calls on the web</td><td>Search page</td><td>🌐 Search the web → ➕ Track</td></tr>
+      <tr><td>Add an RFP the scan missed</td><td>Pipelines → Screen</td><td>📝 Submit New Funding → Submit RFP</td></tr>
+      <tr><td>Take meeting notes <span class="tag admin">REVIEWER+</span></td><td>Actions → Meetings</td><td>➕ Add a note → 💾 Save note</td></tr>
+      <tr><td>Log a donor call</td><td>Actions → Engagements</td><td>💾 Save engagement</td></tr>
+      <tr><td>Close an action I've finished</td><td>Actions → Pending</td><td>Not Resolved → ✓</td></tr>
+      <tr><td>Download a report</td><td>Report</td><td>▶ Generate report → 📄 Export Report</td></tr>
+      <tr><td>Change my password</td><td>👤 → Profile</td><td>Change Password</td></tr>
+      <tr><td>Get this manual again</td><td>👤 → Help, or Home</td><td>⬇ User Manual (PDF)</td></tr>
+    </tbody>
+  </table>
+  <h3>Glossary</h3>
+  <div class="grid3">
+    <div class="card"><h4>Raw records</h4><p>Every call the crawl found, from every country and theme, before screening.</p></div>
+    <div class="card"><h4>Eligibility Scan</h4><p>Screens raw records against your rules. Only the calls that fit join your pipeline.</p></div>
+    <div class="card"><h4>Review week</h4><p>The Monday-to-Sunday week an RFP is tagged to for the team call.</p></div>
+    <div class="card"><h4>Proceed / Park / Decline</h4><p>Pursue it / revisit it later / don't pursue it.</p></div>
+    <div class="card"><h4>Bid Strength</h4><p>A score from 0 to 100 across the five MUSTs and four PREFERs.</p></div>
+    <div class="card"><h4>Tenant</h4><p>Your organisation's own space in RFPIS, for example "RFPIS APP".</p></div>
+  </div>
+  <footer class="foot">RFPIS · RFP Intelligence System · User Manual v1.0</footer>
+</section>
+
+</main>
+</body>
+</html>

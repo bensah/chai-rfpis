@@ -10,6 +10,7 @@ from __future__ import annotations
 import streamlit as st
 
 from core import permissions, settings
+from core.user_manual import render_manual_downloads
 from views.account_sections import ADMIN_CONTACT_EMAIL
 
 user = st.session_state.get("app_user") or {}
@@ -74,6 +75,16 @@ st.markdown(
 )
 st.caption(f"Anything this guide doesn't answer? **Ask an administrator** — "
            f"{ADMIN_CONTACT_EMAIL}.")
+
+# ── User manual + training deck ─────────────────────────────────────────────
+with st.container(border=True):
+    st.markdown("#### 📘 User manual & training")
+    st.markdown("The full step-by-step manual covers every page, from sign-in to reports: "
+                "running the **Eligibility Scan**, updating **decisions**, **search**, "
+                "submitting an RFP the scan missed, and **meeting notes & actions**. The "
+                "slides are the team training session.")
+    if not render_manual_downloads("help_dl"):
+        st.caption("The manual isn't bundled with this deployment yet.")
 
 # ── Getting around ──────────────────────────────────────────────────────────
 with st.container(border=True):
