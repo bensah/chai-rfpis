@@ -263,9 +263,10 @@ with _main:
             """
             **Weekly rhythm**
             1. **Friday morning** — the automated scan pulls new opportunities from the
-               donor sources into the shared store, and the 🔔 bell shows **Scan
-               completed**. Open **Pipelines → Screen** and click **🎯 Eligibility Scan**
-               to screen them against your organisation.
+               donor sources into the shared store, the 🔔 bell shows **Scan completed**,
+               and everyone is emailed any new Proceed / Park calls. Open **Pipelines →
+               Screen** and click **🎯 Eligibility Scan** to screen against your
+               organisation.
             2. **Friday → Sunday** — anyone who finds an RFP outside the scan submits it
                via **📝 Submit New Funding** on the Screen tab. It is scored and tagged to
                the current review week.
@@ -278,8 +279,8 @@ with _main:
 
             **Roles**
             - **Admin** — everything, plus users, scan preferences and records (**Settings**).
-            - **Reviewer** — decisions, RFP edits and meeting notes; no delete.
-            - **Contributor** — screening, decisions, submissions, engagements; no meeting notes.
+            - **Reviewer / Contributor** — screening, decisions, RFP edits, submissions,
+              meeting notes and engagements; no delete, no Settings.
 
             **Need more?** Download the user manual above, or open 👤 → **Help**.
             """
