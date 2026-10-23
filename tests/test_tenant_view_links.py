@@ -73,5 +73,67 @@ class SwitchWithParamsTests(unittest.TestCase):
         self.assertEqual(fake.query_params, {"tenant": "x"})
 
 
+def _grid_app():
+    import os
+    import sys
+
+    import streamlit as st
+    sys.path.insert(0, os.environ["RFPIS_ROOT"])
+    from views.account_sections import _render_tenant_grid
+
+    def row(name, slug):
+        return {"id": slug, "slug": slug, "name": name, "Kind": "🏢 Org", "Dev": "🙂 Regular",
+                "Parent": "—", "Sharing": "—", "Status": "🟢 Active", "Members": 1,
+                "Pending": 0, "Profile": "set", "Created": "2026-10-22"}
+
+    picked = _render_tenant_grid([row("CHAI Cameroon", "chai-cameroon"),
+                                  row("CHAI Mali", "chai-mali")])
+    st.text("picked=" + ",".join(r["name"] for r in picked))
+
+
+class TenantGridTests(unittest.TestCase):
+    """The manage-tenants table keeps the NAME as the link (a tab, not a popup window)
+    and still lets rows be ticked for the bulk actions."""
+
+    @classmethod
+    def setUpClass(cls):
+        # Another module installs a fake `streamlit` and does not restore it; AppTest needs
+        # the real one (same guard as test_opportunity_page_renders).
+        import importlib
+        cls._saved = {n: sys.modules.pop(n) for n in list(sys.modules)
+                      if n == "streamlit" or n.startswith("streamlit.")}
+        importlib.import_module("streamlit")
+        os.environ.setdefault("SUPABASE_URL", "https://dummy.supabase.co")
+        os.environ.setdefault("SUPABASE_KEY", "sb_secret_dummy")
+        os.environ["RFPIS_ROOT"] = _ROOT
+
+    @classmethod
+    def tearDownClass(cls):
+        for n in [n for n in list(sys.modules)
+                  if n == "streamlit" or n.startswith("streamlit.")]:
+            del sys.modules[n]
+        sys.modules.update(cls._saved)
+
+    def _run(self):
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_function(_grid_app, default_timeout=60)
+        at.run()
+        self.assertFalse(at.exception, [e.value for e in at.exception])
+        return at
+
+    def test_name_is_a_new_tab_link_in_the_table(self):
+        at = self._run()
+        links = [m.value for m in at.markdown if "<a href=" in m.value]
+        self.assertEqual(len(links), 2)
+        self.assertIn("href='/organization?tenant=chai-mali'", links[1])
+        self.assertIn("target='_blank'", links[1])
+        self.assertFalse(at.dataframe, "the manage view must not fall back to a LinkColumn")
+
+    def test_ticking_a_row_selects_it(self):
+        at = self._run()
+        at.checkbox(key="tn_sel_chai-mali").check().run()
+        self.assertIn("picked=CHAI Mali", [t.value for t in at.text])
+
+
 if __name__ == "__main__":
     unittest.main()
