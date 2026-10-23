@@ -16,7 +16,11 @@ import bcrypt
 import streamlit as st
 import streamlit_authenticator as stauth
 
-from db.supabase_client import get_client
+# Every query in this module is an identity operation on `users` / password_reset_requests,
+# which migration 098 closes to everything but the service role. service_client(), never
+# get_client(): most of these run before a tenant exists, and the rest (the credential cache,
+# a forced password change) must not depend on a tenant JWT at all.
+from db.supabase_client import service_client
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +116,7 @@ def _load_credentials() -> dict[str, Any]:
     last_exc: Exception | None = None
     for attempt in range(3):
         try:
-            sb = get_client()
+            sb = service_client()
             rows = (
                 sb.table("users")
                 .select("email,name,role,password_hash,is_active")
@@ -365,7 +369,7 @@ def _fetch_user(email: str) -> Optional[dict[str, Any]]:
     The cached client can hand back a keep-alive connection the server already
     closed (common after the app sits idle), so the first request fails with
     httpx.RemoteProtocolError. Retry a few times, and on each transient failure
-    DROP the cached client so get_client() rebuilds a fresh httpx pool — a
+    DROP the cached client so service_client() rebuilds a fresh httpx pool — a
     same-client retry could otherwise re-hit the very same dead connection.
     """
     import time as _time
@@ -374,7 +378,7 @@ def _fetch_user(email: str) -> Optional[dict[str, Any]]:
     last_exc: Exception | None = None
     for attempt in range(3):
         try:
-            sb = _sc.get_client()
+            sb = _sc.service_client()
             res = sb.table("users").select("*").eq("email", email).limit(1).execute()
             return res.data[0] if res.data else None
         except Exception as exc:  # noqa: BLE001 — re-raised below if not transient
@@ -403,7 +407,7 @@ def _client_ip_ua() -> tuple[Optional[str], Optional[str]]:
 def _record_login(email: str, user_id: str | None = None) -> None:
     now = datetime.now(timezone.utc).isoformat()
     try:
-        sb = get_client()
+        sb = service_client()
         sb.table("users").update({"last_login_at": now}).eq("email", email).execute()
     except Exception:
         pass  # non-fatal
@@ -599,7 +603,7 @@ def password_reset_request_form(*, heading: bool = False) -> None:
         # recorded either way; an admin sees it and decides whether to action it. The
         # confirmation below is deliberately identical for a known and an unknown
         # address.
-        get_client().table("password_reset_requests").insert({
+        service_client().table("password_reset_requests").insert({
             "email": fp_email.strip(),
         }).execute()
         st.success(
@@ -859,7 +863,7 @@ def _gate_must_change_password(user: dict[str, Any]) -> None:
         else:
             saved, err = False, None
             try:
-                res = (get_client().table("users").update({
+                res = (service_client().table("users").update({
                     "password_hash": hash_password(new_pw),
                     "must_change_password": False,
                     "password_changed_at":
@@ -1010,7 +1014,7 @@ def _render_signup_and_reset_forms() -> None:
                 # Email uniqueness — fail-soft if Supabase blips.
                 if not errs:
                     try:
-                        existing = get_client().table("users") \
+                        existing = service_client().table("users") \
                             .select("email") \
                             .eq("email", su_email.strip()) \
                             .limit(1).execute().data or []
@@ -1026,7 +1030,7 @@ def _render_signup_and_reset_forms() -> None:
                     st.error("Please fix:\n\n- " + "\n- ".join(errs))
                 else:
                     try:
-                        get_client().table("users").insert({
+                        service_client().table("users").insert({
                             "email": su_email.strip(),
                             "name":  su_name.strip(),
                             "role":  "collaborator",
