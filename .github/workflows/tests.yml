@@ -40,6 +40,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Without a browser, ARealRenderTests skips at setUpClass and its 5 tests vanish
+      # from the run entirely (a setUpClass skip is not counted in "Ran N"), so CI used to
+      # report 2117 tests against 2122 locally and the end-to-end PDF render -- the one
+      # check that would catch a PDF export regression -- was never exercised.
+      # --with-deps matters: chromium_ready() actually launches the browser, so the system
+      # libraries have to be there, not just the binary.
+      - name: Install Chromium for the end-to-end PDF render
+        run: playwright install --with-deps chromium
+
       # --jobs 4 rather than the local default of 8: a hosted runner has far fewer cores
       # than the dev box and every process imports streamlit, so oversubscribing buys
       # nothing and costs memory. Lower it further if a run is ever killed for memory.
