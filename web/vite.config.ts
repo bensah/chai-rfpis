@@ -1,4 +1,6 @@
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { IncomingMessage } from "node:http";
 import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from "vite";
@@ -34,7 +36,11 @@ function devApi(mode: string): Plugin {
           typeof import("../supabase/functions/_shared/rfpis_api");
         const api = createApi(
           { supabaseUrl: e.SUPABASE_URL, supabaseKey: e.SUPABASE_KEY, jwtSecret: e.SUPABASE_JWT_SECRET },
-          { bcryptCompare: (plain, hash) => bcrypt.compare(plain, hash) },
+          {
+            bcryptCompare: (plain, hash) => bcrypt.compare(plain, hash),
+            bcryptHash: (plain) => bcrypt.hash(plain, 12),
+            dispatchJob: localJobRunner(envDir, e),
+          },
         );
         const response = await api.handle(await toRequest(req));
         res.statusCode = response.status;
@@ -42,6 +48,21 @@ function devApi(mode: string): Plugin {
         res.end(Buffer.from(await response.arrayBuffer()));
       });
     },
+  };
+}
+
+/**
+ * Locally, a background job runs on this machine instead of GitHub Actions: the same runner
+ * script (scripts/run_web_job.py), with the repo's own Python and `.env`. So a job can be
+ * reviewed before the workflow exists on GitHub. RFPIS_PYTHON overrides the interpreter.
+ */
+function localJobRunner(envDir: string, e: Record<string, string>) {
+  const venv = path.join(envDir, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+  const python = e.RFPIS_PYTHON || (existsSync(venv) ? venv : "python");
+  return async (jobId: string) => {
+    const child = spawn(python, [path.join(repoRoot, "scripts", "run_web_job.py"), jobId, "--runner", "local"],
+      { cwd: envDir, stdio: "inherit", detached: false });
+    child.on("error", (err) => console.error("[jobs] could not start the local runner:", err.message));
   };
 }
 

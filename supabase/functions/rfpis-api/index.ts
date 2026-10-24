@@ -4,6 +4,7 @@
 // Deploy (free tier):
 //   supabase secrets set RFPIS_JWT_SECRET=<Dashboard → Settings → JWT Keys → legacy secret>
 //   supabase secrets set RFPIS_WEB_ORIGINS=https://<your-project>.pages.dev
+//   supabase secrets set RFPIS_GH_DISPATCH_TOKEN=<fine-grained PAT: this repo, Actions: write>
 //   supabase functions deploy rfpis-api --no-verify-jwt
 //
 // --no-verify-jwt: the browser sends its own RFPIS session token, which is deliberately NOT
@@ -12,9 +13,12 @@
 // may not start with SUPABASE_, hence RFPIS_JWT_SECRET.
 import bcrypt from "npm:bcryptjs@3.0.3";
 import { createApi } from "../_shared/rfpis_api.ts";
+import { githubDispatch } from "../_shared/api/routes_jobs.ts";
 
 const origins = (Deno.env.get("RFPIS_WEB_ORIGINS") ?? "")
   .split(",").map((s) => s.trim()).filter(Boolean);
+const ghToken = Deno.env.get("RFPIS_GH_DISPATCH_TOKEN") ?? "";
+const ghRepo = Deno.env.get("RFPIS_GH_REPO") ?? "bensah/rfp-intelligence-system";
 
 const api = createApi(
   {
@@ -23,7 +27,12 @@ const api = createApi(
     jwtSecret: Deno.env.get("RFPIS_JWT_SECRET")!,
     allowedOrigins: origins,
   },
-  { bcryptCompare: (plain, hash) => bcrypt.compare(plain, hash) },
+  {
+    bcryptCompare: (plain, hash) => bcrypt.compare(plain, hash),
+    // Cost 12 = Python's bcrypt.gensalt() default, so both apps' hashes cost the same.
+    bcryptHash: (plain) => bcrypt.hash(plain, 12),
+    dispatchJob: ghToken ? githubDispatch(ghToken, ghRepo) : null,
+  },
 );
 
 Deno.serve((req) => api.handle(req));
