@@ -1,0 +1,47 @@
+name: Tests
+
+# Runs the suite the only way it is correct: ONE PROCESS PER TEST MODULE.
+#
+# Do not be tempted to replace this with `python -m unittest discover`. That runs all 126
+# modules in a single interpreter, and the suite is not safe there: whichever module
+# imports auth.tenant_context first binds `st` for the whole process, so modules that
+# install a fake streamlit into sys.modules and modules that need the real library for
+# AppTest cannot both be satisfied. `discover` reports 15 failures on a perfectly good
+# tree. scripts/run_tests.py gives every module a fresh interpreter instead, which is why
+# it is green -- and it is also faster than the broken single-process run.
+#
+# NO SECRETS, deliberately. The suite passes on a bare checkout with no .env and no
+# Supabase credentials (verified 2026-10-24 from a clean `git archive` export: 126 modules
+# / 2122 tests, all green). So CI never touches the production database, and the
+# concurrency caveat in run_tests.py -- which exists only because a few modules use a
+# shared Supabase instance when one is configured locally -- does not apply here.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # --jobs 4 rather than the local default of 8: a hosted runner has far fewer cores
+      # than the dev box and every process imports streamlit, so oversubscribing buys
+      # nothing and costs memory. Lower it further if a run is ever killed for memory.
+      - name: Run the suite, one process per module
+        run: python scripts/run_tests.py --jobs 4
