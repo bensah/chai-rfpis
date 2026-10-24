@@ -85,6 +85,29 @@ installed, so this step is optional.
 
 ---
 
+## Running the tests
+
+```bash
+python scripts/run_tests.py
+```
+
+126 modules, 2122 tests, around two minutes. No database or `.env` is needed; the suite
+runs green on a bare checkout. Pass module names to run a subset
+(`python scripts/run_tests.py test_tenant_url`).
+
+**Do not use `python -m unittest discover`.** It runs every module in one interpreter, and
+the suite is not safe there: whichever module imports `auth.tenant_context` first binds
+`st` for the whole process, so modules that install a fake `streamlit` and modules that need
+the real library for `AppTest` cannot both be satisfied. `discover` reports 15 failures on a
+perfectly good tree. `scripts/run_tests.py` gives each module its own process, which is why
+it is green.
+
+`--jobs` controls how many modules run at once (default 8). Use `--jobs 1` if a failure
+looks unrelated to your change: a few modules talk to a shared Supabase instance when one is
+configured locally, and serial execution rules that out.
+
+---
+
 ## Repository layout
 
 ```
