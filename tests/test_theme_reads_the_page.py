@@ -46,7 +46,23 @@ if _ROOT not in sys.path:
 os.environ.setdefault("SUPABASE_URL", "https://dummy.supabase.co")
 os.environ.setdefault("SUPABASE_KEY", "sb_secret_dummy")
 
+import core                                                          # noqa: E402
 from core import auto_scorer as A                                     # noqa: E402
+
+
+def _as_llm_judge(j):
+    """Make `from core import llm_judge` (core/auto_scorer.py:1233) resolve to `j`.
+
+    Patching sys.modules is NOT enough: that import form resolves via
+    getattr(core, "llm_judge") first, and once anything in the process has imported the
+    submodule it is bound as an attribute on the `core` package, so the real module is
+    returned and the stub is silently ignored. tests/test_geo_eligibility.py imports it
+    and sorts earlier, so in a full-suite run these tests were silently exercising the
+    REAL judge — which is disabled, hence "the judge must be consulted, not bypassed".
+    Patching the attribute works whether or not the submodule has been imported yet.
+    """
+    return mock.patch.object(core, "llm_judge", j, create=True)
+
 
 _POL = {"themes": {"required_any": ["health", "global health"],
                    "excluded_any": ["clinical trial"]}}
@@ -94,7 +110,7 @@ class ThePageTextRescueTests(unittest.TestCase):
 
     def test_a_page_hit_with_no_brief_hit_reaches_the_judge(self):
         j = self._judge(True)
-        with mock.patch.dict(sys.modules, {"core.llm_judge": j}):
+        with _as_llm_judge(j):
             ok, why = A.theme_eligible(_cand(), _POL, llm_theme=True)
         self.assertTrue(ok)
         self.assertIn("LLM", why)
@@ -103,7 +119,7 @@ class ThePageTextRescueTests(unittest.TestCase):
     def test_the_judge_can_still_rule_it_incidental(self):
         # The battery / textile / photonics case: 'health and safety' on a 20k page.
         j = self._judge(False)
-        with mock.patch.dict(sys.modules, {"core.llm_judge": j}):
+        with _as_llm_judge(j):
             ok, why = A.theme_eligible(_cand(), _POL, llm_theme=True)
         self.assertFalse(ok)
         self.assertIn("incidental", why)
@@ -111,7 +127,7 @@ class ThePageTextRescueTests(unittest.TestCase):
     def test_a_page_with_nothing_on_theme_never_reaches_the_judge(self):
         # 270 of 544 live rows are in this state; spending a call on them is waste.
         j = self._judge(True)
-        with mock.patch.dict(sys.modules, {"core.llm_judge": j}):
+        with _as_llm_judge(j):
             ok, _ = A.theme_eligible(
                 _cand(brief_description="Supply of office furniture.",
                       _page_text="Tender for the supply of office furniture. " * 20),
@@ -124,7 +140,7 @@ class ThePageTextRescueTests(unittest.TestCase):
         c = _cand(_page_text="")
         c["raw_text"] = _PAGE
         j = self._judge(True)
-        with mock.patch.dict(sys.modules, {"core.llm_judge": j}):
+        with _as_llm_judge(j):
             self.assertTrue(A.theme_eligible(c, _POL, llm_theme=True)[0])
 
 

@@ -1,8 +1,8 @@
-"""In-app navigation stays in the tab; only the funder's own links leave it.
+﻿"""In-app navigation stays in the tab; only the funder's own links leave it.
 
 Streamlit renders EVERY markdown link with `target="_blank"`. So
-`st.markdown("[Open in Review](/pipelines?uid=…)")` — a move from one page of this app to
-another — opened a new browser tab, and a reviewer walking a pipeline collected a tab per
+`st.markdown("[Open in Review](/pipelines?uid=â€¦)")` â€” a move from one page of this app to
+another â€” opened a new browser tab, and a reviewer walking a pipeline collected a tab per
 click. Nothing in the code asked for that; it was the default for the markup being used.
 
 The split is about what a link MEANS: an internal link continues a task (same tab, back button
@@ -18,11 +18,28 @@ import unittest
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import _fake_streamlit                      # noqa: E402
+
+# Must precede the import below: `links` binds `st` at ITS import and keeps that object
+# for the rest of the process, so the stub has to be in place first.
+_fake_streamlit.install()
 
 from core import ui_links as links          # noqa: E402
 
 
-class TheHrefTests(unittest.TestCase):
+class _CleanSession(unittest.TestCase):
+    """`links` reads session_state on the SHARED stub, so a tenant left there by an earlier
+    module would add "?tenant=..." to hrefs these tests expect to be bare."""
+
+    def setUp(self):
+        _fake_streamlit.install().session_state.clear()
+
+
+class TheHrefTests(_CleanSession):
     def test_a_bare_path_needs_no_query_string(self):
         self.assertEqual(links.internal_href("pipelines"), "/pipelines")
 
@@ -43,7 +60,7 @@ class TheHrefTests(unittest.TestCase):
                          "/opportunity")
 
 
-class TheLinkOpensInTheSameTabTests(unittest.TestCase):
+class TheLinkOpensInTheSameTabTests(_CleanSession):
     def test_an_internal_link_targets_self(self):
         html = links.internal_link("Open in Review", "pipelines", uid="AS-1")
         self.assertIn("target='_self'", html)
@@ -65,7 +82,7 @@ class TheLinkOpensInTheSameTabTests(unittest.TestCase):
         self.assertTrue(html.startswith("<a "))
 
 
-class NoInternalLinkUsesMarkdownAnyMoreTests(unittest.TestCase):
+class NoInternalLinkUsesMarkdownAnyMoreTests(_CleanSession):
     """The regression guard. A markdown link to an app path is the defect itself, so it is
     cheaper to forbid the pattern than to re-find it later."""
 
@@ -95,7 +112,7 @@ class NoInternalLinkUsesMarkdownAnyMoreTests(unittest.TestCase):
         # does not lose the review they are in the middle of.
         with open(os.path.join(_ROOT, "app_pages", "opportunity.py"), encoding="utf-8") as fh:
             page = fh.read()
-        self.assertIn("Open the call", page)          # rendered as plain markdown → new tab
+        self.assertIn("Open the call", page)          # rendered as plain markdown â†’ new tab
         self.assertNotIn("internal_link(\"Open the call", page)
 
 
@@ -103,33 +120,33 @@ if __name__ == "__main__":
     unittest.main(verbosity=2)
 
 
-_MISSING = object()
-
-
 def _install_fake_streamlit(state: dict):
-    """Swap in a stand-in `streamlit` exposing just session_state, and hand back a
-    restore callable. ALWAYS call the restore: an earlier version skipped it when there
-    was no real streamlit to put back, which left the fake in sys.modules and broke the
-    next test module that imported anything touching Streamlit for real."""
-    import sys as _sys
-    import types
-    previous = _sys.modules.get("streamlit", _MISSING)
-    _sys.modules["streamlit"] = types.SimpleNamespace(session_state=dict(state))
+    """Point `core.ui_links` at `state`, and hand back a restore callable. ALWAYS call the
+    restore: an earlier version skipped it, which left a stub behind and broke the next
+    test module that imported anything touching Streamlit for real.
+
+    This sets session_state on the SHARED stub rather than swapping sys.modules.
+    Swapping no longer reaches `links`: it bound `st` when it was imported, so it keeps
+    reading the stub installed back then whatever sys.modules says now. Replacing the
+    dict's CONTENTS is what `links` actually sees. See tests/_fake_streamlit.py."""
+    import _fake_streamlit
+    fake = _fake_streamlit.install()
+    previous_state = dict(fake.session_state)
+    fake.session_state.clear()
+    fake.session_state.update(state)
 
     def _restore():
-        if previous is _MISSING:
-            _sys.modules.pop("streamlit", None)
-        else:
-            _sys.modules["streamlit"] = previous
+        fake.session_state.clear()
+        fake.session_state.update(previous_state)
 
-    return _sys.modules["streamlit"], _restore
+    return fake, _restore
 
 
 class TheTenantRidesAlongTests(unittest.TestCase):
     """A URL is the one route into the app that outlives the session, and a cold load has
     no session to remember which tenant the link was made in. So the slug travels with it.
 
-    It still cannot CHOOSE a tenant for an ordinary user — auth.tenant_context overwrites an
+    It still cannot CHOOSE a tenant for an ordinary user â€” auth.tenant_context overwrites an
     incoming value rather than reading it (see core.app_header._apply_tenant_url). This is
     about the address staying truthful, not about access."""
 
@@ -183,7 +200,7 @@ class TheHandoffTests(unittest.TestCase):
 class TheBreadcrumbTrailTests(unittest.TestCase):
     """Streamlit has no back button, so the app keeps its own trail. The rules that matter:
     a rerun is not a move, arriving via a crumb is not a move, and the trail is the path
-    TAKEN — revisiting a page truncates back to it rather than appending, or the crumbs
+    TAKEN â€” revisiting a page truncates back to it rather than appending, or the crumbs
     become a history log that repeats itself."""
 
     def _install(self, state):
