@@ -1,7 +1,27 @@
 # Moving the RFPIS frontend from Streamlit to React
 
-Status: **plan, waiting for the owner's go-ahead on phase order.** Nothing below is built yet
-except the read-only Donors page (PR #292) and its API.
+Status: phase order approved by the owner (2026-10-24). **Phase 0 built, in review.**
+
+## Progress
+
+| Phase | State | Parity evidence |
+|---|---|---|
+| 0 Foundation | Built; on local `main` for review. Not deployed | `npm test`: 13 flow tests (login, forced change, links, reset requests, session re-checks, tenant switch, view-as, routing, jobs). `npm run parity`: permissions 47,064 cases, 0 differences; routing sets and the landing tenant of all 15 users, 0 differences; notification feed for all 6 tenants, 0 differences |
+| 1 Home, Opportunity, rail | Not started | |
+| 2 Pipelines | Not started | |
+| 3 Grants, Actions, Submit | Not started | |
+| 4 Donors (full), Search, Profile, Help, Organization | Donors read-only page live since PR #292 | Donors model: 190 donors, 0 differences |
+| 5 Report | Not started | |
+| 6 Settings | Accounts → Active tenant built (Phase 0) | |
+| 7 Cut-over | — | |
+
+Phase 0 still needs, outside the code:
+- **Migration 099** (`web_jobs` + a private Storage bucket) applied to the database. Until it
+  is, starting a job fails.
+- **`RFPIS_GH_DISPATCH_TOKEN`**: a fine-grained GitHub token, limited to this repository with
+  "Actions: read and write", set as an Edge Function secret. Without it the deployed API marks
+  jobs "not configured"; locally the dev server runs jobs on the machine instead.
+- After approval: push, deploy the function, and check the live API.
 
 ## Where we start
 
