@@ -1136,7 +1136,11 @@ def _apply_tenant_url() -> None:
         therefore cannot carry anyone into another account — it just shows them theirs."""
     from core import permissions
     _u = st.session_state.get("app_user") or {}
-    if not permissions.is_super_user(_u):
+    # ACCOUNT role, deliberately. is_super_user() is the EFFECTIVE role and answers False
+    # precisely while a view-as is active, so testing it here would clear the view-as on
+    # the very next render — the super would be ejected from the tenant they just opened,
+    # every time, and the lens could never stay on.
+    if not permissions.is_account_super_user(_u):
         st.session_state.pop("su_view_tenant", None)
         st.session_state.pop("su_view_name", None)
         st.session_state.pop("su_view_slug", None)
@@ -1180,8 +1184,14 @@ def _render_super_view_banner() -> None:
         return                          # not viewing-as, or viewing own home → no banner
     _name = st.session_state.get("su_view_name") or "another tenant"
     _bl, _br = st.columns([5, 1.7])
-    _bl.warning(f"👁 Viewing **{_name}** as super_user — every page is scoped to this "
-                "tenant. (Cross-tenant analytics live in Settings → Analytics.)")
+    # Say which LENS is on, not just which tenant. While viewing, the session is gated as
+    # that tenant's admin — donor editing, Sources, Verify, the platform console and
+    # cross-tenant Analytics are all out of reach, by design, so the screen matches what
+    # the tenant's own admins see. Promising "analytics live in Settings → Analytics"
+    # here would now send them to a tab this very lens hides.
+    _bl.warning(f"👁 Viewing **{_name}** as one of its admins — pages are scoped to this "
+                "tenant and super_user tools are set aside. Return to your account for "
+                "the platform console and cross-tenant analytics.")
     if _br.button("← Return to my account", width="stretch", key="su_view_exit"):
         st.session_state.pop("su_view_tenant", None)
         st.session_state.pop("su_view_name", None)
