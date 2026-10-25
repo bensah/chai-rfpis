@@ -155,6 +155,322 @@ def _auto_close_dialog(seconds: int = _DIALOG_CLOSE_SECONDS,
     st.rerun()
 
 
+# Every piece of Add-user state - the open flag, each field, the bulk table - is keyed
+# with this prefix so it can be cleared in one sweep.
+_ADU_PREFIX = "adu_"
+
+
+def _reset_add_user_form() -> None:
+    """Forget the Add-user dialog entirely: its open flag and everything typed into it.
+
+    Reported as "Add User opens with the previous user's details, and Create user then
+    stalls until a refresh". Closing a dialog with its X does NOT rerun the app, so neither
+    the open flag nor the field values were ever cleared: the next Add User reopened the
+    old form, still holding the last person's email, name and areas. This runs when the
+    dialog is dismissed AND every time Add User is clicked, so each open starts blank -
+    the same state as the very first open, which is the one that always worked.
+    """
+    for k in [k for k in st.session_state.keys()
+              if isinstance(k, str) and k.startswith(_ADU_PREFIX)]:
+        st.session_state.pop(k, None)
+
+
+def _new_user_problems(email: str, name: str) -> list[str]:
+    """What stops a new-user row from being created, before touching the database."""
+    errs: list[str] = []
+    if not email or "@" not in email or " " in email.strip():
+        errs.append("a valid email is required")
+    if not name:
+        errs.append("full name is required")
+    return errs
+
+
+def _create_user_account(user: dict, *, email: str, name: str, role: str,
+                         dept: str | None, program: str | None, tenant: dict) -> dict:
+    """Create one invited account: users row, tenant membership, activation link, email.
+
+    Shared by Add user and Bulk add, so the two can never disagree about what a new
+    account is. Never raises; returns
+      {"ok", "error", "warnings", "notes", "link", "emailed", "mail_error"}
+    where `ok` means the account exists, `emailed` that the activation link went out, and
+    `link` is set whenever it has to be shared by hand instead.
+
+    `tenant` says where the account goes: {"mt": bool, "mode": "own"|"existing"|"new",
+    "tenant_id", "new_name", "kind": "organization"|"individual"}.
+    """
+    from auth import tenant_context as tc
+    out = {"ok": False, "error": None, "warnings": [], "notes": [], "link": None,
+           "emailed": False, "mail_error": None}
+    email, name = email.strip(), name.strip()
+    try:
+        # No password is chosen for the user, and none is emailed. The row still needs a
+        # hash, so it gets one nobody knows - 32 bytes of urandom, hashed and discarded.
+        # The account is unreachable until the invite link is used, which is the point:
+        # there is no interim credential to intercept.
+        temp = _gen_temp_password(48)
+        _ins = service_client().table("users").insert({
+            "email": email,
+            "name": name,
+            "role": role,
+            "department": (dept or "").strip() or None,
+            "program": (program or "").strip() or None,
+            "password_hash": hash_password(temp),
+            "must_change_password": True,
+            "password_changed_at": datetime.now(timezone.utc).isoformat(),
+            "is_active": True,
+        }).execute()
+        new_uid = (_ins.data or [{}])[0].get("id")
+    except Exception as exc:
+        out["error"] = f"Create failed: {exc}"
+        return out
+    out["ok"] = True
+    clear_credentials_cache()
+    _forget_declared_areas()
+
+    # Multi-tenant: associate the new user with a tenant. An admin adds users to ITS OWN
+    # active tenant automatically; a super_user picks an existing tenant OR names a new one
+    # (created here). (No-op single-tenant.)
+    if tenant.get("mt") and new_uid:
+        _tid = None
+        _ind = tenant.get("kind") == "individual"
+        if tenant.get("mode") == "new":
+            # Create the tenant of the chosen KIND. An individual account defaults to the
+            # user's own name; tenants.name is unique, so a clash is disambiguated with the
+            # email. An organization of the same name is REUSED, which is what lets a bulk
+            # add put a whole team into one new organization.
+            _nm = (str(tenant.get("new_name") or "").strip()
+                   or (name or email if _ind else ""))
+            if not _nm:
+                out["warnings"].append("Pick an organization, or type a name for the new "
+                                       "one — the user was created without a tenant.")
+            else:
+                try:
+                    _svc = service_client()
+                    _dupe = (_svc.table("tenants").select("id")
+                             .ilike("name", _nm).limit(1).execute().data or [])
+                    if _dupe and _ind:
+                        _nm = f"{_nm} — {email}"
+                        _dupe = []
+                    if _dupe:
+                        _tid = _dupe[0]["id"]
+                    else:
+                        _created = (_svc.table("tenants").insert(
+                            {"name": _nm,
+                             "kind": "individual" if _ind else "organization",
+                             "status": "active",
+                             "created_by": user.get("id")}).execute().data or [])
+                        _tid = _created[0]["id"] if _created else None
+                        if _tid:
+                            out["notes"].append(
+                                f"Created {'individual account' if _ind else 'tenant'} "
+                                f"“{_nm}”.")
+                except Exception as _cexc:
+                    out["warnings"].append(f"Couldn't create “{_nm}”: {_cexc}")
+        elif tenant.get("mode") == "existing":
+            _tid = tenant.get("tenant_id")
+        else:
+            _tid = tc.current_tenant_id()
+        if _tid:
+            try:
+                service_client().table("tenant_memberships").insert({
+                    "tenant_id": _tid, "user_id": new_uid, "role": role,
+                    "status": "active",
+                    "decided_at": datetime.now(timezone.utc).isoformat(),
+                }).execute()
+                tc.clear_membership_cache(new_uid)
+            except Exception as _mexc:
+                out["warnings"].append(f"User created, but tenant assignment failed: {_mexc}")
+
+    # Minting the link and sending it are separate steps with separate failures. If the
+    # link cannot be issued there is nothing to fall back to; if only the send fails, the
+    # link is in hand and can go out-of-band, so it must be built before the send.
+    try:
+        from core.password_tokens import PURPOSE_INVITE, issue_token, build_link
+        from core.user_emails import _app_url
+        _raw, _ = issue_token(user_id=new_uid, purpose=PURPOSE_INVITE,
+                              created_by=user.get("email"))
+        out["link"] = build_link(_app_url(), _raw)
+    except Exception as exc:
+        out["error"] = (f"Account created, but no activation link could be issued ({exc}). "
+                        f"Use **Reset password** on the user to send one — the account "
+                        f"cannot be logged into until then.")
+        return out
+    try:
+        from core.user_emails import send_welcome_email, MailerNotConfigured
+        try:
+            send_welcome_email(to_email=email, to_name=name, setup_link=out["link"])
+            out["emailed"] = True
+            out["link"] = None            # delivered; nothing to share by hand
+        except MailerNotConfigured:
+            out["mail_error"] = ("email service is not configured (RESEND_API_KEY / "
+                                 "RESEND_FROM_EMAIL missing from env)")
+    except Exception as exc:
+        out["mail_error"] = f"email send failed ({exc})"
+    return out
+
+
+# Rows the bulk table starts with. More can be added with the table's own + button, or by
+# pasting a block of rows copied from a spreadsheet.
+_BULK_START_ROWS = 5
+_BULK_COLS = ["Email", "Full name", "Role", "Department", "Program areas"]
+
+
+def _bulk_rows(df) -> list[dict]:
+    """The filled-in rows of the bulk table, numbered as the admin sees them (from 1).
+
+    A row with nothing typed in it is the table's spare capacity, not a mistake, so it is
+    skipped rather than reported as "email required"."""
+    rows = []
+    for i, rec in enumerate(df.to_dict("records"), start=1):
+        def _txt(col):
+            v = rec.get(col)
+            return "" if v is None or (isinstance(v, float) and v != v) else str(v).strip()
+        areas = rec.get("Program areas")
+        if isinstance(areas, str):
+            areas = [a.strip() for a in areas.split(",") if a.strip()]
+        areas = [str(a) for a in (areas or []) if str(a).strip()]
+        row = {"n": i, "email": _txt("Email"), "name": _txt("Full name"),
+               "role": _txt("Role"), "dept": _txt("Department"), "areas": areas}
+        if row["email"] or row["name"] or row["dept"] or areas:
+            rows.append(row)
+    return rows
+
+
+def _bulk_problems(rows: list[dict], roles: list[str], existing: set[str]) -> list[str]:
+    """Every reason the batch cannot go ahead, one line per row problem.
+
+    The batch is all-or-nothing: a half-created team, with the admin left to work out
+    which rows went through, is harder to fix than a list of typos."""
+    out: list[str] = []
+    seen: dict[str, int] = {}
+    for r in rows:
+        probs = _new_user_problems(r["email"], r["name"])
+        key = r["email"].lower()
+        if key and key in seen:
+            probs.append(f"same email as row {seen[key]}")
+        elif key:
+            seen[key] = r["n"]
+        if key and key in existing:
+            probs.append("a user with this email already exists")
+        if r["role"] and r["role"] not in roles:
+            probs.append(f"role “{r['role']}” is not one you can assign")
+        if probs:
+            label = r["email"] or r["name"] or "(blank)"
+            out.append(f"Row {r['n']} ({label}): " + "; ".join(probs))
+    return out
+
+
+def _bulk_add_users(user: dict, sb, roles: list[str], tenant_fields, tenant_target) -> None:
+    """Add several users at once from an editable table. Rendered inside the Add users
+    dialog; each row becomes exactly what the one-user form would have created."""
+    from core.program_area_classifier import (
+        PROGRAM_AREA_KEYWORDS, category_full, subarea_label)
+
+    st.caption(
+        "One row per person. Type in the table, or paste rows copied from a spreadsheet "
+        "(columns in this order: email, full name, role, department). Use the **+** at "
+        "the bottom of the table for more rows; empty rows are ignored. Each person gets "
+        "their own activation email.")
+
+    # The table's starting data is built ONCE and kept: a keyed st.data_editor fed a
+    # freshly built frame on every rerun fights its own edits and reverts them.
+    if "adu_bulk_df" not in st.session_state:
+        st.session_state["adu_bulk_df"] = pd.DataFrame({
+            "Email": [""] * _BULK_START_ROWS,
+            "Full name": [""] * _BULK_START_ROWS,
+            "Role": [roles[0]] * _BULK_START_ROWS,
+            "Department": [""] * _BULK_START_ROWS,
+            "Program areas": [[] for _ in range(_BULK_START_ROWS)],
+        })
+    _area_opts = sorted(PROGRAM_AREA_KEYWORDS,
+                        key=lambda k: (category_full(k), subarea_label(k)))
+    edited = st.data_editor(
+        st.session_state["adu_bulk_df"], key="adu_bulk", num_rows="dynamic",
+        hide_index=True, width="stretch",
+        column_config={
+            "Email": st.column_config.TextColumn(
+                "Email *", help="Used as the login username.", width="medium"),
+            "Full name": st.column_config.TextColumn("Full name *", width="medium"),
+            "Role": st.column_config.SelectboxColumn(
+                "Role", options=roles, default=roles[0], width="small"),
+            "Department": st.column_config.TextColumn("Department", width="small"),
+            "Program areas": st.column_config.MultiselectColumn(
+                "Program areas", options=_area_opts, width="large",
+                format_func=lambda k: f"{subarea_label(k)} · {category_full(k)}",
+                help="The shared programme-area list — the same vocabulary calls and "
+                     "funders are classified with."),
+        })
+
+    picked, new_name = tenant_fields()
+    rows = _bulk_rows(edited)
+    bc1, bc2 = st.columns([1, 1])
+    save = bc1.button(f"➕ Create {len(rows)} user{'s' if len(rows) != 1 else ''}",
+                      type="primary", width="stretch", key="adu_bulk_save",
+                      disabled=not rows)
+    if bc2.button("Cancel", width="stretch", key="adu_bulk_cancel"):
+        _reset_add_user_form()
+        st.rerun()
+    if not save:
+        return
+
+    emails = [r["email"] for r in rows if r["email"]]
+    try:
+        found = (sb.table("users").select("email").in_("email", emails).execute().data
+                 or []) if emails else []
+    except Exception as exc:
+        st.error(f"Couldn't check for existing users: {exc}")
+        return
+    existing = {str(u.get("email") or "").strip().lower() for u in found}
+    problems = _bulk_problems(rows, roles, existing)
+    if problems:
+        st.error("Nothing was created. Please fix:\n\n- " + "\n- ".join(problems))
+        return
+
+    target = tenant_target(picked, new_name)
+    results: list[dict] = []
+    manual: list[tuple[str, str]] = []
+    bar = st.progress(0.0, text="Creating accounts…")
+    for i, r in enumerate(rows, start=1):
+        res = _create_user_account(
+            user, email=r["email"], name=r["name"], role=r["role"] or roles[0],
+            dept=r["dept"], program=", ".join(r["areas"]) or None, tenant=target)
+        if not res["ok"]:
+            outcome = res["error"]
+        elif res["error"]:
+            outcome = "Created, but " + res["error"][len("Account created, but "):]
+        elif res["emailed"]:
+            outcome = "Created — activation link emailed"
+        else:
+            outcome = f"Created — {res['mail_error']}; share the link below"
+            manual.append((r["email"], res["link"]))
+        if res["warnings"]:
+            outcome += " (" + "; ".join(res["warnings"]) + ")"
+        for note in res["notes"]:
+            st.toast(note, icon="🏢")
+        results.append({"Email": r["email"], "Name": r["name"],
+                        "Role": r["role"] or roles[0], "Result": outcome})
+        bar.progress(i / len(rows), text=f"Created {i} of {len(rows)}…")
+    bar.empty()
+
+    made = sum(1 for x in results if x["Result"].startswith("Created"))
+    clean = made == len(rows) and not manual and all(
+        x["Result"] == "Created — activation link emailed" for x in results)
+    (st.success if clean else st.warning)(
+        f"Created {made} of {len(rows)} account(s)."
+        + ("" if clean else " Check the rows below."))
+    st.dataframe(pd.DataFrame(results), hide_index=True, width="stretch")
+    if manual:
+        # The dialog must stay open here: these links are the only copies, and closing it
+        # would leave the accounts unreachable until someone sends a password reset.
+        st.markdown("**Share these activation links out-of-band** — each works once and "
+                    "expires in 7 days:")
+        for email, link in manual:
+            st.caption(email)
+            st.code(link)
+    if clean:
+        _auto_close_dialog(seconds=_DIALOG_CLOSE_SECONDS + 2, open_key="adu_open")
+
+
 # ===========================================================================
 # My Profile
 # ===========================================================================
@@ -1184,7 +1500,17 @@ def render_blacklisted(user: dict, sb, *, can_manage: bool | None = None) -> Non
 
 def render_manage_users(user: dict, sb) -> None:
     # ─── Add User modal ────────────────────────────────────────────────
-    @st.dialog("Add a new user", width="large")
+    # on_dismiss: the X closes a dialog WITHOUT rerunning the app, so without this callback
+    # the open flag and every field survived, and the next Add User reopened the previous
+    # person's form (see _reset_add_user_form). Older Streamlit has no on_dismiss; the
+    # reset on every Add User click below still covers it there.
+    try:
+        _adu_decorator = st.dialog("Add users", width="large",
+                                   on_dismiss=_reset_add_user_form)
+    except TypeError:
+        _adu_decorator = st.dialog("Add users", width="large")
+
+    @_adu_decorator
     def _add_user_dialog():
         st.caption(
             "Creates the account and emails a one-time activation link. No password "
@@ -1194,9 +1520,8 @@ def render_manage_users(user: dict, sb) -> None:
         from auth import tenant_context as tc
         _mt = tc.multitenant_enabled()
         _is_super = permissions.is_super_user(user)
-        d_tenant_name = None
+        _roles = permissions.assignable_roles(user) or ["collaborator"]
         d_tenant_kind = None
-        d_new_org = ""
         # Tenants split by KIND so the picker can be filtered (owner 2026-08-10): an
         # individual's personal account has no business appearing in a list beside the
         # organisation tenants — they answer different questions.
@@ -1213,6 +1538,13 @@ def render_manage_users(user: dict, sb) -> None:
             except Exception:
                 _tenant_opts = {}
 
+        # One person at a time, or a table of them. Both create accounts through the same
+        # _create_user_account, so a bulk-added user is indistinguishable from one added
+        # alone: same invite link, same email, same tenant membership.
+        _bulk = st.radio(
+            "Add", ["One user", "Several users"], horizontal=True, key="adu_mode",
+            label_visibility="collapsed") == "Several users"
+
         # TENANT TYPE first, because the tenant list below is filtered by it. This dialog
         # used to wrap the rest in st.form, where a widget does not publish its value until
         # submit, so a radio in there could not refilter the list — it would catch up one
@@ -1225,6 +1557,63 @@ def render_manage_users(user: dict, sb) -> None:
                 help="**Organization** — the user joins a team account. "
                      "**Individual** — a personal account, whose activity is visible "
                      "to all. This chooses which accounts the next question lists.")
+
+        def _tenant_fields():
+            """The super user's tenant choice: (picked name, new-account name)."""
+            if not (_mt and _is_super):
+                return None, ""
+            # The tenant list is FILTERED by the type chosen above (owner 2026-08-10).
+            # Previously "Individual" sat in the SAME list as the organizations, so a
+            # personal account appeared beside the tenant organizations as though it were
+            # one of them.
+            _is_ind = d_tenant_kind == "Individual"
+            _pool = _by_kind["individual" if _is_ind else "organization"]
+            # A PLAIN selectbox. `accept_new_options=True` was used here to let a super user
+            # type a new org name, but inside a form it SWALLOWS THE FIRST CLICK on the
+            # submit button — reproduced in a browser: click one returns save=False and the
+            # dialog just sits there, click two works. That is the "Create user does
+            # nothing" report. A new organization is now named in its own text box, which
+            # has no such behaviour.
+            _label = ("Assign to individual account" if _is_ind
+                      else "Assign to organization")
+            picked = st.selectbox(
+                _label, [_NEW_TENANT_LABEL] + list(_pool.keys()),
+                index=0, key="adu_tenant",
+                help="Only accounts of the selected tenant type are listed. "
+                     "(Admins add users to their OWN tenant automatically.)"
+                     + (" In a bulk add, every user in the table goes to this account."
+                        if _bulk else ""))
+            if _bulk and _is_ind:
+                # One personal account per person; a single typed name cannot be shared.
+                st.caption("With “" + _NEW_TENANT_LABEL + "”, each user gets their own "
+                           "personal account, named after them.")
+                return picked, ""
+            new_name = st.text_input(
+                "New individual account name" if _is_ind else "New organization name",
+                key="adu_new_org",
+                placeholder=("Leave blank unless you picked “" + _NEW_TENANT_LABEL + "”"),
+                help="Used only when the picker above is set to “" + _NEW_TENANT_LABEL
+                     + "”. For an individual account, leave blank to name it after the "
+                       "user.")
+            return picked, new_name
+
+        def _tenant_target(picked, new_name) -> dict:
+            """Where new accounts go, from what _tenant_fields returned."""
+            if _is_super and str(picked or "") == _NEW_TENANT_LABEL:
+                mode = "new"
+            elif _is_super and picked:
+                mode = "existing"
+            else:
+                mode = "own"
+            return {"mt": _mt, "mode": mode,
+                    "tenant_id": _tenant_opts.get(str(picked or "").strip()),
+                    "new_name": new_name,
+                    "kind": "individual" if d_tenant_kind == "Individual"
+                            else "organization"}
+
+        if _bulk:
+            _bulk_add_users(user, sb, _roles, _tenant_fields, _tenant_target)
+            return
 
         # NO st.form HERE, and Program areas keeps its place in the layout.
         #
@@ -1244,59 +1633,25 @@ def render_manage_users(user: dict, sb) -> None:
             "Email *", help="Used as the login username.", key="adu_email")
         d_name = dc2.text_input("Full name *", key="adu_name")
         dc3, dc4 = st.columns(2)
-        d_role = dc3.selectbox(
-            "Role", permissions.assignable_roles(user) or ["collaborator"],
-            index=0, key="adu_role")
+        d_role = dc3.selectbox("Role", _roles, index=0, key="adu_role")
         d_dept = dc4.text_input("Department", key="adu_dept")
         d_program = _program_areas_field(
             "Program areas", None, "adu_program",
             help="Pick from the shared programme-area list — the same vocabulary calls "
                  "and funders are classified with, so this person's areas can count as "
                  "evidence of expertise in MUST-2.")
-        if _mt and _is_super:
-            # The tenant list is FILTERED by the type chosen above (owner
-            # 2026-08-10). Previously "Individual" sat in the SAME list as the
-            # organizations, so a personal account appeared beside the tenant
-            # organizations as though it were one of them.
-            _is_ind = d_tenant_kind == "Individual"
-            _pool = _by_kind["individual" if _is_ind else "organization"]
-            # A PLAIN selectbox. `accept_new_options=True` was used here to let a
-            # super user type a new org name, but inside a form it SWALLOWS THE
-            # FIRST CLICK on the submit button — reproduced in a browser: click one
-            # returns save=False and the dialog just sits there, click two works.
-            # That is the "Create user does nothing" report. A new organization is
-            # now named in its own text box, which has no such behaviour.
-            _label = ("Assign to individual account" if _is_ind
-                      else "Assign to organization")
-            d_tenant_name = st.selectbox(
-                _label, [_NEW_TENANT_LABEL] + list(_pool.keys()),
-                index=0, key="adu_tenant",
-                help="Only accounts of the selected tenant type are listed. "
-                     "(Admins add users to their OWN tenant automatically.)")
-            d_new_org = st.text_input(
-                "New individual account name" if _is_ind
-                else "New organization name",
-                key="adu_new_org",
-                placeholder=("Leave blank unless you picked “"
-                             + _NEW_TENANT_LABEL + "”"),
-                help="Used only when the picker above is set to “"
-                     + _NEW_TENANT_LABEL + "”. For an individual account, leave "
-                     "blank to name it after the user.")
+        d_tenant_name, d_new_org = _tenant_fields()
         bc1, bc2 = st.columns([1, 1])
         save = bc1.button("➕ Create user", type="primary", width='stretch',
                           key="adu_save")
         cancel = bc2.button("Cancel", width='stretch', key="adu_cancel")
 
         if cancel:
-            st.session_state.pop("adu_open", None)
+            _reset_add_user_form()
             st.rerun()
 
         if save:
-            errs: list[str] = []
-            if not d_email or "@" not in d_email:
-                errs.append("Valid email is required.")
-            if not d_name:
-                errs.append("Full name is required.")
+            errs = [e[0].upper() + e[1:] + "." for e in _new_user_problems(d_email, d_name)]
             if not errs:
                 # Guarded: this ran OUTSIDE the try below, so a transient read failure
                 # escaped the handler entirely and the click looked like it had done
@@ -1314,130 +1669,28 @@ def render_manage_users(user: dict, sb) -> None:
                 st.error("Please fix:\n\n- " + "\n- ".join(errs))
                 return
 
-            try:
-                # No password is chosen for the user, and none is emailed.
-                # The row still needs a hash, so it gets one nobody knows -
-                # 32 bytes of urandom, hashed and discarded. The account is
-                # unreachable until the invite link is used, which is the
-                # point: there is no interim credential to intercept.
-                temp = _gen_temp_password(48)
-                _ins = service_client().table("users").insert({
-                    "email": d_email.strip(),
-                    "name": d_name.strip(),
-                    "role": d_role,
-                    "department": (d_dept or "").strip() or None,
-                    "program": (d_program or "").strip() or None,
-                    "password_hash": hash_password(temp),
-                    "must_change_password": True,
-                    "password_changed_at": datetime.now(timezone.utc).isoformat(),
-                    "is_active": True,
-                }).execute()
-                new_uid = (_ins.data or [{}])[0].get("id")
-                clear_credentials_cache()
-                _forget_declared_areas()
-                # Multi-tenant: associate the new user with a tenant. An admin adds
-                # users to ITS OWN active tenant automatically; a super_user picks an
-                # existing tenant OR types a new one (created here). (No-op single-tenant.)
-                if _mt and new_uid:
-                    _tid = None
-                    _want_new = (_is_super
-                                 and str(d_tenant_name or "") == _NEW_TENANT_LABEL)
-                    _ind = d_tenant_kind == "Individual"
-                    if _want_new:
-                        # Create the tenant of the chosen KIND. An individual account
-                        # defaults to the user's own name; tenants.name is unique, so a
-                        # clash is disambiguated with the email.
-                        _nm = (str(d_new_org or "").strip()
-                               or (d_name.strip() or d_email.strip() if _ind else ""))
-                        if not _nm:
-                            st.warning("Pick an organization, or type a name for the new "
-                                       "one — the user was created without a tenant.")
-                        else:
-                            try:
-                                _svc = service_client()
-                                _dupe = (_svc.table("tenants").select("id")
-                                         .ilike("name", _nm).limit(1).execute().data or [])
-                                if _dupe and _ind:
-                                    _nm = f"{_nm} — {d_email.strip()}"
-                                    _dupe = []
-                                if _dupe:
-                                    _tid = _dupe[0]["id"]
-                                else:
-                                    _created = (_svc.table("tenants").insert(
-                                        {"name": _nm,
-                                         "kind": "individual" if _ind else "organization",
-                                         "status": "active",
-                                         "created_by": user.get("id")}).execute().data or [])
-                                    _tid = _created[0]["id"] if _created else None
-                                    if _tid:
-                                        st.toast(f"Created {'individual account' if _ind else 'tenant'}"
-                                                 f" “{_nm}”.", icon="🧑" if _ind else "🏢")
-                            except Exception as _cexc:
-                                st.warning(f"Couldn't create “{_nm}”: {_cexc}")
-                    elif _is_super and d_tenant_name:
-                        _tid = _tenant_opts.get(str(d_tenant_name).strip())
-                    else:
-                        _tid = tc.current_tenant_id()
-                    if _tid:
-                        try:
-                            service_client().table("tenant_memberships").insert({
-                                "tenant_id": _tid, "user_id": new_uid, "role": d_role,
-                                "status": "active",
-                                "decided_at": datetime.now(timezone.utc).isoformat(),
-                            }).execute()
-                            tc.clear_membership_cache(new_uid)
-                        except Exception as _mexc:
-                            st.warning(f"User created, but tenant assignment failed: {_mexc}")
-            except Exception as exc:
-                st.error(f"Create failed: {exc}")
+            res = _create_user_account(
+                user, email=d_email, name=d_name, role=d_role, dept=d_dept,
+                program=d_program, tenant=_tenant_target(d_tenant_name, d_new_org))
+            for note in res["notes"]:
+                st.toast(note, icon="🏢")
+            for warn in res["warnings"]:
+                st.warning(warn)
+            if res["error"]:
+                st.error(res["error"])
                 return
-            # Minting the link and sending it are separate steps with
-            # separate failures. If the link cannot be issued there is
-            # nothing to fall back to; if only the send fails, the link is
-            # in hand and can go out-of-band, so it must be built before
-            # the send is attempted.
-            try:
-                from core.password_tokens import (
-                    PURPOSE_INVITE, issue_token, build_link)
-                from core.user_emails import _app_url
-                _raw, _ = issue_token(
-                    user_id=new_uid,
-                    purpose=PURPOSE_INVITE,
-                    created_by=user.get("email"),
-                )
-                _setup_link = build_link(_app_url(), _raw)
-            except Exception as exc:
-                st.error(
-                    f"Account created, but no activation link could be issued "
-                    f"({exc}). Use **Reset password** on the user to send "
-                    f"one — the account cannot be logged into until then.")
-                return
-            try:
-                from core.user_emails import (
-                    send_welcome_email, MailerNotConfigured)
-                send_welcome_email(
-                    to_email=d_email.strip(),
-                    to_name=d_name.strip(),
-                    setup_link=_setup_link,
-                )
+            if res["emailed"]:
                 st.success(
                     f"✅ Created **{d_email}**. A one-time activation link has "
                     f"been emailed — it expires in 7 days, and they choose "
                     f"their own password.")
                 _auto_close_dialog(open_key="adu_open")
-            except MailerNotConfigured:
+            else:
                 st.warning(
-                    "Account created, but email service is not configured "
-                    "(RESEND_API_KEY / RESEND_FROM_EMAIL missing from env). "
-                    "Share the one-time activation link below out-of-band "
-                    "(Signal / verbal) — it expires in 7 days.")
-                st.code(_setup_link)
-            except Exception as exc:
-                st.warning(
-                    f"Account created, but email send failed ({exc}). Share "
-                    f"the one-time activation link below out-of-band — it expires "
+                    f"Account created, but {res['mail_error']}. Share the one-time "
+                    f"activation link below out-of-band (Signal / verbal) — it expires "
                     f"in 7 days.")
-                st.code(_setup_link)
+                st.code(res["link"])
 
     # ─── Header row ─────────────────────────────────────────────────────
     _hcol_text, _hcol_btn = st.columns([5, 1])
@@ -1466,6 +1719,9 @@ def render_manage_users(user: dict, sb) -> None:
         # not reopen it.
         if st.button("➕ Add User", type="primary", width='stretch',
                      key="mu_add_user_top"):
+            # Start blank every time - never the last person's details (see
+            # _reset_add_user_form).
+            _reset_add_user_form()
             st.session_state["adu_open"] = True
         if st.session_state.get("adu_open"):
             _add_user_dialog()
