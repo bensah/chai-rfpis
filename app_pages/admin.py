@@ -198,7 +198,11 @@ _is_super = permissions.is_super_user(user)
 _dev_super = permissions.is_developer_super(user)     # super_user in a developer tenant
 # The tenant being VIEWED — a super_user's view-as target, else their own (None).
 # Resolved centrally in core.app_header; mirrors app_pages/organization.py.
-_view_tid = st.session_state.get("su_view_tenant") if _is_super else None
+# ACCOUNT role: _is_super is the EFFECTIVE role and is False exactly while a view-as is
+# active, so gating on it would drop the target and send these edits back to the super's
+# own tenant — the bug this page was just fixed for.
+_view_tid = (st.session_state.get("su_view_tenant")
+             if permissions.is_account_super_user(user) else None)
 _dev_admin = permissions.is_developer_admin(user)     # admin+ in a developer tenant
 _dev_member = permissions.is_developer_member(user)   # any member of a developer tenant
 
@@ -252,8 +256,18 @@ with tab_accounts:
     # which tenant the session is scoped to — moved here from the global header banner so
     # switching is a deliberate Settings action. Super users browse via the Tenants
     # view-as flow instead, so they don't get this tab.
-    _acct_tab_names = (["Active tenant"] if not _is_super else []) + \
-        ["Users", "Tenants", "Blacklisted"] + (["Deployment"] if _is_super else [])
+    # While VIEWING-AS, Accounts shows that tenant's people and nothing else. Tenants,
+    # Blacklisted and Deployment are the platform console: cross-tenant surfaces that no
+    # member of the tenant being viewed can reach, so leaving them on screen would show
+    # the super a page the people they are standing in for do not have. "Active tenant"
+    # is the switcher for members of several tenants — gated on the ACCOUNT role, since a
+    # super navigates by view-as and a second switcher here would fight it.
+    _viewing_as = permissions.viewing_as_other_tenant()
+    _console_tabs = [] if _viewing_as else (
+        ["Tenants", "Blacklisted"] + (["Deployment"] if _is_super else []))
+    _acct_tab_names = (["Active tenant"]
+                       if not permissions.is_account_super_user(user) else []) + \
+        ["Users"] + _console_tabs
     _acct_tabs = st.tabs(_acct_tab_names)
     _acct_by = dict(zip(_acct_tab_names, _acct_tabs))
     if "Active tenant" in _acct_by:
@@ -264,11 +278,15 @@ with tab_accounts:
         if _picked_user:
             st.divider()
             render_user_access(user, target=_picked_user)
-    with _acct_by["Tenants"]:
-        render_manage_tenants(user, sb, can_manage=_is_super)
-    with _acct_by["Blacklisted"]:
-        render_blacklisted(user, sb, can_manage=_is_super)
-    if _is_super:
+    # Guarded on presence, not on role: the console tabs are absent during a view-as
+    # (see _console_tabs above), and indexing a tab that was never created raises.
+    if "Tenants" in _acct_by:
+        with _acct_by["Tenants"]:
+            render_manage_tenants(user, sb, can_manage=_is_super)
+    if "Blacklisted" in _acct_by:
+        with _acct_by["Blacklisted"]:
+            render_blacklisted(user, sb, can_manage=_is_super)
+    if "Deployment" in _acct_by:
         with _acct_by["Deployment"]:
             from core.env_diag import render as render_env_diagnostics
             render_env_diagnostics(user)

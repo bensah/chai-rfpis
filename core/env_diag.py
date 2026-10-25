@@ -364,7 +364,12 @@ def render(user: dict | None = None) -> None:
     import streamlit as st  # type: ignore
     from core import permissions
     _u = user or st.session_state.get("app_user")
-    if not permissions.is_super_user(_u):
+    # ACCOUNT role: these diagnostics describe the RUNNING INSTANCE (which secrets it
+    # read, which commit it serves), not the tenant being viewed, so a view-as has no
+    # bearing on who may read them. The Deployment TAB is hidden during a view-as by its
+    # caller; `?diag=1` stays available so a super can always diagnose the instance
+    # without first leaving the tenant they are inspecting.
+    if not permissions.is_account_super_user(_u):
         return
     snap = snapshot(_u)
     st.markdown("#### Deployment diagnostics")
