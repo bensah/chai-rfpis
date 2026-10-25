@@ -11,6 +11,7 @@ Run:  python -m unittest tests.test_add_users
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import pandas as pd
@@ -29,7 +30,10 @@ class ResetTests(unittest.TestCase):
         state = {"adu_open": True, "adu_email": "old@x.org", "adu_name": "Old",
                  "adu_program": ["malaria"], "adu_bulk_df": object(),
                  "mu_add_user_top": True, "app_user": {"email": "me@x.org"}}
-        with mock.patch.object(acc.st, "session_state", state):
+        # Patch this module's OWN reference to streamlit rather than reaching into the
+        # real streamlit module: the function reads `st.session_state`, so swapping
+        # `acc.st` is both narrower and enough, and nothing global is left altered.
+        with mock.patch.object(acc, "st", SimpleNamespace(session_state=state)):
             acc._reset_add_user_form()
         self.assertEqual(sorted(state), ["app_user", "mu_add_user_top"])
 
