@@ -206,7 +206,8 @@ class TheUiUsesOneVocabularyTests(unittest.TestCase):
         self.assertIn('st.session_state["adu_open"] = True', src)
         self.assertIn('if st.session_state.get("adu_open"):', src)
         # And it must be cleared, or the dialog reopens after it finishes.
-        self.assertIn('st.session_state.pop("adu_open", None)', src)
+        # (Cancel and X clear it, with every field, via _reset_add_user_form.)
+        self.assertIn("_reset_add_user_form()", src)
         self.assertIn('_auto_close_dialog(open_key="adu_open")', src)
 
     def test_the_users_table_delegates_status_to_the_tested_helper(self):
