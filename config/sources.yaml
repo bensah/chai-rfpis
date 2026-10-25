@@ -96,13 +96,14 @@ sources:
     url: https://wellcome.org/grant-funding
     priority: 2
   - name: Global Fund
-    # /funding-model/ entered a redirect loop on every probe — that page
-    # is a funding-model overview, not a calls listing anyway. Global Fund
-    # tenders are at /en/sourcing-management/ (procurement) which is JS-
-    # rendered + login-gated. Submit manually when announcements appear.
-    method: manual
-    url: https://www.theglobalfund.org/en/sourcing-management/
-    priority: 2
+    # Validated 2026-10-23. The business page's own list is stale; its "Open
+    # tenders" button leads to a public Oracle Fusion negotiation list (RFP/RFI,
+    # status, dates). core.scraper._scan_global_fund starts HERE on every scan
+    # and follows that button, so a moved portal is still found. Plain HTTP —
+    # the ADF page renders once its loopback token is echoed back.
+    method: html
+    url: https://www.theglobalfund.org/en/business-opportunities/
+    priority: 1
   - name: World Bank Projects
     # The /projects API returns ONGOING / completed projects, not open
     # funding opportunities. We removed the handler in core/scraper.py

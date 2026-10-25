@@ -601,6 +601,30 @@ def current_tenant_name() -> Optional[str]:
     return st.session_state.get("tenant_name")
 
 
+def viewed_tenant_id() -> Optional[str]:
+    """The tenant this session is LOOKING AT — a super_user's view-as target when one is
+    set, else their own.
+
+    The counterpart to `current_tenant_id`, and the difference matters. current_tenant_id
+    is the session's IDENTITY: whose JWT is minted, whose membership was verified, whose
+    developer status applies. This is what is on SCREEN. A page that scopes a read to
+    current_tenant_id while a view-as is active shows the super their own rows under
+    another tenant's name — which is how Manage users came to list every account while
+    the header said CHAI Mali.
+
+    Use this for reads a page renders; use current_tenant_id for anything about who the
+    session IS. db.supabase_client's wrapper already resolves the same way, so a read
+    through get_client() needs no help — this is for the queries that go around it on
+    service_client()."""
+    ov = override_tenant_id()
+    if ov:
+        return ov                      # headless per-tenant run: no browser, no view-as
+    try:
+        return st.session_state.get("su_view_tenant") or st.session_state.get("tenant_id")
+    except Exception:
+        return None                    # outside a Streamlit session (scripts / cron)
+
+
 def ensure_tenant_context(user: dict) -> None:
     """Called once per page after auth (from ensure_logged_in). DORMANT when
     SUPABASE_JWT_SECRET is unset. When set:

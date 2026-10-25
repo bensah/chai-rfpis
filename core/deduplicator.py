@@ -242,8 +242,13 @@ def find_duplicates(
             matches.append({**row, "_reason": f"opportunity_id match: {cand_oppid}"})
             continue
 
-        # 2. Identical link
+        # 2. Identical link — unless both carry DIFFERENT reference numbers. Some
+        # portals list every call on one page with no per-call URL (the Global
+        # Fund's Oracle negotiation list), so the link (query stripped) is shared;
+        # there, the portal's own numbers settle it: different calls, no match.
         if cand_link and _norm_url(row.get("opportunity_link")) == cand_link:
+            if cand_oppid and row_oppid and cand_oppid != row_oppid:
+                continue
             matches.append({**row, "_reason": "identical link"})
             continue
 

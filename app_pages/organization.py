@@ -25,13 +25,16 @@ from db.supabase_client import get_client
 
 user = st.session_state["app_user"]
 can_edit = permissions.is_admin(user)          # admin OR super_user only
-_is_super = permissions.is_super_user(user)
 
 # Which entity are we showing? A super_user in 'view-as' mode (su_view_tenant, set by a
 # Settings → Tenants link and shown by the global header banner) sees THAT tenant;
 # everyone else — and a super_user in their own account — sees their own (view_tid None →
 # own/session tenant). The view-as is resolved centrally in core.app_header.
-view_tid = st.session_state.get("su_view_tenant") if _is_super else None
+# The ACCOUNT role decides, never the effective one: is_super_user() answers False for
+# the duration of a view-as, so gating here would drop the target and swing this page
+# back to the super's own entity the moment they opened somebody else's.
+view_tid = (st.session_state.get("su_view_tenant")
+            if permissions.is_account_super_user(user) else None)
 
 org = settings.get_org(view_tid)
 prof = _orgp.get_profile(view_tid)
@@ -274,7 +277,9 @@ with _main:
         _kv(st, "Proposal languages", ", ".join(prof.get("proposal_languages") or []) or "—")
 
     # ── Team ──────────────────────────────────────────────────────────────
-    _members = (getattr(settings, "get_team_members", lambda: None)() or [])
+    # Scoped to the entity being shown — a super_user's view-as would otherwise list
+    # their OWN roster under another organisation's details.
+    _members = (getattr(settings, "get_team_members", lambda *_a, **_k: None)(view_tid) or [])
     if _members:
         with st.container(border=True):
             st.markdown("#### 👥 Team members")

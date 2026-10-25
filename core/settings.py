@@ -28,13 +28,18 @@ def _now() -> float:
 _TENANT_SCOPED_KEYS = {"schedule_json", "scan_policies", "team_members_json"}
 
 
-def _scoped_store(key: str):
+def _scoped_store(key: str, tenant_id: Optional[str] = None):
     """(service_client, tenant_id) when `key` is a per-tenant config key AND a tenant
-    resolves this session; else None (→ global app_settings). Reuses _tenant_ctx (the
-    session tenant, so a super_user sees their own RFPIS home config)."""
+    resolves; else None (→ global app_settings).
+
+    `tenant_id` names the tenant explicitly — a super_user editing ANOTHER tenant. Without
+    it the session tenant answers, which is right for someone working in their own account
+    and wrong for a view-as: these keys (team roster, scan policies, check-in schedule)
+    would then read and write the super's OWN config while the page says it is showing
+    somebody else's."""
     if key not in _TENANT_SCOPED_KEYS:
         return None
-    return _tenant_ctx()
+    return _tenant_ctx(tenant_id)
 
 
 def _is_missing_tenant_settings(exc: Exception) -> bool:
@@ -48,8 +53,9 @@ def _is_missing_tenant_settings(exc: Exception) -> bool:
         or "42p01" in m or "pgrst205" in m or "schema cache" in m)
 
 
-def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
-    store = _scoped_store(key)
+def get_setting(key: str, default: Optional[str] = None,
+                tenant_id: Optional[str] = None) -> Optional[str]:
+    store = _scoped_store(key, tenant_id)
     if store is not None:
         client, tid = store
         ck = f"{tid}::{key}"
@@ -96,8 +102,9 @@ def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
     return val
 
 
-def set_setting(key: str, value: str, updated_by: Optional[str] = None) -> None:
-    store = _scoped_store(key)
+def set_setting(key: str, value: str, updated_by: Optional[str] = None,
+                tenant_id: Optional[str] = None) -> None:
+    store = _scoped_store(key, tenant_id)
     if store is not None:
         client, tid = store
         try:
@@ -236,6 +243,21 @@ def _legacy_identity_allowed() -> bool:
         return True
 
 
+class OrgRenameError(RuntimeError):
+    """The identity fields were saved, but the tenant RENAME that "Organization name"
+    implies did not go through. Raised so a caller can say exactly that, instead of
+    reporting a total failure (wrong — the rest persisted) or staying silent (worse —
+    get_org reports tenants.name, so the name reads back unchanged and looks like a
+    phantom write)."""
+
+
+def _is_duplicate_name(exc: Exception) -> bool:
+    """True when a tenants.name write failed because another tenant holds that name
+    (Postgres 23505 unique_violation, surfaced by PostgREST as a duplicate-key error)."""
+    m = str(exc).lower()
+    return "23505" in m or "duplicate key" in m or "already exists" in m
+
+
 def _clear_org_cache() -> None:
     _ORG_CACHE.clear()
     _IDENT_CACHE.clear()
@@ -324,13 +346,24 @@ def set_org(fields: dict[str, str], updated_by: Optional[str] = None,
                 raise RuntimeError(
                     f"tenants.org_identity update for {tid} affected 0 rows — the write "
                     "did not persist (check RLS / that SUPABASE_KEY is the service-role key).")
-            # "Organization name" IS the tenant rename: sync tenants.name too (best-effort;
-            # a UNIQUE-name collision just leaves the canonical name unchanged).
+            # "Organization name" IS the tenant rename: sync tenants.name too. A failure
+            # here is NOT cosmetic and must never be swallowed — get_org() reports
+            # tenants.name as org_name, so a silently-dropped rename reads back as the old
+            # name and the caller's verification says "it didn't persist", pointing at RLS
+            # and the service-role key when the real cause is usually a name another tenant
+            # already holds. Say which it is.
             if new_name:
                 try:
                     client.table("tenants").update({"name": new_name}).eq("id", tid).execute()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _clear_org_cache()
+                    if _is_duplicate_name(exc):
+                        raise OrgRenameError(
+                            f"Another organization is already named “{new_name}”. "
+                            "The organization name doubles as this tenant's unique name, "
+                            "so choose a distinct one.") from exc
+                    raise OrgRenameError(
+                        f"Could not rename the organization to “{new_name}”: {exc}") from exc
             _clear_org_cache()
             return
     for key, value in fields.items():
@@ -485,9 +518,9 @@ def set_currency_overrides(currencies: list, updated_by: Optional[str] = None) -
 # Stored as a JSON list under `team_members_json`. dropdowns.load() folds this
 # in (+ an automatic 'Other') so the Submit + Edit forms show the real roster.
 # -----------------------------------------------------------------------------
-def get_team_members() -> Optional[list]:
+def get_team_members(tenant_id: Optional[str] = None) -> Optional[list]:
     import json
-    raw = get_setting("team_members_json")
+    raw = get_setting("team_members_json", tenant_id=tenant_id)
     if not raw:
         return None
     try:
@@ -556,9 +589,11 @@ def set_member_nicknames(nicknames: dict, updated_by: Optional[str] = None) -> N
     set_setting("member_nicknames_json", json.dumps(clean), updated_by)
 
 
-def set_team_members(members: list, updated_by: Optional[str] = None) -> None:
+def set_team_members(members: list, updated_by: Optional[str] = None,
+                     tenant_id: Optional[str] = None) -> None:
     """Persist the team roster. De-duplicates (case-insensitive), preserves
-    order, drops blanks and any stray 'Other'/'All' tokens (added by the forms)."""
+    order, drops blanks and any stray 'Other'/'All' tokens (added by the forms).
+    `tenant_id` overrides the session tenant (super_user editing another tenant)."""
     import json
     seen: set[str] = set()
     cleaned: list[str] = []
@@ -569,4 +604,5 @@ def set_team_members(members: list, updated_by: Optional[str] = None) -> None:
             continue
         seen.add(low)
         cleaned.append(name)
-    set_setting("team_members_json", json.dumps(cleaned), updated_by=updated_by)
+    set_setting("team_members_json", json.dumps(cleaned), updated_by=updated_by,
+                tenant_id=tenant_id)

@@ -1,8 +1,8 @@
-"""Regression tests for tenant read/write isolation in db.supabase_client.get_client().
+﻿"""Regression tests for tenant read/write isolation in db.supabase_client.get_client().
 
 These guard the cross-tenant leak fix (BUG 1): get_client() must FAIL CLOSED inside a
-live multi-tenant web session — it must never return the unscoped, RLS-bypassing
-service-role client there — and a super_user must be scoped to the tenant they are
+live multi-tenant web session â€” it must never return the unscoped, RLS-bypassing
+service-role client there â€” and a super_user must be scoped to the tenant they are
 VIEWING (su_view_tenant), not their home.
 
 Pure unit tests: no network, no real Supabase. A fake `streamlit` module supplies
@@ -13,7 +13,6 @@ Run:  python -m unittest tests.test_tenant_isolation   (from the repo root)
 """
 import os
 import sys
-import types
 import unittest
 
 # Repo root on sys.path so `db`/`auth` import when run directly.
@@ -23,13 +22,19 @@ if _ROOT not in sys.path:
 
 # A fake `streamlit` MUST be in sys.modules before importing app modules that do
 # `import streamlit as st` at module top (auth.tenant_context does).
-# NOTE: this stub STAYS in sys.modules for the rest of the process — `sc` and `tc` resolve
+# NOTE: this stub STAYS in sys.modules for the rest of the process â€” `sc` and `tc` resolve
 # `streamlit` lazily in places, so restoring the real module here breaks these tests. Any
 # test that needs the REAL Streamlit at run time must reinstall it around its own runs; see
 # tests/test_criteria_editor_widget.py.
-_fake_st = types.ModuleType("streamlit")
-_fake_st.session_state = {}
-sys.modules["streamlit"] = _fake_st
+# It is SHARED with the other modules that need one: building a private stub here would
+# leave the app modules bound to whichever stub was installed first, and this module would
+# then be clearing a dict nothing reads. See tests/_fake_streamlit.py.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import _fake_streamlit                       # noqa: E402
+
+_fake_st = _fake_streamlit.install()
 
 # Multi-tenant ON for these tests (presence of the JWT secret is the master switch).
 os.environ["SUPABASE_JWT_SECRET"] = "test-secret"
@@ -61,7 +66,7 @@ class TenantIsolationTests(unittest.TestCase):
     def setUp(self):
         self._svc = _FakeBase("SERVICE")   # RLS-bypassing service-role client
         self._jwt = _FakeBase("JWT")       # per-session RLS-backed tenant client
-        # Deterministic clients — no network.
+        # Deterministic clients â€” no network.
         sc.service_client = lambda: self._svc
         sc._session_tenant_client = (
             lambda: self._jwt if _fake_st.session_state.get("_tenant_jwt") else None)
@@ -84,14 +89,14 @@ class TenantIsolationTests(unittest.TestCase):
         self.assertIs(self._base(c), self._jwt)   # RLS-backed base
 
     def test_regular_user_missing_tenant_fails_closed(self):
-        # In a live session but tenant_id unresolved → must NOT be the unscoped firehose.
+        # In a live session but tenant_id unresolved â†’ must NOT be the unscoped firehose.
         _set_session(app_user={"role": "collaborator"}, tenant_id=None, _tenant_jwt="jwt")
         c = sc.get_client()
         self.assertEqual(self._scope(c), sc._NO_TENANT_SENTINEL)
         self.assertIsNot(c, self._svc)
 
     def test_regular_user_without_jwt_still_scoped(self):
-        # JWT client unavailable → falls to service client but STILL app-scoped to tenant.
+        # JWT client unavailable â†’ falls to service client but STILL app-scoped to tenant.
         _set_session(app_user={"role": "collaborator"}, tenant_id=ORG_A)  # no _tenant_jwt
         c = sc.get_client()
         self.assertEqual(self._scope(c), ORG_A)

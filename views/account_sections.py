@@ -269,7 +269,13 @@ def _create_user_account(user: dict, *, email: str, name: str, role: str,
         elif tenant.get("mode") == "existing":
             _tid = tenant.get("tenant_id")
         else:
-            _tid = tc.current_tenant_id()
+            # "own" is the tenant ON SCREEN — viewed_tenant_id, not the session's own.
+            # The two agree for everyone except a super_user viewing another tenant, and
+            # there they must not: that session is gated as the viewed tenant's admin, so
+            # the tenant picker is hidden and every invite falls through to this branch.
+            # current_tenant_id() would file the new person under the SUPER'S tenant while
+            # the page, the header and the banner all said the other one.
+            _tid = tc.viewed_tenant_id()
         if _tid:
             try:
                 service_client().table("tenant_memberships").insert({
@@ -618,7 +624,9 @@ def render_my_profile(user: dict, sb) -> None:
             f"User ({ADMIN_CONTACT_EMAIL}).")
 
         _sole_super = False
-        if permissions.is_super_user(user):
+        # ACCOUNT role: this guards deleting YOUR OWN account, so what matters is whether
+        # that account is the last super_user — not which tenant happens to be on screen.
+        if permissions.is_account_super_user(user):
             try:
                 _cnt = int((sb.table("users").select("id", count="exact")
                             .eq("role", "super_user").execute().count) or 0)
@@ -1045,6 +1053,98 @@ def render_active_tenant(user: dict, sb) -> None:
         st.rerun()
 
 
+_TENANT_COL_HELP: dict[str, str] = {
+    "Kind": "🏢 Org = a normal organization tenant. 🧑 Individual = a personal account "
+            "whose activity is visible to all users.",
+    "Dev": "🛠 Dev = a DEVELOPER / system tenant: its members may perform cross-tenant "
+           "developer tasks (donor mapping, Sources catalog & blocked tokens, Run "
+           "Extraction, Records Verify/Reset, Learning data). 🙂 Regular = a client tenant, "
+           "confined to its own data.",
+    "Parent": "Parent organization. A child tenant inherits the parent's transferable "
+              "standing (registration, authorized signatory, funder relationships, "
+              "competitiveness, geographic reach) in scoring. Select a single tenant below "
+              "to set or change its parent.",
+    "Sharing": "🤝 Shared = this tenant has opted its whitelisted profile in to consortium "
+               "scoring, so it counts when named as a co-applicant on another tenant's RFP. "
+               "Parent↔child inheritance does not need this.",
+    "Organization": "Click a name to open that tenant in a new tab, as a sticky super_user "
+                    "'view-as' — scoped across every page and shown in the URL (?tenant=…) "
+                    "until you Return to your account (banner up top).",
+}
+
+# (label, relative width). The first column is the row's selection checkbox.
+_TENANT_GRID_COLS: tuple[tuple[str, float], ...] = (
+    ("", 0.4), ("Organization", 2.6), ("Kind", 1.15), ("Dev", 1.05), ("Parent", 1.7),
+    ("Sharing", 1.0), ("Status", 1.2), ("Members", 0.85), ("Pending", 0.8),
+    ("Profile", 0.75), ("Created", 1.05),
+)
+
+# Scoped to the grid's keyed containers (Streamlit adds `st-key-<key>` classes), so none of
+# this leaks into the rest of the page. Greys are translucent so it reads in both themes.
+_TENANT_GRID_CSS = """
+<style>
+.st-key-tn_grid { gap: 0 !important; border: 1px solid rgba(128,128,128,.25);
+                  border-radius: 8px; overflow: hidden; }
+.st-key-tn_grid_head, [class*="st-key-tn_row_"] { padding: .3rem .75rem;
+                  border-bottom: 1px solid rgba(128,128,128,.18); }
+.st-key-tn_grid_head { background: rgba(128,128,128,.08); }
+[class*="st-key-tn_row_"]:last-child { border-bottom: none; }
+[class*="st-key-tn_row_"]:hover { background: rgba(128,128,128,.05); }
+.st-key-tn_grid [data-testid="stMarkdownContainer"] p { margin: 0; }
+.st-key-tn_grid .tn-h { font-size: .8rem; font-weight: 600; opacity: .7; white-space: nowrap; }
+.st-key-tn_grid .tn-h[title] { cursor: help; text-decoration: underline dotted;
+                               text-underline-offset: 3px; }
+.st-key-tn_grid [data-testid="stCheckbox"] label { min-height: 0; margin: 0; padding: 0; }
+.st-key-tn_grid [data-testid="stCheckbox"] { display: flex; align-items: center; }
+.st-key-tn_grid .tn-c { display: block; white-space: nowrap; overflow: hidden;
+                        text-overflow: ellipsis; font-size: .9rem; }
+</style>
+"""
+
+
+def _render_tenant_grid(rows: list[dict]) -> list[dict]:
+    """The tenants table for managers, with the tenant NAME as a link that opens a new TAB.
+
+    Built from Streamlit rows instead of st.dataframe because the dataframe's LinkColumn
+    opens its links with ``window.open(url, "_blank", "noopener,noreferrer")`` — a popup
+    request to Chrome/Edge, so a click gave a separate browser WINDOW. The name here is a
+    plain anchor (core.ui_links.new_tab_link), which opens a tab. Each row carries its own
+    checkbox, standing in for the dataframe's row selection. Returns the ticked rows.
+    """
+    import html as _html
+    from core.ui_links import new_tab_link
+
+    st.markdown(_TENANT_GRID_CSS, unsafe_allow_html=True)
+    widths = [w for _, w in _TENANT_GRID_COLS]
+    picked: list[dict] = []
+    with st.container(key="tn_grid"):
+        with st.container(key="tn_grid_head"):
+            for c, (label, _) in zip(st.columns(widths, vertical_alignment="center"),
+                                     _TENANT_GRID_COLS):
+                if label:
+                    # A hover tooltip on the label, not st.markdown(help=…): that icon pins
+                    # itself to the far edge of the cell, next to the NEIGHBOURING header.
+                    tip = _TENANT_COL_HELP.get(label)
+                    attr = f" title='{_html.escape(tip, quote=True)}'" if tip else ""
+                    c.markdown(f"<span class='tn-h'{attr}>{label}</span>",
+                               unsafe_allow_html=True)
+        for i, r in enumerate(rows):
+            with st.container(key=f"tn_row_{i}"):
+                cells = st.columns(widths, vertical_alignment="center")
+                if cells[0].checkbox(f"Select {r['name']}", key=f"tn_sel_{r['id']}",
+                                     label_visibility="collapsed"):
+                    picked.append(r)
+                cells[1].markdown(
+                    "<span class='tn-c'>"
+                    + new_tab_link(r["name"], "organization", tenant=r["slug"])
+                    + "</span>", unsafe_allow_html=True)
+                for c, (label, _) in zip(cells[2:], _TENANT_GRID_COLS[2:]):
+                    v = _html.escape(str(r.get(label, "")))
+                    c.markdown(f"<span class='tn-c' title='{v}'>{v}</span>",
+                               unsafe_allow_html=True)
+    return picked
+
+
 def render_manage_tenants(user: dict, sb, *, can_manage: bool | None = None) -> None:
     """Settings → Tenants. Tenants = organizations/individuals registered to the platform.
 
@@ -1147,13 +1247,11 @@ def render_manage_tenants(user: dict, sb, *, can_manage: bool | None = None) -> 
     pending_ct = Counter(m["tenant_id"] for m in mems if m.get("status") == "pending")
 
     st.markdown("---")
-    # One row per tenant. The Organization NAME is itself the entry link (opens the
-    # tenant's Organization page in a NEW TAB). That page — and every page navigated
-    # from it — runs in a STICKY super_user 'view-as' of the tenant: scoped across all
-    # pages and reflected in the browser URL (?tenant=<slug>) until Return to my account.
-    # The `&label=<name>` suffix on the href lets the LinkColumn show the tenant NAME as
-    # the clickable text (regex-extracted); the app reads only ?tenant= and ignores label.
-    # Tick rows to Suspend / Activate in bulk.
+    # One row per tenant. The Organization NAME is itself the entry link (opens the tenant's
+    # Organization page in a NEW TAB). That page — and every page navigated from it — runs
+    # in a STICKY super_user 'view-as' of the tenant: scoped across all pages and reflected
+    # in the browser URL (?tenant=<slug>) until Return to my account. Tick rows to Suspend /
+    # Activate in bulk. See _render_tenant_grid for why this is not an st.dataframe.
     _name_by_id = {t["id"]: (t.get("name") or "—") for t in tenants}
     _rows = []
     for t in tenants:
@@ -1166,8 +1264,7 @@ def render_manage_tenants(user: dict, sb, *, can_manage: bool | None = None) -> 
             "id": tid,
             "slug": _key,
             "name": _name,
-            "Organization": (f"/organization?tenant={_key}&label={_name}"
-                             if can_manage else _name),
+            "Organization": _name,
             "Kind": "🧑 Individual" if t.get("kind") == "individual" else "🏢 Org",
             "Dev": "🛠 Dev" if t.get("is_developer") else "🙂 Regular",
             "_is_dev": bool(t.get("is_developer")),
@@ -1184,57 +1281,20 @@ def render_manage_tenants(user: dict, sb, *, can_manage: bool | None = None) -> 
             "Profile": "set" if prof else "empty",
             "Created": (t.get("created_at") or "")[:10],
         })
-    _df = pd.DataFrame(_rows)
-
-    _org_col = (
-        st.column_config.LinkColumn(
-            "Organization", display_text=r"label=(.+)$", width="large",
-            help="Click a tenant name to open its Organization page in a new tab. "
-                 "That tab runs as a sticky super_user 'view-as' of the tenant — "
-                 "scoped across every page and shown in the URL (?tenant=…) until "
-                 "you Return to your account (banner up top).")
-        if can_manage else
-        st.column_config.TextColumn("Organization", width="large"))
-    _cols = (["Organization", "Kind", "Dev", "Parent", "Sharing", "Status", "Members",
-              "Pending", "Profile", "Created"] if can_manage else
-             ["Organization", "Kind", "Status", "Members", "Pending", "Profile", "Created"])
-    _sel = st.dataframe(
-        _df[_cols],
-        hide_index=True, width="stretch", key="tenants_table",
-        selection_mode="multi-row", on_select="rerun" if can_manage else "ignore",
-        column_config={
-            "Organization": _org_col,
-            "Kind": st.column_config.TextColumn(
-                "Kind", width="small",
-                help="🏢 Org = a normal organization tenant. 🧑 Individual = a personal "
-                     "account whose activity is visible to all users."),
-            "Parent": st.column_config.TextColumn(
-                "Parent", width="small",
-                help="Parent organization. A child tenant inherits the parent's "
-                     "transferable standing (registration, authorized signatory, funder "
-                     "relationships, competitiveness, geographic reach) in scoring. Select "
-                     "a single tenant below to set or change its parent."),
-            "Sharing": st.column_config.TextColumn(
-                "Sharing", width="small",
-                help="🤝 Shared = this tenant has opted its whitelisted profile in to "
-                     "consortium scoring, so it counts when named as a co-applicant on "
-                     "another tenant's RFP. Parent↔child inheritance does not need this."),
-            "Dev": st.column_config.TextColumn(
-                "Dev", width="small",
-                help="🛠 Dev = a DEVELOPER / system tenant: its "
-                     "members may perform cross-tenant developer tasks (donor mapping, "
-                     "Sources catalog & blocked tokens, Run Extraction, Records "
-                     "Verify/Reset, Learning data). 🙂 Regular = a client tenant, "
-                     "confined to its own data."),
-            "Members": st.column_config.NumberColumn("Members", width="small"),
-            "Pending": st.column_config.NumberColumn("Pending", width="small"),
-        })
-
     if not can_manage:
-        return                          # view-only — no selection, no action buttons
+        # View-only: no links, no selection — the plain grid is fine here.
+        st.dataframe(
+            pd.DataFrame(_rows)[["Organization", "Kind", "Status", "Members", "Pending",
+                                 "Profile", "Created"]],
+            hide_index=True, width="stretch", key="tenants_table",
+            column_config={
+                "Organization": st.column_config.TextColumn("Organization", width="large"),
+                "Kind": st.column_config.TextColumn(
+                    "Kind", width="small", help=_TENANT_COL_HELP["Kind"]),
+            })
+        return
 
-    _picked = (getattr(_sel, "selection", None) or {}).get("rows") or []
-    _sel_rows = [_rows[i] for i in _picked if 0 <= i < len(_rows)]
+    _sel_rows = _render_tenant_grid(_rows)
     _sel_ids = [r["id"] for r in _sel_rows]
 
     if not _sel_ids:
@@ -1341,6 +1401,14 @@ def render_org_suspend(user: dict, sb) -> None:
     except Exception:
         return
     if not permissions.is_admin(user) or permissions.is_super_user(user):
+        return
+    # Not during a view-as. This is an account-OWNER action that retires the tenant, and
+    # it reads tc.current_tenant_id() — the session's OWN tenant — so under a view-as it
+    # would offer a super_user, now gated as that tenant's admin, a suspend control
+    # sitting under another tenant's name that would retire THEIRS. A destructive action
+    # aimed at a different tenant from the one on screen is not something to simulate;
+    # the tenant's real admin still has it in their own account.
+    if permissions.viewing_as_other_tenant():
         return
     try:
         tid = tc.current_tenant_id()
@@ -1787,12 +1855,18 @@ def render_manage_users(user: dict, sb) -> None:
     # Blacklisted tab — hide them here so Manage Users only lists live accounts.
     all_users = [u for u in all_users if not u.get("is_blacklisted")]
 
-    # Multi-tenant: a non-super admin manages only users in ITS OWN tenant; the
-    # super_user sees everyone. (No-op in single-tenant mode / for super_user.)
+    # Multi-tenant: an admin manages only the users of the tenant ON SCREEN; a super_user
+    # in their own account sees everyone. (No-op in single-tenant mode.)
+    #
+    # viewed_tenant_id(), not current_tenant_id(): while a super_user is viewing another
+    # tenant, is_super_user() answers False (they are gated as that tenant's admin) and
+    # this filter runs — but their session tenant is still their OWN, so scoping to it
+    # would list their own colleagues under the viewed tenant's name. The tenant being
+    # looked at is the one whose people belong here.
     try:
         from auth import tenant_context as tc
         if tc.multitenant_enabled() and not permissions.is_super_user(user):
-            _tid = tc.current_tenant_id()
+            _tid = tc.viewed_tenant_id()
             if _tid:
                 _member_ids = {m.get("user_id") for m in
                                (service_client().table("tenant_memberships").select("user_id")

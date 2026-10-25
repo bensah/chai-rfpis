@@ -1,0 +1,58 @@
+name: Web job
+
+# Runs one background job queued by the React app (web_jobs, migration 099). The Edge
+# Function dispatches this workflow with the job's id; scripts/run_web_job.py does the work
+# and reports into the job row, which the browser polls.
+#
+# THIS REPOSITORY IS PUBLIC, SO THIS LOG IS PUBLIC. The only input is an opaque job id (and
+# a concurrency group name). The runner prints status lines only; parameters, results and
+# errors live in the database.
+#
+# ONE-TIME SETUP: the same repository secrets as scan.yml (SUPABASE_URL, SUPABASE_KEY as
+# the service-role key, and the LLM / Serper / Resend keys for the jobs that need them),
+# plus, on the Supabase side, the Edge Function secret RFPIS_GH_DISPATCH_TOKEN: a
+# fine-grained token for this repository with "Actions: read and write" and nothing else.
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "web_jobs.id"
+        required: true
+      group:
+        description: "Concurrency group (jobs sharing one never overlap)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ${{ inputs.group != '' && inputs.group || format('web-job-{0}', inputs.job_id) }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run the job
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
+          # Through env, never interpolated into the script: an input is data, not shell.
+          JOB_ID: ${{ inputs.job_id }}
+        run: python scripts/run_web_job.py "$JOB_ID" --runner github

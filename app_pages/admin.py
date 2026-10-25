@@ -100,7 +100,7 @@ def _render_maintenance(sb, user) -> None:
         bkc2.caption("☁ OneDrive off-site backup: add the `ONEDRIVE_*` secrets to enable "
                      "the daily job + a one-click upload here.")
     if st.session_state.get("_backup_blob"):
-        _fn = st.session_state.get("_backup_ready_at", "opportunova_backup.zip")
+        _fn = st.session_state.get("_backup_ready_at", "rfpis_backup.zip")
         st.download_button(
             "⬇ Download backup ZIP", data=st.session_state["_backup_blob"],
             file_name=_fn, mime="application/zip", key="maint_backup_dl")
@@ -196,6 +196,13 @@ def _render_maintenance(sb, user) -> None:
 # tenant's admins keep only their own tenant-scoped surfaces. See core.permissions.
 _is_super = permissions.is_super_user(user)
 _dev_super = permissions.is_developer_super(user)     # super_user in a developer tenant
+# The tenant being VIEWED — a super_user's view-as target, else their own (None).
+# Resolved centrally in core.app_header; mirrors app_pages/organization.py.
+# ACCOUNT role: _is_super is the EFFECTIVE role and is False exactly while a view-as is
+# active, so gating on it would drop the target and send these edits back to the super's
+# own tenant — the bug this page was just fixed for.
+_view_tid = (st.session_state.get("su_view_tenant")
+             if permissions.is_account_super_user(user) else None)
 _dev_admin = permissions.is_developer_admin(user)     # admin+ in a developer tenant
 _dev_member = permissions.is_developer_member(user)   # any member of a developer tenant
 
@@ -249,8 +256,18 @@ with tab_accounts:
     # which tenant the session is scoped to — moved here from the global header banner so
     # switching is a deliberate Settings action. Super users browse via the Tenants
     # view-as flow instead, so they don't get this tab.
-    _acct_tab_names = (["Active tenant"] if not _is_super else []) + \
-        ["Users", "Tenants", "Blacklisted"] + (["Deployment"] if _is_super else [])
+    # While VIEWING-AS, Accounts shows that tenant's people and nothing else. Tenants,
+    # Blacklisted and Deployment are the platform console: cross-tenant surfaces that no
+    # member of the tenant being viewed can reach, so leaving them on screen would show
+    # the super a page the people they are standing in for do not have. "Active tenant"
+    # is the switcher for members of several tenants — gated on the ACCOUNT role, since a
+    # super navigates by view-as and a second switcher here would fight it.
+    _viewing_as = permissions.viewing_as_other_tenant()
+    _console_tabs = [] if _viewing_as else (
+        ["Tenants", "Blacklisted"] + (["Deployment"] if _is_super else []))
+    _acct_tab_names = (["Active tenant"]
+                       if not permissions.is_account_super_user(user) else []) + \
+        ["Users"] + _console_tabs
     _acct_tabs = st.tabs(_acct_tab_names)
     _acct_by = dict(zip(_acct_tab_names, _acct_tabs))
     if "Active tenant" in _acct_by:
@@ -261,11 +278,15 @@ with tab_accounts:
         if _picked_user:
             st.divider()
             render_user_access(user, target=_picked_user)
-    with _acct_by["Tenants"]:
-        render_manage_tenants(user, sb, can_manage=_is_super)
-    with _acct_by["Blacklisted"]:
-        render_blacklisted(user, sb, can_manage=_is_super)
-    if _is_super:
+    # Guarded on presence, not on role: the console tabs are absent during a view-as
+    # (see _console_tabs above), and indexing a tab that was never created raises.
+    if "Tenants" in _acct_by:
+        with _acct_by["Tenants"]:
+            render_manage_tenants(user, sb, can_manage=_is_super)
+    if "Blacklisted" in _acct_by:
+        with _acct_by["Blacklisted"]:
+            render_blacklisted(user, sb, can_manage=_is_super)
+    if "Deployment" in _acct_by:
         with _acct_by["Deployment"]:
             from core.env_diag import render as render_env_diagnostics
             render_env_diagnostics(user)
@@ -318,7 +339,12 @@ with tab_settings:
     )
 
     st.markdown("---")
-    render_org_setup(user, sb)
+    # Edit the tenant this session is actually SHOWING. A super_user's view-as
+    # (su_view_tenant) is sticky across every page, so without it this form read and
+    # wrote the super's OWN tenant while the header named someone else's — the edit
+    # landed on the wrong organisation, and the name check then failed because the
+    # super's tenant kept its own name. Everyone else has no view-as: None = their own.
+    render_org_setup(user, sb, tenant_id=_view_tid)
     # Admin self-service: suspend (retire, never delete) this org's tenant account.
     # No-op for the super_user (who uses Accounts → Tenants) and in single-tenant mode.
     render_org_suspend(user, sb)

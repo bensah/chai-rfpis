@@ -324,7 +324,7 @@ def _blank_policies() -> dict[str, Any]:
     return p
 
 
-def _profile_geo_eligible() -> list[str]:
+def _profile_geo_eligible(tenant_id: str | None = None) -> list[str]:
     """The tenant's OWN geographies — registered + operating countries from its org
     profile, canonicalised + deduped. Used to seed the geo gate when the tenant hasn't set
     an explicit scan policy, so a CONFIGURED org still hard-rejects off-geo calls (its
@@ -333,7 +333,7 @@ def _profile_geo_eligible() -> list[str]:
     try:
         from core import org_profile as _op
         from core import geographies as _geo
-        prof = _op.get_profile() or {}
+        prof = _op.get_profile(tenant_id) or {}
         raw = (list(prof.get("org_registered_countries") or [])
                + list(prof.get("org_operating_countries") or []))
         out: list[str] = []
@@ -349,7 +349,7 @@ def _profile_geo_eligible() -> list[str]:
         return []
 
 
-def _seed_geo_from_profile(pol: dict[str, Any]) -> dict[str, Any]:
+def _seed_geo_from_profile(pol: dict[str, Any], tenant_id: str | None = None) -> dict[str, Any]:
     """If a policy has NO explicit eligible countries, seed them from the tenant's org
     profile so a configured org still geo-gates. No-op when eligible is already set (an
     explicit admin choice wins) or the profile has no countries (stays permissive)."""
@@ -357,7 +357,7 @@ def _seed_geo_from_profile(pol: dict[str, Any]) -> dict[str, Any]:
         c = pol.get("countries") or {}
         if c.get("eligible") or c.get("broad_terms"):
             return pol                       # explicit geo scope (countries OR regions) set
-        prof_geo = _profile_geo_eligible()
+        prof_geo = _profile_geo_eligible(tenant_id)
         if prof_geo:
             pol = copy.deepcopy(pol)
             pol.setdefault("countries", {})
@@ -384,7 +384,7 @@ _THEME_UMBRELLAS: dict[str, set[str]] = {
 _HEALTH_THEME_PREFIXES = {"WCH", "NCDs", "IDs", "HSS", "Cross-cutting"}
 
 
-def _profile_theme_keywords() -> list[str]:
+def _profile_theme_keywords(tenant_id: str | None = None) -> list[str]:
     """Theme keywords for the tenant's own program-area CATEGORIES (from its profile) —
     used to seed the theme gate when no explicit theme policy exists. Derives at the
     CATEGORY level (every sub-area sharing the org's prefixes) PLUS a broad umbrella term
@@ -402,7 +402,7 @@ def _profile_theme_keywords() -> list[str]:
         from core import org_profile as _op
         from core.program_area_classifier import (PROGRAM_AREA_KEYWORDS as _PAK,
                                                     expand as _expand)
-        prof = _op.get_profile() or {}
+        prof = _op.get_profile(tenant_id) or {}
         codes: set[str] = set()
         for f in ("org_domain_expertise", "org_priority_areas"):
             for a in (prof.get(f) or []):
@@ -435,7 +435,7 @@ def _profile_theme_keywords() -> list[str]:
         return []
 
 
-def _seed_themes_from_profile(pol: dict[str, Any]) -> dict[str, Any]:
+def _seed_themes_from_profile(pol: dict[str, Any], tenant_id: str | None = None) -> dict[str, Any]:
     """If a policy has NO required theme keywords, seed them from the tenant's org-profile
     program-area categories so a configured org still theme-gates clearly off-category
     calls (symmetric to _seed_geo_from_profile). No-op when required_any is already set (an
@@ -444,7 +444,7 @@ def _seed_themes_from_profile(pol: dict[str, Any]) -> dict[str, Any]:
         t = pol.get("themes") or {}
         if t.get("required_any"):
             return pol
-        kws = _profile_theme_keywords()
+        kws = _profile_theme_keywords(tenant_id)
         if kws:
             pol = copy.deepcopy(pol)
             pol.setdefault("themes", {})
@@ -454,11 +454,16 @@ def _seed_themes_from_profile(pol: dict[str, Any]) -> dict[str, Any]:
     return pol
 
 
-def _is_scoped_tenant() -> bool:
+def _is_scoped_tenant(tenant_id: str | None = None) -> bool:
     """True when we're operating as a specific tenant (a multi-tenant browser session OR a
     headless per-tenant override) — as opposed to the single-tenant the organisation deployment. Such a
     tenant must NOT inherit the organisation's DEFAULT_POLICIES countries/themes; it falls back to its
-    own profile instead. Best-effort: any error → False (single-tenant behaviour)."""
+    own profile instead. Best-effort: any error → False (single-tenant behaviour).
+
+    A caller that NAMES a tenant (a super_user editing another one) is scoped by definition
+    — the session's own tenant has nothing to do with it."""
+    if tenant_id:
+        return True
     try:
         from auth.tenant_context import (multitenant_enabled, current_tenant_id,
                                          override_tenant_id)
@@ -467,8 +472,11 @@ def _is_scoped_tenant() -> bool:
         return False
 
 
-def get_policies() -> dict[str, Any]:
+def get_policies(tenant_id: str | None = None) -> dict[str, Any]:
     """Return the active policies (admin overrides merged onto defaults).
+
+    `tenant_id` overrides the session tenant (super_user editing another tenant); the
+    profile that seeds an unset geo/theme scope follows it too.
 
     A per-tenant policy (multi-tenant / cron-override) is ALWAYS reconciled against the
     tenant's own profile: any geo/theme scope it leaves empty is seeded from the tenant's
@@ -476,13 +484,13 @@ def get_policies() -> dict[str, Any]:
     gates on at least its own geography instead of seeing everything (baseline default).
     A tenant NEVER inherits the organisation's DEFAULT_POLICIES countries/themes — those are the shipped
     single-tenant defaults only."""
-    raw = get_setting(POLICIES_KEY)
-    scoped = _is_scoped_tenant()
+    raw = get_setting(POLICIES_KEY, tenant_id=tenant_id)
+    scoped = _is_scoped_tenant(tenant_id)
     if not raw:
         # No configured policy. A FRESH tenant starts from a neutral base (populate +
         # Decline, gated on its profile); single-tenant keeps the shipped the organisation defaults.
         pol = _blank_policies() if scoped else copy.deepcopy(DEFAULT_POLICIES)
-        return _seed_themes_from_profile(_seed_geo_from_profile(pol))
+        return _seed_themes_from_profile(_seed_geo_from_profile(pol, tenant_id), tenant_id)
     try:
         overlay = json.loads(raw)
         if isinstance(overlay, dict):
@@ -502,14 +510,17 @@ def get_policies() -> dict[str, Any]:
     # as the unconfigured branch. The seeders no-op when an explicit scope is set (including
     # a deliberate region-only scope), so an admin's explicit choice is always honoured.
     if scoped:
-        pol = _seed_themes_from_profile(_seed_geo_from_profile(pol))
+        pol = _seed_themes_from_profile(_seed_geo_from_profile(pol, tenant_id), tenant_id)
     return pol
 
 
-def set_policies(policies: dict[str, Any], updated_by: str | None = None) -> None:
-    """Persist policies. Stores the FULL blob (not a delta) for simplicity."""
-    set_setting(POLICIES_KEY, json.dumps(policies, indent=2), updated_by=updated_by)
+def set_policies(policies: dict[str, Any], updated_by: str | None = None,
+                 tenant_id: str | None = None) -> None:
+    """Persist policies. Stores the FULL blob (not a delta) for simplicity.
+    `tenant_id` overrides the session tenant (super_user editing another tenant)."""
+    set_setting(POLICIES_KEY, json.dumps(policies, indent=2), updated_by=updated_by,
+                tenant_id=tenant_id)
 
 
-def reset_to_defaults(updated_by: str | None = None) -> None:
-    set_policies(copy.deepcopy(DEFAULT_POLICIES), updated_by=updated_by)
+def reset_to_defaults(updated_by: str | None = None, tenant_id: str | None = None) -> None:
+    set_policies(copy.deepcopy(DEFAULT_POLICIES), updated_by=updated_by, tenant_id=tenant_id)

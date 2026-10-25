@@ -15,6 +15,7 @@ from core import excel_sync
 from core.records import clean_df
 from db.supabase_client import get_client
 from core.cache_scope import scope_key
+from core.user_manual import render_manual_downloads
 
 # Home-specific block-container padding only — global theme (headings,
 # .quickcard, metric tiles, buttons) lives in core/app_header._GLOBAL_CSS
@@ -245,34 +246,42 @@ with _main:
 
 
     # -----------------------------------------------------------------------------
-    # How to use guide
+    # User manual + training deck (also on Help)
     # -----------------------------------------------------------------------------
     st.divider()
+    with st.container(border=True):
+        st.markdown("#### 📘 New to RFPIS? Start with the manual")
+        st.caption("Step by step through every page, plus the slides from the team "
+                   "training. Both are also under 👤 → **Help**.")
+        render_manual_downloads("home_dl", captions=False)
+
+    # -----------------------------------------------------------------------------
+    # How to use guide
+    # -----------------------------------------------------------------------------
     with st.expander("📖 How to use this app", expanded=False):
         st.markdown(
             """
             **Weekly rhythm**
-            1. **Friday morning** — the automated scanner pulls new opportunities from the
-               configured donor sources and emails the team a digest. New rows appear in
-               **Screenings** with an auto-recommendation (Proceed / Park / Decline).
+            1. **Friday morning** — the automated scan pulls new opportunities from the
+               donor sources into the shared store, the 🔔 bell shows **Scan completed**,
+               and everyone is emailed any new Proceed / Park calls. Open **Pipelines →
+               Screen** and click **🎯 Eligibility Scan** to screen against your
+               organisation.
             2. **Friday → Sunday** — anyone who finds an RFP outside the scan submits it
-               via **Submit**. The form runs duplicate detection, computes an alignment
-               score, and tags it to next Monday's review week.
-            3. **Monday 09:00** — the team call. Open **Screenings**, walk through each
-               opportunity. For deep discussion of a single RFP, open **Review** and use
-               the badge grid. Capture meeting notes in **Meeting Log**, linked to the
-               RFP under discussion. Decisions saved here override the auto-recommendation
-               and are timestamped.
-            4. **Mid-week** — proposal teams work the **Track** pipeline. Update stage,
-               progress, next action, deadlines. Log donor calls in **Engagement Log**.
+               via **📝 Submit New Funding** on the Screen tab. It is scored and tagged to
+               the current review week.
+            3. **Monday** — the team call. Walk through **Screen**, open **Review** for
+               each RFP and record the outcome with **✏ Update Decision**. Capture notes
+               and agreed actions in **Actions → Meetings**, linked to the RFP.
+            4. **Mid-week** — proposal teams work the **Track** tab: stage, progress, next
+               action, deadlines. Log donor calls in **Actions → Engagements** and close
+               finished items in **Actions → Pending**.
 
             **Roles**
-            - **Admin** — everything, plus user management, scan triggers, donor source curation.
-            - **Reviewer** — confirm decisions, edit RFPs, but no delete.
-            - **Collaborator** — submit RFPs and read dashboards.
+            - **Admin** — everything, plus users, scan preferences and records (**Settings**).
+            - **Reviewer / Contributor** — screening, decisions, RFP edits, submissions,
+              meeting notes and engagements; no delete, no Settings.
 
-            **Need help?** The **Data** page (under Admin) is the master record — every
-            column in the old Excel screener lives there and can be edited via the Edit
-            modal.
+            **Need more?** Download the user manual above, or open 👤 → **Help**.
             """
         )

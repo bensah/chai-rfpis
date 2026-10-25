@@ -22,16 +22,20 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 
-class _QueryParams(dict):
-    """Enough of st.query_params for these tests: get / set / del / membership."""
+# Shared with the other modules that install a stub `streamlit` — see
+# tests/_fake_streamlit.py for why a private stub per module does not work. The extras
+# this module needs are hung on the shared object.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import _fake_streamlit                       # noqa: E402
 
+_QueryParams = _fake_streamlit.QueryParams
 
-_fake_st = types.ModuleType("streamlit")
-_fake_st.session_state = {}
+_fake_st = _fake_streamlit.install()
 _fake_st.query_params = _QueryParams()
 _fake_st.warning = lambda *a, **k: None
 _fake_st.markdown = lambda *a, **k: None
-sys.modules["streamlit"] = _fake_st
 
 os.environ["SUPABASE_JWT_SECRET"] = "test-secret"
 os.environ.setdefault("SUPABASE_URL", "https://dummy.supabase.co")
@@ -56,6 +60,13 @@ def _url(**kw):
 
 
 class TenantUrlTests(unittest.TestCase):
+    def tearDown(self):
+        # The stub is shared, so state left here is state the NEXT module reads. Leaving a
+        # tenant slug behind made core.ui_links append "?tenant=..." to links that
+        # tests/test_ui_links.py asserts are bare.
+        _fake_st.session_state.clear()
+        _fake_st.query_params.clear()
+
     def test_member_url_is_stamped_with_their_own_tenant(self):
         _session(app_user=MEMBER, tenant_id=OTHER, tenant_slug="client",
                  _tenant_slug_for=OTHER)
