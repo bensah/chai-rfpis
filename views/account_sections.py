@@ -302,7 +302,9 @@ def render_my_profile(user: dict, sb) -> None:
             f"User ({ADMIN_CONTACT_EMAIL}).")
 
         _sole_super = False
-        if permissions.is_super_user(user):
+        # ACCOUNT role: this guards deleting YOUR OWN account, so what matters is whether
+        # that account is the last super_user — not which tenant happens to be on screen.
+        if permissions.is_account_super_user(user):
             try:
                 _cnt = int((sb.table("users").select("id", count="exact")
                             .eq("role", "super_user").execute().count) or 0)
@@ -1078,6 +1080,14 @@ def render_org_suspend(user: dict, sb) -> None:
         return
     if not permissions.is_admin(user) or permissions.is_super_user(user):
         return
+    # Not during a view-as. This is an account-OWNER action that retires the tenant, and
+    # it reads tc.current_tenant_id() — the session's OWN tenant — so under a view-as it
+    # would offer a super_user, now gated as that tenant's admin, a suspend control
+    # sitting under another tenant's name that would retire THEIRS. A destructive action
+    # aimed at a different tenant from the one on screen is not something to simulate;
+    # the tenant's real admin still has it in their own account.
+    if permissions.viewing_as_other_tenant():
+        return
     try:
         tid = tc.current_tenant_id()
     except Exception:
@@ -1583,12 +1593,18 @@ def render_manage_users(user: dict, sb) -> None:
     # Blacklisted tab — hide them here so Manage Users only lists live accounts.
     all_users = [u for u in all_users if not u.get("is_blacklisted")]
 
-    # Multi-tenant: a non-super admin manages only users in ITS OWN tenant; the
-    # super_user sees everyone. (No-op in single-tenant mode / for super_user.)
+    # Multi-tenant: an admin manages only the users of the tenant ON SCREEN; a super_user
+    # in their own account sees everyone. (No-op in single-tenant mode.)
+    #
+    # viewed_tenant_id(), not current_tenant_id(): while a super_user is viewing another
+    # tenant, is_super_user() answers False (they are gated as that tenant's admin) and
+    # this filter runs — but their session tenant is still their OWN, so scoping to it
+    # would list their own colleagues under the viewed tenant's name. The tenant being
+    # looked at is the one whose people belong here.
     try:
         from auth import tenant_context as tc
         if tc.multitenant_enabled() and not permissions.is_super_user(user):
-            _tid = tc.current_tenant_id()
+            _tid = tc.viewed_tenant_id()
             if _tid:
                 _member_ids = {m.get("user_id") for m in
                                (service_client().table("tenant_memberships").select("user_id")

@@ -81,11 +81,46 @@ ACCESS_MATRIX: dict[str, dict[str, str]] = {
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def viewing_as_other_tenant() -> bool:
+    """True while a super_user is VIEWING-AS a tenant that is not their own.
+
+    Mirrors db.supabase_client._super_viewing_as (su_view_tenant set AND different from
+    the session tenant); kept as its own copy so permissions.py stays import-light and
+    usable with no Streamlit session at all (scripts, cron, tests), where it is False.
+    Best-effort: any failure → False, i.e. "not viewing as", which leaves the account's
+    own role answering — the behaviour before view-as existed."""
+    try:
+        import streamlit as st  # type: ignore
+        ss = st.session_state
+        su = ss.get("su_view_tenant")
+        return bool(su) and su != ss.get("tenant_id")
+    except Exception:
+        return False
+
+
+def is_account_super_user(user: dict[str, Any] | None) -> bool:
+    """The ACCOUNT's real role, ignoring any view-as lens.
+
+    For the view-as machinery itself — deciding whether someone may enter or stay in a
+    view-as, and which tenant a page is editing. Using the effective role there would be
+    self-defeating: lowering the role would immediately revoke the view-as that lowered
+    it, bouncing the super out of the tenant they just opened. Everything a PAGE gates on
+    should use `is_super_user` instead, so the lens is honoured."""
+    return bool(user and user.get("role") == "super_user")
+
+
 def is_super_user(user: dict[str, Any] | None) -> bool:
     """True for the super_user role only. Used to gate the most
     sensitive ops (managing other admins, role assignments above
-    collaborator)."""
-    return bool(user and user.get("role") == "super_user")
+    collaborator).
+
+    EFFECTIVE, not nominal: while a super_user is viewing another tenant, this answers
+    False, so every page gates them as that tenant's ADMIN. The point of view-as is to
+    see what the tenant's own people see — a lens that kept super powers would show the
+    super a screen nobody else can get, which is the opposite of the question being
+    asked. Their own role is untouched and returns the moment they go back to their
+    account; `is_account_super_user` reads it where the machinery needs it."""
+    return is_account_super_user(user) and not viewing_as_other_tenant()
 
 
 def is_admin(user: dict[str, Any] | None) -> bool:
@@ -132,6 +167,13 @@ def role_group(user: dict[str, Any] | None) -> str:
 # tell, return False so a broken import can't hand a client-tenant super_user developer
 # powers over the shared resources.
 def _active_tenant_is_developer() -> bool:
+    # A view-as is a CLIENT tenant's seat, and no client tenant has developer powers.
+    # active_tenant_is_developer() keys off the super's HOME tenant precisely so those
+    # powers survive a view-as — which is right for the super's own account and wrong
+    # for the lens: it would leave donor editing, Sources and Verify on screen while the
+    # page claims to show what a tenant admin sees. Close them for the duration.
+    if viewing_as_other_tenant():
+        return False
     try:
         from auth.tenant_context import active_tenant_is_developer
         return active_tenant_is_developer()

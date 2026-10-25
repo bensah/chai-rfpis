@@ -31,11 +31,13 @@ def render_org_setup(user, sb, tenant_id=None):
     another tenant from the Organization page); None = the caller's own/session tenant."""
     st.subheader("Organization Details & Preferences")
     st.caption("Org profile, bid-fitness inputs and team — used across the app and the matching engine.")
-    # Name the organisation these four tabs write to. Every tab below is scoped to
-    # `tenant_id`, so when a super_user is viewing another tenant this form edits THAT
-    # organisation — worth saying outright, because the edit is indistinguishable from
-    # editing your own until it has already been saved somewhere unexpected.
-    if tenant_id:
+    # Name the organisation these four tabs write to, but ONLY when it is not your own.
+    # A super_user's view-as target is their own tenant whenever they are looking at their
+    # own account (the URL still carries ?tenant=<their slug>), so a bare `if tenant_id`
+    # told them they were editing somebody else's organisation while they sat in theirs.
+    # Compare against the session tenant, exactly as the header's view-as banner does.
+    _own_tid = st.session_state.get("tenant_id")
+    if tenant_id and str(tenant_id) != str(_own_tid or ""):
         _target = settings.get_org(tenant_id).get("org_name") or "another organization"
         st.warning(f"✏️ You are editing **{_target}**, not your own organization. "
                    "Everything saved on these tabs belongs to that organization.")
