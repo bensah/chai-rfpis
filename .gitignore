@@ -54,3 +54,6 @@ data/team_roster.local.json
 # Local secrets crib sheet - real API keys in plaintext, never committed.
 # The authoritative values live in the deployment's own secrets store.
 docs/secrets_database
+
+# Pyodide scoring trial: generated copies of repo code and live rows
+web/scripts/spike/fixture/

@@ -87,7 +87,34 @@ it to TypeScript by hand would take weeks and drift from the Python on every cha
   and parity holds by construction.
 - Cost: Pyodide plus pandas and PyYAML is about 12 MB, downloaded once and cached. Scoring
   runs in a Web Worker, so the page stays responsive.
-- **Spike first** (start of Phase 1): load the scoring modules in Pyodide, score
+**Verdict (2026-10-25): it works — the trial is `web/scripts/spike/`.**
+
+| Measure | Result |
+|---|---|
+| Parity | **Identical on all 60 live rows**, every field, against Python's own answers |
+| Engine boot | ~3 s with a warm browser cache (~26 s on a first-ever visit: 15 MB of runtime + pandas, cached afterwards) |
+| First score | ~4 s — Python compiling 2 MB of `core/` modules, once per browser tab |
+| Each row after that | 8–16 ms (vs 5 ms in CPython, so about 2–3× slower) |
+| Carried into the browser | 107 files, 2.0 MB: all of `core/` and `config/` unchanged |
+
+Only the data layer is replaced: `db/supabase_client.py` and `auth/tenant_context.py` get
+browser stand-ins that serve the snapshot through the same query interface. **No scoring
+module changes**, which is what makes the parity argument hold.
+
+**A correctness trap the trial caught.** `core/fx.py` converts non-USD amounts with a rate
+fetched over the network. There is no `httpx` in the browser, so that call fails and the code
+silently falls back to the static table in `config/dropdowns.yaml` — EUR 1.16 against the
+live 1.1203, enough to push an amount into a different band. The snapshot therefore carries
+the rates the server used, and the browser seeds them before scoring. The 60 rows happened to
+match either way, so this would have passed an inattentive check and gone wrong later.
+
+**What this means per phase.** The boot cost is paid once per tab, in a Web Worker, so no page
+ever blocks on it: a page renders immediately from stored values and the engine refines them
+when ready. Home needs no scoring at all; Opportunity scores one row; the rail uses stored
+scores plus the geography gate. Phase 2's tables (hundreds of rows at ~10 ms each) are the
+first real test of the approach, and precomputed scores stay the fallback there.
+
+- **Spike (done — see the verdict above)**: load the scoring modules in Pyodide, score
   one week of rows, and diff against Python. If it fails (an import that can't load, or
   too slow on a modest laptop), fall back to **precomputed scores**: a GitHub Actions job
   writes `live_scores` after each scan, and after any save the API queues a re-score of
