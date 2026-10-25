@@ -196,6 +196,9 @@ def _render_maintenance(sb, user) -> None:
 # tenant's admins keep only their own tenant-scoped surfaces. See core.permissions.
 _is_super = permissions.is_super_user(user)
 _dev_super = permissions.is_developer_super(user)     # super_user in a developer tenant
+# The tenant being VIEWED — a super_user's view-as target, else their own (None).
+# Resolved centrally in core.app_header; mirrors app_pages/organization.py.
+_view_tid = st.session_state.get("su_view_tenant") if _is_super else None
 _dev_admin = permissions.is_developer_admin(user)     # admin+ in a developer tenant
 _dev_member = permissions.is_developer_member(user)   # any member of a developer tenant
 
@@ -318,7 +321,12 @@ with tab_settings:
     )
 
     st.markdown("---")
-    render_org_setup(user, sb)
+    # Edit the tenant this session is actually SHOWING. A super_user's view-as
+    # (su_view_tenant) is sticky across every page, so without it this form read and
+    # wrote the super's OWN tenant while the header named someone else's — the edit
+    # landed on the wrong organisation, and the name check then failed because the
+    # super's tenant kept its own name. Everyone else has no view-as: None = their own.
+    render_org_setup(user, sb, tenant_id=_view_tid)
     # Admin self-service: suspend (retire, never delete) this org's tenant account.
     # No-op for the super_user (who uses Accounts → Tenants) and in single-tenant mode.
     render_org_suspend(user, sb)

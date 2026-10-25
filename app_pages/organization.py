@@ -274,7 +274,9 @@ with _main:
         _kv(st, "Proposal languages", ", ".join(prof.get("proposal_languages") or []) or "—")
 
     # ── Team ──────────────────────────────────────────────────────────────
-    _members = (getattr(settings, "get_team_members", lambda: None)() or [])
+    # Scoped to the entity being shown — a super_user's view-as would otherwise list
+    # their OWN roster under another organisation's details.
+    _members = (getattr(settings, "get_team_members", lambda *_a, **_k: None)(view_tid) or [])
     if _members:
         with st.container(border=True):
             st.markdown("#### 👥 Team members")
