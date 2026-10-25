@@ -1,4 +1,4 @@
-"""Regression tests for the baseline-default screener (BUG 4).
+﻿"""Regression tests for the baseline-default screener (BUG 4).
 
 A per-tenant policy must never inherit the organisation's DEFAULT_POLICIES countries/themes, and any
 geo/theme scope a tenant leaves empty is seeded from its own profile — so a configured
@@ -27,11 +27,13 @@ class BaselinePolicyTests(unittest.TestCase):
         self._orig = {k: getattr(P, k) for k in
                       ("get_setting", "_is_scoped_tenant",
                        "_profile_geo_eligible", "_profile_theme_keywords")}
-        # Default stubs — each test overrides what it needs.
-        P.get_setting = lambda key: None
-        P._is_scoped_tenant = lambda: True
-        P._profile_geo_eligible = lambda: ["Kenya"]      # distinct from the organisation's defaults
-        P._profile_theme_keywords = lambda: []
+        # Default stubs — each test overrides what it needs. Every one takes **kw: these
+        # all accept an optional tenant_id (a super_user editing another tenant), and a
+        # stub that ignores it would make the real signature untestable here.
+        P.get_setting = lambda key, **kw: None
+        P._is_scoped_tenant = lambda *a, **kw: True
+        P._profile_geo_eligible = lambda *a, **kw: ["Kenya"]   # distinct from the organisation's defaults
+        P._profile_theme_keywords = lambda *a, **kw: []
 
     def tearDown(self):
         for k, v in self._orig.items():
@@ -41,14 +43,14 @@ class BaselinePolicyTests(unittest.TestCase):
         return pol["countries"]["eligible"], pol["countries"]["broad_terms"]
 
     def test_scoped_tenant_no_policy_seeds_from_profile(self):
-        P.get_setting = lambda key: None
+        P.get_setting = lambda key, **kw: None
         elig, broad = self._geo(P.get_policies())
         self.assertEqual(elig, ["Kenya"])          # profile geo, NOT the sample country team/Mali
         self.assertEqual(broad, [])
 
     def test_scoped_tenant_saved_without_geo_falls_back_to_profile(self):
         # A saved policy that set only themes must NOT inherit the organisation's Cameroon/Mali.
-        P.get_setting = lambda key: json.dumps({"themes": {"required_any": ["water"]}})
+        P.get_setting = lambda key, **kw: json.dumps({"themes": {"required_any": ["water"]}})
         pol = P.get_policies()
         elig, broad = self._geo(pol)
         self.assertEqual(elig, ["Kenya"])
@@ -56,28 +58,28 @@ class BaselinePolicyTests(unittest.TestCase):
         self.assertEqual(pol["themes"]["required_any"], ["water"])   # explicit theme kept
 
     def test_scoped_tenant_explicit_geo_is_honored(self):
-        P.get_setting = lambda key: json.dumps(
+        P.get_setting = lambda key, **kw: json.dumps(
             {"countries": {"eligible": ["Ghana"], "broad_terms": []}})
         elig, _ = self._geo(P.get_policies())
         self.assertEqual(elig, ["Ghana"])          # explicit wins over profile
 
     def test_scoped_tenant_region_only_scope_preserved(self):
-        P.get_setting = lambda key: json.dumps(
+        P.get_setting = lambda key, **kw: json.dumps(
             {"countries": {"eligible": [], "broad_terms": ["Sub-Saharan Africa"]}})
         elig, broad = self._geo(P.get_policies())
         self.assertEqual(elig, [])                  # region-only respected — not collapsed
         self.assertEqual(broad, ["Sub-Saharan Africa"])
 
     def test_single_tenant_no_policy_keeps_org_defaults(self):
-        P._is_scoped_tenant = lambda: False
-        P.get_setting = lambda key: None
+        P._is_scoped_tenant = lambda *a, **kw: False
+        P.get_setting = lambda key, **kw: None
         elig, _ = self._geo(P.get_policies())
         self.assertEqual(sorted(elig), ["Cameroon", "Mali"])   # shipped the organisation defaults
 
     def test_single_tenant_saved_without_geo_inherits_defaults(self):
         # Single-tenant: merging onto DEFAULT_POLICIES is correct (they're the organisation's own).
-        P._is_scoped_tenant = lambda: False
-        P.get_setting = lambda key: json.dumps({"themes": {"required_any": ["health"]}})
+        P._is_scoped_tenant = lambda *a, **kw: False
+        P.get_setting = lambda key, **kw: json.dumps({"themes": {"required_any": ["health"]}})
         elig, _ = self._geo(P.get_policies())
         self.assertEqual(sorted(elig), ["Cameroon", "Mali"])
 

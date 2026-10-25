@@ -31,6 +31,14 @@ def render_org_setup(user, sb, tenant_id=None):
     another tenant from the Organization page); None = the caller's own/session tenant."""
     st.subheader("Organization Details & Preferences")
     st.caption("Org profile, bid-fitness inputs and team — used across the app and the matching engine.")
+    # Name the organisation these four tabs write to. Every tab below is scoped to
+    # `tenant_id`, so when a super_user is viewing another tenant this form edits THAT
+    # organisation — worth saying outright, because the edit is indistinguishable from
+    # editing your own until it has already been saved somewhere unexpected.
+    if tenant_id:
+        _target = settings.get_org(tenant_id).get("org_name") or "another organization"
+        st.warning(f"✏️ You are editing **{_target}**, not your own organization. "
+                   "Everything saved on these tabs belongs to that organization.")
     _ptab, _ftab, _ttab, _stab = st.tabs(["Profile", "Bid Fitness", "Team Members", "Scan Preferences"])
     with _ptab:
         st.subheader("Organization")
@@ -169,6 +177,14 @@ def render_org_setup(user, sb, tenant_id=None):
                     settings.set_org_logo(
                         file_bytes, new_logo_file.type or "image/png",
                         updated_by=user.get("email"), tenant_id=tenant_id)
+            except settings.OrgRenameError as exc:
+                # Everything but the NAME was stored. Say so precisely — reporting a
+                # total failure would send the admin back to re-enter fields that are
+                # already saved.
+                st.warning(f"⚠ {exc}")
+                st.caption("Every other field on this form was saved.")
+                settings.clear_cache()
+                return
             except Exception as exc:
                 st.error(f"❌ Save failed — NOT persisted to the database: {exc}")
                 return
@@ -186,8 +202,8 @@ def render_org_setup(user, sb, tenant_id=None):
                 st.error(
                     "Saved without an error, but these fields did NOT persist in the "
                     "database: **" + ", ".join(_bad) + "**. The tenant write was likely "
-                    "blocked — confirm migration 072 is applied and that SUPABASE_KEY is "
-                    "the SERVICE-ROLE key (an anon key can't update the tenants table).")
+                    "blocked — check the Deployment diagnostics (Settings → Accounts → "
+                    "Deployment) and confirm SUPABASE_KEY reads as the service-role key.")
                 return
             st.success("Organization profile saved.")
             st.rerun()
@@ -701,7 +717,8 @@ def render_org_setup(user, sb, tenant_id=None):
         )
         # Defensive: never let the optional team editor crash the whole Admin
         # panel (e.g. during a hot-reload where core.settings is momentarily stale).
-        _current_members = (getattr(settings, "get_team_members", lambda: None)() or [])
+        _current_members = (getattr(settings, "get_team_members",
+                                    lambda *_a, **_k: None)(tenant_id) or [])
         _members_text = st.text_area(
             "One team member per line",
             value="\n".join(_current_members),
@@ -710,7 +727,8 @@ def render_org_setup(user, sb, tenant_id=None):
         )
         if st.button("💾 Save team members", key="save_team_members"):
             names = [ln.strip() for ln in _members_text.splitlines() if ln.strip()]
-            settings.set_team_members(names, updated_by=user.get("email"))
+            settings.set_team_members(names, updated_by=user.get("email"),
+                                      tenant_id=tenant_id)
             st.success(f"Saved {len(names)} team member(s).")
             st.rerun()
 
@@ -730,7 +748,7 @@ def render_org_setup(user, sb, tenant_id=None):
             "the system at a different organisation's priorities."
         )
         from core import policies as _pol
-        _live = _pol.get_policies()
+        _live = _pol.get_policies(tenant_id)
 
         # Render any save/reset banner from the previous rerun.
         _pol_msg = st.session_state.pop("pol_save_msg", None)
@@ -909,9 +927,9 @@ def render_org_setup(user, sb, tenant_id=None):
                          help="Replaces only the per-criterion positive/negative "
                               "terms with the latest recommended set."):
                 import copy as _copy
-                _cur = _pol.get_policies()
+                _cur = _pol.get_policies(tenant_id)
                 _cur["criteria"] = _copy.deepcopy(_pol.DEFAULT_POLICIES["criteria"])
-                _pol.set_policies(_cur, updated_by=user.get("email"))
+                _pol.set_policies(_cur, updated_by=user.get("email"), tenant_id=tenant_id)
                 for _ck in _crit_labels:
                     st.session_state.pop(f"pol_pos_{_ck}", None)
                     st.session_state.pop(f"pol_neg_{_ck}", None)
@@ -1082,11 +1100,11 @@ def render_org_setup(user, sb, tenant_id=None):
             # countries from the profile (registered + operating). An explicit region-only
             # scope (broad_terms set) is respected — the seeder no-ops when any scope is set.
             try:
-                new_pol = _pol._seed_geo_from_profile(new_pol)
+                new_pol = _pol._seed_geo_from_profile(new_pol, tenant_id)
             except Exception:
                 pass
             try:
-                _pol.set_policies(new_pol, updated_by=user.get("email"))
+                _pol.set_policies(new_pol, updated_by=user.get("email"), tenant_id=tenant_id)
                 st.session_state["pol_save_msg"] = (
                     "✓ Policies saved. The next scan will use the new rules."
                 )
@@ -1094,7 +1112,7 @@ def render_org_setup(user, sb, tenant_id=None):
             except Exception as exc:
                 st.error(f"Save failed: {exc}")
         if pc2.button("↺ Reset to defaults", key="reset_policies_btn"):
-            _pol.reset_to_defaults(updated_by=user.get("email"))
+            _pol.reset_to_defaults(updated_by=user.get("email"), tenant_id=tenant_id)
             st.session_state["pol_save_msg"] = "✓ Reset to defaults."
             st.rerun()
 
