@@ -6,7 +6,7 @@ Status: phase order approved by the owner (2026-10-24). **Phase 0 built, in revi
 
 | Phase | State | Parity evidence |
 |---|---|---|
-| 0 Foundation | Built; on local `main` for review. Not deployed | `npm test`: 13 flow tests (login, forced change, links, reset requests, session re-checks, tenant switch, view-as, routing, jobs). `npm run parity`: permissions 47,064 cases, 0 differences; routing sets and the landing tenant of all 15 users, 0 differences; notification feed for all 6 tenants, 0 differences |
+| 0 Foundation | Approved by the owner, on GitHub `main`, function deployed and live API checked (2026-10-25) | `npm test`: 13 flow tests (login, forced change, links, reset requests, session re-checks, tenant switch, view-as, routing, jobs). `npm run parity`: permissions 47,064 cases, 0 differences; routing sets and the landing tenant of all 15 users, 0 differences; notification feed for all 6 tenants, 0 differences |
 | 1 Home, Opportunity, rail | Not started | |
 | 2 Pipelines | Not started | |
 | 3 Grants, Actions, Submit | Not started | |
@@ -21,7 +21,6 @@ Phase 0 still needs, outside the code:
 - **`RFPIS_GH_DISPATCH_TOKEN`**: a fine-grained GitHub token, limited to this repository with
   "Actions: read and write", set as an Edge Function secret. Without it the deployed API marks
   jobs "not configured"; locally the dev server runs jobs on the machine instead.
-- After approval: push, deploy the function, and check the live API.
 
 ## Where we start
 
