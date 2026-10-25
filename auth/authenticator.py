@@ -913,8 +913,14 @@ def _hide_sidebar_on_login() -> None:
     st.markdown(
         """
         <style>
+          /* stExpandSidebarButton is the floating » that reopens a collapsed sidebar.
+             This used to name it "collapsedControl", which Streamlit retired — so the
+             rule hid the sidebar and left its expand button sitting on the login
+             screen, offering an anonymous visitor the page nav. Both names are listed:
+             the dead one costs nothing and keeps an older Streamlit covered. */
           [data-testid="stSidebar"],
           section[data-testid="stSidebar"],
+          [data-testid="stExpandSidebarButton"],
           [data-testid="collapsedControl"] {
             display: none !important;
           }
