@@ -57,6 +57,43 @@ except Exception:
     _APP_LOGO_SVG = ""
 
 
+# ---------------------------------------------------------------------------
+# Which attribute says the sidebar is collapsed
+# ---------------------------------------------------------------------------
+# Streamlit has changed this, and the whole icon rail hangs off it. Older builds put
+# aria-expanded="false" on the sidebar <section>; 1.66 marks it data-collapsed="true"
+# and drops aria-expanded entirely. A selector written for one is not merely less
+# specific on the other — it matches NOTHING, every rail rule stops applying, and the
+# sidebar silently reverts to Streamlit's native collapse, which slides it fully
+# off-screen (transform: translateX(-300px); width: 0). To the user the sidebar simply
+# vanishes at sign-in with no way back, which is exactly what happened here.
+#
+# `requirements.txt` does not pin Streamlit, so an unrelated reinstall can move the DOM
+# under a stylesheet nobody edited. Matching BOTH spellings makes the rail survive that
+# in either direction; add a spelling here if a future version renames it again.
+_SB = 'section[data-testid="stSidebar"]'
+_SB_COLLAPSED_ATTRS = ('[aria-expanded="false"]', '[data-collapsed="true"]')
+_SB_EXPANDED_ATTRS = ('[aria-expanded="true"]', '[data-collapsed="false"]')
+
+
+def _sb_sel(attrs: tuple[str, ...], descendant: str = "") -> str:
+    """A selector LIST matching the sidebar in one state on every supported Streamlit.
+
+    Built per rule rather than stored as one string because a descendant has to be
+    repeated inside each alternative: "A, B .child" would scope .child to B alone.
+    """
+    tail = f" {descendant}" if descendant else ""
+    return ",\n  ".join(f"{_SB}{attr}{tail}" for attr in attrs)
+
+
+def _sb_collapsed(descendant: str = "") -> str:
+    return _sb_sel(_SB_COLLAPSED_ATTRS, descendant)
+
+
+def _sb_expanded(descendant: str = "") -> str:
+    return _sb_sel(_SB_EXPANDED_ATTRS, descendant)
+
+
 _GLOBAL_CSS = f"""
 <style>
   /* ============================================================
@@ -85,6 +122,14 @@ _GLOBAL_CSS = f"""
     height: 1.5rem !important;
     min-height: 1.5rem !important;
     background: transparent !important;
+    /* The floating sidebar-expand button lives in here, and stHeader is a positioned
+       element with a z-index, so it is a STACKING CONTEXT: the button's own z-index
+       can never lift it past a sibling of stHeader. Streamlit gives the sidebar
+       999991 and stHeader 999990 — one apart — so the collapsed rail painted over the
+       only control that reopens it, and swallowed the click. Sit just above the
+       sidebar, still far below the fixed app bar (1000000) so the bar keeps covering
+       Streamlit's own toolbar. */
+    z-index: 999995 !important;
   }}
   /* NOTE: we no longer hide stToolbar — the st.logo (stHeaderLogo) shares
      that toolbar region, so hiding it removed the logo. The header now has
@@ -128,12 +173,23 @@ _GLOBAL_CSS = f"""
     padding-top: 0.2rem !important;
   }}
   /* Floating » control (mobile hamburger; also any version that renders it on
-     desktop): keep it above the fixed top bar and clickable. */
+     desktop): keep it above the fixed top bar and clickable.
+
+     position:fixed is load-bearing, not tidying. Streamlit 1.66 lays this button out
+     STATICALLY, and on a static element top/left/z-index are all ignored — so it
+     rendered at the very top of the page, underneath the fixed app bar (z-index
+     1000000), which painted straight over it. The only control that re-opens a
+     collapsed sidebar was invisible, with the rules meant to place it silently inert.
+     Same failure as the mobile one fixed in 7617002, which pinned the mobile rule and
+     left this one static. */
   [data-testid="stExpandSidebarButton"] {{
+    position: fixed !important;
     top: calc({THEME_HEADER_H} + 0.4rem) !important;   /* below the fixed app bar */
     left: 0.6rem !important;
     z-index: 1000001 !important;                        /* above the fixed top bar */
     pointer-events: auto !important;
+    visibility: visible !important;
+    opacity: 1 !important;
   }}
 
   /* ── Click-sticky icon rail ───────────────────────────────────────
@@ -143,7 +199,7 @@ _GLOBAL_CSS = f"""
      slides the whole sidebar off-screen) into a visible narrow rail of
      page icons; EXPANDED is the full sidebar with labels. App.py sets
      initial_sidebar_state="collapsed" so a fresh launch shows the rail. */
-  section[data-testid="stSidebar"][aria-expanded="false"] {{
+  {_sb_collapsed()} {{
     transform: none !important;
     margin-left: 0 !important;
     visibility: visible !important;
@@ -152,14 +208,14 @@ _GLOBAL_CSS = f"""
   }}
   /* Rail: clip nav labels; hide the user block (signed-in / logout /
      footer) and the wide logo — all return in the expanded state. */
-  section[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarContent"] {{
+  {_sb_collapsed('[data-testid="stSidebarContent"]')} {{
     overflow-x: hidden !important;
   }}
   /* Rail nav links: center the icon, hide the label text (the icon is an
      stIconEmoji, the label is markdown — hide only the markdown), and
      render each link as a padded rounded block so the active highlight
      wraps the icon neatly. */
-  section[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarNavLink"] {{
+  {_sb_collapsed('[data-testid="stSidebarNavLink"]')} {{
     display: flex !important;
     box-sizing: border-box !important;
     justify-content: center !important;
@@ -168,10 +224,10 @@ _GLOBAL_CSS = f"""
     padding: 0.55rem 0 !important;
     border-radius: 8px !important;
   }}
-  section[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarNavLink"] [data-testid="stMarkdownContainer"] {{
+  {_sb_collapsed('[data-testid="stSidebarNavLink"] [data-testid="stMarkdownContainer"]')} {{
     display: none !important;
   }}
-  section[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarUserContent"] {{
+  {_sb_collapsed('[data-testid="stSidebarUserContent"]')} {{
     display: none !important;
   }}
   /* Bigger page icons (rail + expanded). */
@@ -225,7 +281,7 @@ _GLOBAL_CSS = f"""
      could not be re-opened. Keeping this toggle visible restores the expand affordance
      right where the user collapsed it. Lift it above the fixed top bar so it stays
      clickable, and centre it in the narrow rail. */
-  section[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarCollapseButton"] {{
+  {_sb_collapsed('[data-testid="stSidebarCollapseButton"]')} {{
     display: flex !important;
     visibility: visible !important;
     opacity: 1 !important;
@@ -237,8 +293,8 @@ _GLOBAL_CSS = f"""
   /* …but the icon still points « (collapse). Because we reuse the collapse toggle
      rather than Streamlit's native expand button, its glyph never flips. In the
      collapsed rail the button EXPANDS, so mirror the chevron to point » (outward). */
-  section[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"],
-  section[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarCollapseButton"] svg {{
+  {_sb_collapsed('[data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"]')},
+  {_sb_collapsed('[data-testid="stSidebarCollapseButton"] svg')} {{
     transform: scaleX(-1) !important;
   }}
 
@@ -630,7 +686,7 @@ _GLOBAL_CSS = f"""
        mobile behaviour) so it never sits on top of the content; the ☰/»
        control re-opens it as an overlay. Overrides the desktop rail rules
        above (same selector, later + !important → wins at this width). */
-    section[data-testid="stSidebar"][aria-expanded="false"] {{
+    {_sb_collapsed()} {{
       transform: translateX(-100%) !important;
       width: 0 !important;
       min-width: 0 !important;
@@ -667,7 +723,7 @@ _GLOBAL_CSS = f"""
       justify-content: center !important;
     }}
     /* The nav overlay must clear the bar too, or its first link hides behind it. */
-    section[data-testid="stSidebar"][aria-expanded="true"] {{
+    {_sb_expanded()} {{
       z-index: 1000003 !important;
       visibility: visible !important;
     }}
