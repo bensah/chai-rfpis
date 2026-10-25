@@ -99,9 +99,20 @@ class TenantGridTests(unittest.TestCase):
     def setUpClass(cls):
         # Another module installs a fake `streamlit` and does not restore it; AppTest needs
         # the real one (same guard as test_opportunity_page_renders).
+        #
+        # The app modules the script imports have to go with it. `views.account_sections`
+        # binds `import streamlit as st` at ITS import, so a copy already in sys.modules
+        # still points at the streamlit object being dropped here. AppTest then runs the
+        # script against the FRESH streamlit while _render_tenant_grid renders through the
+        # stale one, whose per-thread state this thread never initialised —
+        # "FragmentThreadState not initialized", and only when some earlier suite happened
+        # to import account_sections first. Dropping it too makes the script's own import
+        # re-bind it to the streamlit AppTest is using.
         import importlib
+        _APP_MODULES = ("views.account_sections",)
         cls._saved = {n: sys.modules.pop(n) for n in list(sys.modules)
-                      if n == "streamlit" or n.startswith("streamlit.")}
+                      if n == "streamlit" or n.startswith("streamlit.")
+                      or n in _APP_MODULES}
         importlib.import_module("streamlit")
         os.environ.setdefault("SUPABASE_URL", "https://dummy.supabase.co")
         os.environ.setdefault("SUPABASE_KEY", "sb_secret_dummy")
@@ -110,7 +121,8 @@ class TenantGridTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         for n in [n for n in list(sys.modules)
-                  if n == "streamlit" or n.startswith("streamlit.")]:
+                  if n == "streamlit" or n.startswith("streamlit.")
+                  or n in cls._saved]:
             del sys.modules[n]
         sys.modules.update(cls._saved)
 
