@@ -16,8 +16,8 @@ Status: phase order approved by the owner (2026-10-24). **Phase 0 built, in revi
 | 7 Cut-over | — | |
 
 Phase 0 still needs, outside the code:
-- **Migration 099** (`web_jobs` + a private Storage bucket) applied to the database. Until it
-  is, starting a job fails.
+- ~~Migration 099~~ applied 2026-10-25: `web_jobs` (no anon/authenticated access) and the
+  private `web-job-files` bucket. A test job ran end to end through the local runner.
 - **`RFPIS_GH_DISPATCH_TOKEN`**: a fine-grained GitHub token, limited to this repository with
   "Actions: read and write", set as an Edge Function secret. Without it the deployed API marks
   jobs "not configured"; locally the dev server runs jobs on the machine instead.
