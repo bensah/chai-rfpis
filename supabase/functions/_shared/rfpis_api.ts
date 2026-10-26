@@ -25,6 +25,7 @@ import { createDb, q } from "./api/db.ts";
 import { corsHeaders, gzipped, HttpError, json, withCors } from "./api/http.ts";
 import { createAuthRoutes, type AuthDeps } from "./api/routes_auth.ts";
 import { createJobRoutes, type Dispatch } from "./api/routes_jobs.ts";
+import { createPhase1Routes } from "./api/routes_phase1.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
 import { createSessions } from "./api/session.ts";
 import { createTenants } from "./api/tenants.ts";
@@ -47,6 +48,7 @@ export function createApi(env: Env, deps: Deps) {
   const auth = createAuthRoutes(db, tenants, sessions, deps);
   const shell = createShellRoutes(db);
   const jobs = createJobRoutes(db, deps.dispatchJob ?? null);
+  const phase1 = createPhase1Routes(db);
 
   async function route(req: Request, path: string): Promise<Response> {
     const m = req.method;
@@ -67,6 +69,15 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/shell" && m === "GET") return shell.shell(ctx);
     if (path === "/notifications/read" && m === "POST") return shell.markRead(ctx);
     if (path === "/jobs" && m === "POST") return jobs.create(req, ctx);
+    // Phase 1. These fetch rows; the rules that act on them run in the browser's Python.
+    if (path === "/scoring/snapshot" && m === "GET") return phase1.snapshot(req, ctx);
+    if (path === "/home" && m === "GET") return phase1.home(ctx);
+    if (path === "/feed" && m === "GET") return phase1.feed(req, ctx);
+    if (path === "/opportunity" && m === "GET") {
+      const uid = new URL(req.url).searchParams.get("uid")?.trim() ?? "";
+      if (!uid) return json({ error: "No opportunity selected." }, 400);
+      return phase1.opportunity(req, ctx, uid);
+    }
     const job = path.match(/^\/jobs\/([^/]+)$/);
     if (job && m === "GET") return jobs.get(ctx, decodeURIComponent(job[1]));
 

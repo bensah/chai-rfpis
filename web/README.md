@@ -5,8 +5,32 @@ same Supabase database and the same user accounts, and takes over page by page. 
 its progress are in [`docs/FRONTEND_MIGRATION.md`](../docs/FRONTEND_MIGRATION.md).
 
 Built so far: the app shell (rail, top bar, notifications, user menu, breadcrumbs, view-as
-banner), sign-in and every account flow, the Donors page (read-only), and Settings →
-Accounts → Active tenant. Every other page shows a link to the same page in the classic app.
+banner), sign-in and every account flow, **Home**, **Opportunity** and the **live opportunity
+feed**, the Donors page (read-only), and Settings → Accounts → Active tenant. Every other
+page shows a link to the same page in the classic app.
+
+## The scoring engine
+
+Screening, the opportunity feed and the decision aid rest on about 6,500 lines of Python
+that every RFPIS surface has to agree about. Re-implementing that in TypeScript would drift,
+so the browser runs the repo's own `core/` modules under Pyodide, in a Web Worker
+(`src/scoring/`). The code that scores here is the code that scores in Streamlit.
+
+Only the data layer differs: `web/python/*_stub.py` replaces `db/supabase_client.py` and
+`auth/tenant_context.py` with stand-ins that serve a snapshot the API has already fetched,
+with this caller's permissions and tenant scope applied. No scoring module changes.
+
+Booting costs a few seconds and the first score a few more, once per tab, so nothing waits
+on it: a page renders from stored values and asks for the live numbers afterwards. The
+engine starts as soon as a signed-in page mounts.
+
+Two things to know:
+
+- `scripts/build-py-bundle.mjs` packs `core/` and `config/` into `public/py/bundle.json`
+  before dev and build. It is generated, not committed.
+- `core/fx.py` converts non-USD amounts with a live rate it fetches over the network, which
+  the browser cannot do. The API fetches the rates and the snapshot carries them; without
+  that, scoring silently falls back to a stale static table. See `api/fx.ts`.
 
 ```
 browser ──► Cloudflare Pages (static React build, free)
@@ -89,7 +113,11 @@ npm run parity    # TypeScript vs the Python originals, on the live data (read-o
 - `check-routing.mjs`: the table routing sets against `db/supabase_client.py` and migration
   098, and every user's landing tenant against `auth/tenant_context.py`;
 - `check-shell.mjs`: the notification feed against `core/notifications.recent_feed`, for every
-  tenant.
+  tenant;
+- `check-scoring.mjs`: Home's counters against `app_pages/home.py`, and the rail and
+  Opportunity page computed twice — through the browser's stand-ins over the API's snapshot,
+  and through the real Supabase client — then diffed. This is what catches a snapshot that
+  forgets a column: it found the rail losing `pursued_areas`, 28% of what Featured ranks by.
 
 `scripts/compare-with-python.mjs` checks the Donors page's model the same way.
 

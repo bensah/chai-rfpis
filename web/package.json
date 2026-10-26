@@ -1,15 +1,15 @@
-{
+﻿{
   "name": "rfpis-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "node scripts/build-py-bundle.mjs && vite",
+    "build": "node scripts/build-py-bundle.mjs && tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "test": "node --test scripts/api-flows.test.mjs",
-    "parity": "node scripts/parity/check-permissions.mjs && node scripts/parity/check-routing.mjs && node scripts/parity/check-shell.mjs"
+    "parity": "node scripts/parity/check-permissions.mjs && node scripts/parity/check-routing.mjs && node scripts/parity/check-shell.mjs && node scripts/parity/check-scoring.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.7.0",
@@ -28,3 +28,5 @@
     "vite": "^8.0.4"
   }
 }
+
+
