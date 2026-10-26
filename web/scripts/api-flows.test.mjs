@@ -385,9 +385,7 @@ test("reset code: bound to one address, normalised, and burned by too many guess
   assert.equal(spaced.body.email, "admin@x.org");
   assert.equal(tok().used_at, undefined, "a check does not consume the credential");
 
-  // Every check against THIS account is counted, the successful ones included. The guess
-  // aimed at col@x.org above resolved that account first and never reached this row, so it
-  // did not spend an attempt here — one address cannot burn down another's credential.
+  // Every check against THIS account is counted, the successful ones included.
   assert.equal(tok().attempts, 1);
 
   // Guessing burns it: once the limit is passed the credential is destroyed, not merely
@@ -396,6 +394,23 @@ test("reset code: bound to one address, normalised, and burned by too many guess
   assert.ok(tok().used_at, "the token is burned once the attempt limit is passed");
   assert.equal((await call("POST", "/tokens/peek", { email: "admin@x.org", code })).body.valid, false,
     "the real code no longer works either");
+});
+
+test("reset code: a stranger cannot burn down someone else's credential by guessing", async () => {
+  // Resolving the account from the email FIRST means a guess aimed at another address
+  // never reaches this row's attempt counter. Without that, anyone who knew an address
+  // could spend its five attempts and lock the holder out of their own reset — a denial
+  // of service that needs no access to the mailbox at all.
+  const { call, db, sent } = setup();
+  await call("POST", "/password/reset-request", { email: "admin@x.org" });
+  const code = codeFrom(sent[0].html);
+  const tok = () => db.tables.user_password_tokens.find((t) => t.user_id === "u-admin");
+  for (let i = 0; i < 20; i++) {
+    await call("POST", "/tokens/peek", { email: "col@x.org", code: String(i).padStart(6, "0") });
+  }
+  assert.equal(tok().attempts, 0, "attempts aimed elsewhere never touched this account");
+  assert.equal(tok().used_at, undefined, "and the credential is still live");
+  assert.equal((await call("POST", "/tokens/peek", { email: "admin@x.org", code })).body.valid, true);
 });
 
 test("reset code: a mistyped confirmation must not cost an attempt", async () => {
