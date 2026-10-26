@@ -8,7 +8,7 @@
 
 - **Stack:** Streamlit (Python) UI · Supabase/PostgreSQL data · deployed on Streamlit
   Community Cloud (auto-deploys on push to `main`); the deep-read scan runs on GitHub Actions.
-- **Repo:** `bensah/rfp-intelligence-system` · **Live:** deployed on Streamlit Community Cloud (URL in the deployment settings)
+- **Repo:** `bensah/chai-rfpis` (renamed 2026-10-26 from `rfp-intelligence-system`) · **Live:** deployed on Streamlit Community Cloud (URL in the deployment settings)
 - **Entry:** `Home.py` shim → `App.py` (`st.navigation` / `st.Page` multipage; views compiled by `core/render_view.py`).
 
 ---

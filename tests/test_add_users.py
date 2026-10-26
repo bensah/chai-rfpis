@@ -22,6 +22,7 @@ if _ROOT not in sys.path:
 os.environ.setdefault("SUPABASE_URL", "https://dummy.supabase.co")
 os.environ.setdefault("SUPABASE_KEY", "sb_secret_dummy")
 
+from core.password_tokens import IssuedToken as _IssuedToken   # noqa: E402
 from views import account_sections as acc      # noqa: E402
 
 
@@ -117,7 +118,8 @@ class CreateAccountTests(unittest.TestCase):
              mock.patch.object(acc, "clear_credentials_cache"), \
              mock.patch.object(acc, "_forget_declared_areas"), \
              mock.patch.object(acc, "hash_password", return_value="h"), \
-             mock.patch("core.password_tokens.issue_token", return_value=("raw", None)), \
+             mock.patch("core.password_tokens.issue_token",
+                        return_value=_IssuedToken("raw", "246801", None)), \
              mock.patch("core.password_tokens.build_link", return_value="https://x/l"), \
              mock.patch("core.user_emails._app_url", return_value="https://x"), \
              mock.patch("core.user_emails.send_welcome_email", mailer):
