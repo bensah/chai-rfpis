@@ -18,6 +18,7 @@ import bcrypt from "bcryptjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
 const { createApi } = await import(pathToFileURL(path.join(root, "supabase/functions/_shared/rfpis_api.ts")).href);
+const { fromHeader } = await import(pathToFileURL(path.join(root, "supabase/functions/_shared/api/email.ts")).href);
 
 const SERVICE_KEY = "service-key";
 const SECRET = "test-jwt-secret-of-reasonable-length-0123456789";
@@ -154,8 +155,10 @@ function fixture() {
     login_logs: [],
     app_settings: [
       { key: "app_public_url", value: "https://classic.example" },
-      // mailer._from_name: what the named From header is built from.
-      { key: "email_product_name", value: "CHAI RFPIS" },
+      // Two deliberately different strings, as the live deployment has them: a long name
+      // for the From header, a tight one for the subject line.
+      { key: "email_product_name", value: "CHAI RFP Intelligence System" },
+      { key: "email_product_short_name", value: "CHAI RFPIS" },
     ],
     tenant_settings: [{ tenant_id: T1, key: "schedule_json",
       value: JSON.stringify([{ date: "2099-01-05", note_taker: "Ada", presenter: "", chair: "Sam" }, { date: "2001-01-01" }]) }],
@@ -339,9 +342,10 @@ test("reset request: the link is sent at once, and only to an account that may u
   const link = sent[0].html.match(/https:\/\/classic\.example\/password-reset\?token=([A-Za-z0-9_-]+)/);
   assert.ok(link, "the email links to the configured app_public_url, carrying the token");
   assert.equal(createHash("sha256").update(link[1]).digest("hex"), tokens[0].token_hash);
-  // The From header is named, not a bare address (core/mailer.py::_from_header).
-  assert.equal(sent[0].from, "CHAI RFPIS <no-reply@x.org>");
-  assert.match(sent[0].subject, /^Change your CHAI RFPIS password$/);
+  // The From header is named, not a bare address (core/mailer.py::_from_header), and the
+  // subject uses the SHORT name — a different app_settings key, so the two can diverge.
+  assert.equal(sent[0].from, "CHAI RFP Intelligence System <no-reply@x.org>");
+  assert.equal(sent[0].subject, "Change your CHAI RFPIS password");
 
   // Nobody else gets one: an unknown address, a deactivated account and a blacklisted one
   // must all look identical from outside, and none may re-open an account by asking.
@@ -355,6 +359,24 @@ test("reset request: the link is sent at once, and only to an account that may u
   // Still recorded, so the audit trail of who asked survives.
   assert.deepEqual(db.tables.password_reset_requests.map((x) => x.email),
     ["admin@x.org", "ghost@x.org", "off@x.org", "bl@x.org"]);
+});
+
+test("From header: the cases email.utils.formataddr handles, and the two guards", () => {
+  const addr = "no-reply@x.org";
+  // The plain case, which is what goes out today.
+  assert.equal(fromHeader(addr, "CHAI RFP Intelligence System"),
+    "CHAI RFP Intelligence System <no-reply@x.org>");
+  // A special in the name must be quoted, or the comma splits one address into two.
+  assert.equal(fromHeader(addr, "Acme, Inc."), '"Acme, Inc." <no-reply@x.org>');
+  assert.equal(fromHeader(addr, 'He said "hi"'), '"He said \\"hi\\"" <no-reply@x.org>');
+  // A non-ASCII name must be RFC 2047 encoded, or the header is invalid.
+  assert.equal(fromHeader(addr, "Zoë Ltd"), "=?utf-8?b?Wm/DqyBMdGQ=?= <no-reply@x.org>");
+  // mailer._from_header's guards: naming an address twice produces an invalid header, and
+  // a value that is not an address is passed through as configured rather than rewritten.
+  assert.equal(fromHeader("Already Named <a@b.org>", "Ignored"), "Already Named <a@b.org>");
+  assert.equal(fromHeader("not-an-address", "Some Name"), "not-an-address");
+  // No name resolved: the bare address, not an empty display name.
+  assert.equal(fromHeader(addr, ""), addr);
 });
 
 test("reset request: with no mail configured it answers the same and mints nothing", async () => {
