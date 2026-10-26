@@ -89,6 +89,7 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/pipelines/weeks" && m === "GET") return pipelines.weeks(req, ctx);
     if (path === "/pipelines/screen" && m === "GET") return pipelines.screen(req, ctx);
     if (path === "/pipelines/summary" && m === "GET") return pipelines.summary(req, ctx);
+    if (path === "/pipelines/track" && m === "GET") return pipelines.track(req, ctx);
     if (path === "/opportunity" && m === "GET") {
       const uid = new URL(req.url).searchParams.get("uid")?.trim() ?? "";
       if (!uid) return json({ error: "No opportunity selected." }, 400);
