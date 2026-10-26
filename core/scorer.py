@@ -247,12 +247,22 @@ def alignment_score(values: Mapping[str, Any]) -> float:
 
 
 def auto_recommendation(score: float, decline_flags_present: bool) -> str:
-    """Decline-flag override beats score; thresholds from scoring_weights.yaml."""
+    """Decline-flag override beats score; thresholds from scoring_weights.yaml.
+
+    The defaults match the YAML and auto_scorer.recommend_from_composite deliberately: a
+    missing or partial config must not quietly restore the old 70/45 banding, which is the
+    discrepancy this function was half of. See the note in config/scoring_weights.yaml.
+
+    This remains a COARSER rule than the canonical one — it has no fatal-factor gate and no
+    below-award-floor cap, because it is not given the inputs those need. Both of those only
+    ever downgrade, so with the thresholds aligned this answer is an upper bound on the
+    canonical one rather than a contradiction of it.
+    """
     if decline_flags_present:
         return "Decline"
     th = _load_config().get("thresholds", {}) or {}
-    proceed = float(th.get("proceed", 70))
-    park = float(th.get("park", 45))
+    proceed = float(th.get("proceed", 90))
+    park = float(th.get("park", 70))
     if score >= proceed:
         return "Proceed"
     if score >= park:

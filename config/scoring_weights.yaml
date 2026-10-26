@@ -12,6 +12,18 @@ competitiveness:     0.10
 bid_effort:           0.09
 
 # Auto-recommendation thresholds (applied after decline-flag override).
+#
+# 90/70, matching auto_scorer.recommend_from_composite, which calls itself THE canonical
+# auto-decision rule and is what every live display already bands by.
+#
+# These were 70/45, and that was a leftover rather than a judgement (owner, 2026-10-27).
+# The composite used to be 80% criteria + 20% donor-org extras; when the extras were
+# dropped as duplicative (2026-06-29, matching.EXTRAS_WEIGHT = 0.00) the number changed
+# meaning, auto_scorer was retuned to 90/70 and these were not. The result: the SAME
+# 0-100 score banded two ways depending on how a row entered the app. A row scoring 75
+# read Park if the scan found it and Proceed if someone submitted it by hand. Measured
+# on live data at the time of the change, 95 of 266 rows banded differently between the
+# two rules, and 65 carried a stored recommendation that disagreed with the canonical one.
 thresholds:
-  proceed: 70
-  park:    45
+  proceed: 90
+  park:    70
