@@ -178,7 +178,8 @@ _ACTION_LABEL = {"activate-account": "Activate my account",
 
 def _activation_instructions(url: str, expires_hint: str,
                              what: str = "activation code",
-                             path: str = "activate-account") -> str:
+                             path: str = "activate-account",
+                             code: str = "") -> str:
     """One link that activates, and the same code underneath in case it cannot be followed.
 
     THE LINK IS THE PRIMARY ROUTE AGAIN (owner, 2026-08-17). It had been removed because it
@@ -190,8 +191,15 @@ def _activation_instructions(url: str, expires_hint: str,
 
     The code stays, below it, because a link still has ways to fail that are nobody's fault:
     a mail client rewriting or wrapping the URL, a forward to a phone, the host refusing the
-    request before the app runs. Two routes to the same single secret - the code IS the
-    token - so neither is weaker than the other.
+    request before the app runs.
+
+    THE CODE IS NO LONGER THE TOKEN (owner, 2026-10-26). It used to be the same
+    43-character secret printed twice, which made the two routes equally strong and the
+    typed one unusable in practice: nobody retypes 43 characters off a phone. It is now six
+    digits, which is weak on its own and is therefore checked differently - against one
+    named account, a limited number of times. That is why the sentence below asks for the
+    email address as well as the code, and why `core.password_tokens.check_code` refuses to
+    look a code up on its own.
 
     Both point at the dedicated activation page rather than the sign-in screen: someone
     holding an invitation has no password yet, so a page framed as "sign in" offers them two
@@ -204,7 +212,7 @@ def _activation_instructions(url: str, expires_hint: str,
         token = (parse_qs(urlsplit(url).query).get("token") or [""])[0]
     except Exception:
         token = ""
-    if not token:
+    if not token or not code:
         return ""
     base = _app_url().rstrip("/")
     # A reset lands on /password-reset and an invitation on /activate-account: the two
@@ -223,11 +231,11 @@ def _activation_instructions(url: str, expires_hint: str,
         </p>
         <p style="font-size:13px; color:#475569; margin-top:22px;">
           Or, if neither opens, go to
-          <a href="{safe_page}" style="color:#00703C;">{safe_page}</a> and enter this
-          {_html.escape(what)}:
+          <a href="{safe_page}" style="color:#00703C;">{safe_page}</a> and enter your
+          email address with this {_html.escape(what)}:
         </p>
-        <p style="font-family:monospace; font-size:14px; background:#f8f9fa; padding:12px 14px; border-radius:6px; border:1px solid #e3e7e3; word-break:break-all; color:#1f2937;">
-          {_html.escape(token)}
+        <p style="font-family:monospace; font-size:30px; letter-spacing:6px; font-weight:700; text-align:center; background:#f8f9fa; padding:16px 14px; border-radius:6px; border:1px solid #e3e7e3; color:#1f2937;">
+          {_html.escape(code)}
         </p>
         <p style="font-size:13px; color:#475569;">
           Either way it works once and expires in {_html_escape(expires_hint)}. If it
@@ -302,6 +310,7 @@ def send_welcome_email(
     to_email: str,
     to_name: str | None,
     setup_link: str,
+    code: str = "",
     expires_hint: str = "7 days",
 ) -> dict[str, Any]:
     """Sent when an admin creates an account via Manage Users.
@@ -323,7 +332,7 @@ def send_welcome_email(
     short = _short_name()
     body = f"""
         <p>An administrator has created a {_html_escape(short)} account for you.</p>
-        {_activation_instructions(setup_link, expires_hint)}
+        {_activation_instructions(setup_link, expires_hint, code=code)}
     """
     return send_email(
         to=[to_email],
@@ -337,6 +346,7 @@ def send_password_reset_email(
     to_email: str,
     to_name: str | None,
     reset_link: str,
+    code: str = "",
     expires_hint: str = "2 hours",
 ) -> dict[str, Any]:
     """Sent when an admin resets a user's password from Manage Users.
@@ -350,7 +360,7 @@ def send_password_reset_email(
         <p>An administrator has started a password reset for your
         {_html_escape(short)} account.</p>
         {_activation_instructions(reset_link, expires_hint, what="reset code",
-                                  path="password-reset")}
+                                  path="password-reset", code=code)}
         <p style="font-size:13px; color:#475569;">
           If you did NOT expect this, contact your administrator. Your existing password
           still works until this code is used, so nothing has changed yet.
