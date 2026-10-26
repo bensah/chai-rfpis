@@ -1,0 +1,64 @@
+name: Monday pipeline review
+
+# Emails every active tenant's members a summary of last week: what the Friday scan
+# found and is still waiting on a decision, and what the team actually decided, with
+# the status on each call. Separate from the digest the scan itself sends on Friday —
+# that one says "here is what just arrived", this one says "here is where it got to".
+#
+# Monday 06:00 UTC, so it is in the inbox before the week starts rather than landing
+# on Friday evening and being read on Monday anyway.
+#
+# SETUP: the same repository secrets the scan uses, plus the mailer's.
+#   Settings -> Secrets and variables -> Actions
+#     SUPABASE_URL, SUPABASE_KEY   (service-role)
+#     RESEND_API_KEY               (without it the job runs and sends nothing)
+#     RESEND_FROM_EMAIL            (fallback sender; the per-purpose address comes
+#                                   from app_settings.email_from_alerts)
+#
+# Sends on a quiet week too. "Nothing is waiting on you" is worth knowing on a
+# Monday, and silence is indistinguishable from a cron that has stopped running.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"          # Mondays 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      week_of:
+        description: "ISO date inside the week to report (blank = the week just gone)"
+        required: false
+        default: ""
+
+concurrency:
+  group: weekly-review
+  cancel-in-progress: false      # never send two overlapping runs
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Send the Monday review
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
+        run: |
+          if [ -n "${{ github.event.inputs.week_of }}" ]; then
+            python scripts/send_weekly_review.py --all --send \
+              --week-of "${{ github.event.inputs.week_of }}"
+          else
+            python scripts/send_weekly_review.py --all --send
+          fi
