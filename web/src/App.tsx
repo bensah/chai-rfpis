@@ -5,7 +5,10 @@ import { navigate, PAGES, recordVisit, setParams, useLocation, type PageKey } fr
 import Layout from "./shell/Layout";
 import ClassicPage from "./pages/ClassicPage";
 import DonorsPage from "./pages/DonorsPage";
+import HomePage from "./pages/HomePage";
+import OpportunityPage from "./pages/OpportunityPage";
 import SettingsPage from "./pages/SettingsPage";
+import { warmEngine } from "./scoring/engine";
 
 export default function App() {
   useSyncExternalStore(onSessionChange, sessionVersion);
@@ -39,6 +42,9 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
   useEffect(() => {
     me().catch(() => undefined);
     fetchShell().then((s) => setClassicUrl(s.classicUrl)).catch(() => undefined);
+    // The scoring engine takes a few seconds to start. Begin now, in the background, so it
+    // is usually ready by the time a page asks it anything.
+    warmEngine();
   }, []);
 
   // ?tenant= — app_header._apply_tenant_url: for a super_user it SELECTS a view-as tenant;
@@ -69,6 +75,10 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
   let body;
   if (!page) {
     body = <p className="pt-10 text-slate-600">Page not found.</p>;
+  } else if (shown === "home") {
+    body = <HomePage user={user} />;
+  } else if (shown === "opportunity") {
+    body = <OpportunityPage uid={params.get("uid")?.trim() ?? ""} user={user} />;
   } else if (shown === "donors") {
     body = <DonorsPage />;
   } else if (shown === "settings") {

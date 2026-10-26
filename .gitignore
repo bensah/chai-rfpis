@@ -57,3 +57,9 @@ docs/secrets_database
 
 # Pyodide scoring trial: generated copies of repo code and live rows
 web/scripts/spike/fixture/
+
+# Generated at build: the Python bundle and the manual copied from assets/help
+web/public/py/
+web/public/help/
+web/src/generated/py-bundle-hash.ts
+web/.parity/

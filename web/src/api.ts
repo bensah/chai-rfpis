@@ -159,6 +159,31 @@ export const startJob = (kind: string, params: Record<string, unknown> = {}) =>
   post<{ job: Job }>("/jobs", { kind, params }).then((r) => r.job);
 export const fetchJob = (id: string) => call<{ job: Job }>(`/jobs/${encodeURIComponent(id)}`).then((r) => r.job);
 
+// ── Home, the rail and one opportunity ───────────────────────────────────────
+export type HomeKpis = {
+  total_unique: number; total_found: number; duplicates: number;
+  proceed: number; park: number; decline: number;
+  overdue: number; due_soon: number; submitted: number; awarded_grants: number;
+};
+export const fetchHome = () => call<HomeKpis>("/home");
+
+/** The rows the rail ranks. The ranking runs in the browser's Python engine. */
+export const fetchFeedRows = () =>
+  call<{ pipeline: Record<string, unknown>[]; catalog: Record<string, unknown>[]; seen: string[] }>("/feed");
+
+export const fetchOpportunityRows = (uid: string) =>
+  call<{
+    uid: string;
+    pipelineRow: Record<string, unknown> | null;
+    catalogRow: Record<string, unknown> | null;
+    extraction: Record<string, unknown> | null;
+    isSuper: boolean;
+  }>(`/opportunity?uid=${encodeURIComponent(uid)}`);
+
+/** Everything the Python scoring path reads from the database, with this caller's
+ * permissions and tenant scope already applied. */
+export const fetchSnapshot = () => call<import("./scoring/protocol").ScoringSnapshot>("/scoring/snapshot");
+
 // ── Donors ───────────────────────────────────────────────────────────────────
 export const fetchDonors = () => call<{ donors: Donor[] }>("/donors").then((r) => {
   try {

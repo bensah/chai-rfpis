@@ -36,10 +36,10 @@ for (const f of walk(path.join(root, "core"), (n) => n.endsWith(".py"))) {
 for (const f of walk(path.join(root, "config"), (n) => n.endsWith(".yaml") || n.endsWith(".yml"))) {
   add(f, path.relative(root, f));
 }
-// The stand-ins come last, so they shadow the real db/ and auth/ modules.
-for (const f of walk(path.join(here, "browser_stubs"), (n) => n.endsWith(".py"))) {
-  add(f, path.relative(path.join(here, "browser_stubs"), f));
-}
+// The stand-ins come last, so they shadow the real db/ and auth/ modules. They live in
+// web/python/ now — the app ships the same two files (see scripts/build-py-bundle.mjs).
+add(path.join(root, "web/python/supabase_client_stub.py"), "db/supabase_client.py");
+add(path.join(root, "web/python/tenant_context_stub.py"), "auth/tenant_context.py");
 files["db/__init__.py"] = "";
 files["auth/__init__.py"] = "";
 

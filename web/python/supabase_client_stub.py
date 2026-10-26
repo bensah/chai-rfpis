@@ -132,6 +132,11 @@ def _table_rows(name: str) -> list[dict]:
         return [{"key": k, "value": v} for k, v in (snap.get("app_settings") or {}).items()]
     if name == "users":
         return [{"program": p, "is_active": True} for p in (snap.get("user_programs") or [])]
+    # Rows the host puts in for the page being rendered (the tenant's pipeline, the shared
+    # catalogue). Absent on pages that need neither, which reads as "no rows" — the same
+    # answer a failed lookup gives, which every caller already handles.
+    if name in ("rfp_submissions", "extracted_solicitations"):
+        return snap.get(name) or []
     return []
 
 

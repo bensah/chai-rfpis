@@ -7,7 +7,7 @@ Status: phase order approved by the owner (2026-10-24). **Phase 0 built, in revi
 | Phase | State | Parity evidence |
 |---|---|---|
 | 0 Foundation | Approved by the owner, on GitHub `main`, function deployed and live API checked (2026-10-25) | `npm test`: 13 flow tests (login, forced change, links, reset requests, session re-checks, tenant switch, view-as, routing, jobs). `npm run parity`: permissions 47,064 cases, 0 differences; routing sets and the landing tenant of all 15 users, 0 differences; notification feed for all 6 tenants, 0 differences |
-| 1 Home, Opportunity, rail | Not started | |
+| 1 Home, Opportunity, rail | Built; on local `main` for review | `npm run parity` adds `check-scoring.mjs`: Home's counters against `app_pages/home.py` for all 6 tenants, and the rail + 5 opportunities per tenant computed twice — through the browser's stand-ins over the API snapshot, and through the real client — with no difference that could change an answer |
 | 2 Pipelines | Not started | |
 | 3 Grants, Actions, Submit | Not started | |
 | 4 Donors (full), Search, Profile, Help, Organization | Donors read-only page live since PR #292 | Donors model: 190 donors, 0 differences |
