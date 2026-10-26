@@ -136,14 +136,9 @@ function Analysis({ a, who }: { a: Record<string, unknown>; who: string }) {
           return (
             <div key={String(c.key)}
               className={`mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-ink-200 border-l-4 bg-white px-3.5 py-2 ${edge}`}>
-              <span className="min-w-0 flex-1 text-sm text-ink-700">
-                {String(c.title)}
-                {c.is_must === true && (
-                  <span className="ml-2 rounded bg-ink-100 px-1.5 py-0.5 text-[0.65rem] font-medium tracking-wide text-ink-500 uppercase">
-                    must
-                  </span>
-                )}
-              </span>
+              {/* No "must" badge: the title core/opportunity_scoring gives already leads
+                  with "MUST 1 ·" or "PREFER 6 ·". */}
+              <span className="min-w-0 flex-1 text-sm text-ink-700">{String(c.title)}</span>
               <span className="text-sm font-semibold text-ink-800">{String(c.label ?? "")}</span>
               <span className="min-w-24 text-right text-xs text-ink-400">{String(c.count_text ?? "")}</span>
               <span className="min-w-14 text-right text-xs font-medium text-ink-600">
