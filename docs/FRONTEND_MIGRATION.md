@@ -37,24 +37,35 @@ Phase 0 still needs, outside the code:
 1. **Free tiers only.** Cloudflare Pages, Supabase Edge Functions, Supabase Storage (1 GB),
    GitHub Actions. No paid hosting.
 
-   **The repository is going private** (owner's decision, 2026-10-26). Streamlit Community
-   Cloud can deploy from a private repo, which was not understood when this was planned; it
-   needs the `repo` OAuth scope, repo admin rights, and creates a read-only deploy key it
-   pulls over SSH. Cloudflare Pages handles private repos through its GitHub App, so
-   `rfpis.pages.dev` is unaffected. Two things change, and neither is Streamlit:
+   **The repository goes private after the migration, not before** (owner's decision,
+   2026-10-26). It is public only because the plan assumed Streamlit Community Cloud could
+   not deploy from a private repo. It can — with the `repo` OAuth scope, repo admin rights,
+   and a read-only deploy key it pulls over SSH — so the constraint was never real.
 
-   - **Actions minutes stop being free.** A public repo gets unlimited GitHub-hosted
-     minutes; a private repo on the Free plan gets 2,000 a month, billed 1× on
-     `ubuntu-latest`. Today that is `scan.yml` weekly (20–40 min), `backup.yml` weekly,
-     `web-job.yml` on demand (an `extract` job is 20–40 min), and `tests.yml` on **every
-     push and pull request**, Chromium install included. Normal months fit; a busy week of
-     pushes across parallel sessions, or a few manual extractions, will not. When the quota
-     runs out everything stops, the weekly scan and backup with it. The workflows were left
-     as they are (owner's call); `tests.yml` is the one to trim first if minutes get tight.
-   - **Streamlit's app visibility is a separate setting from the repo's.** An app deployed
-     from a private repo defaults to being visible only to workspace developers. RFPIS has
-     its own login gate and real tenant users, so the app must stay publicly viewable or
-     tenants are locked out before they reach the sign-in page.
+   The switch waits for Phase 7 all the same, because there are users on the Streamlit app
+   today and flipping it now risks interrupting them: reconnecting Streamlit to a
+   now-private repo means re-authorising it with a wider scope, and an app deployed from a
+   private repo defaults to being visible only to workspace developers, which would lock
+   tenants out before they ever reach the sign-in page. Doing it at cut-over avoids that
+   entirely — Streamlit is switched off then, so only Cloudflare Pages and Actions still
+   read the repo, and Pages handles private repos through its GitHub App.
+
+   Until then the repo stays public, Actions minutes stay free, and nothing here needs
+   managing. Two things to carry into Phase 7:
+
+   - **Actions minutes stop being free the day it goes private.** A public repo gets
+     unlimited GitHub-hosted minutes; a private repo on the Free plan gets 2,000 a month,
+     billed 1× on `ubuntu-latest`. The standing workload is `scan.yml` weekly (20–40 min),
+     `backup.yml` weekly, and `web-job.yml` on demand (an `extract` job is 20–40 min) —
+     that fits. The variable one is `tests.yml`, which runs on **every push and pull
+     request** with a Chromium install; a busy week across parallel sessions, or a few
+     manual extractions, is what would eat the quota. When it runs out everything stops,
+     the weekly scan and backup with it. The workflows are deliberately left as they are
+     while the repo is public; `tests.yml` is the one to trim first.
+   - **Check Streamlit is actually off before flipping the switch.** If any Streamlit app
+     is still deployed from this repo, app visibility is a separate setting from the
+     repo's and defaults to workspace developers only — which is the lock-out described
+     above. Phase 7 turns Streamlit off, so done in that order the question never arises.
 2. **The browser never talks to Supabase.** Every read and write goes through `rfpis-api`,
    which holds the service-role key. The browser's session token is signed with a key
    derived from the JWT secret, so it is never a valid PostgREST token. The legacy HS256 key
@@ -424,6 +435,15 @@ Streamlit Cloud app. The Python code stays: the scans, backups and jobs still ru
 the scoring engine runs in the browser through Pyodide. Remove the Streamlit-only modules
 (`app_pages/`, `views/`, `core/app_header.py`, `auth/authenticator.py`) in a separate,
 later clean-up.
+
+**Then make the repository private** (rule 1). This is the last step, after the Streamlit
+app is off, because a live Streamlit app on a private repo is what would lock tenants out.
+Once it is off, only Cloudflare Pages and Actions read the repo. Two things to do with it:
+
+- Check nothing else still deploys from the repo, then flip it to private. Cloudflare
+  Pages keeps building through its GitHub App; confirm a deploy after the switch.
+- Watch Actions minutes for the first month — the free allowance drops from unlimited to
+  2,000 a month. Trim `tests.yml` first if it gets close.
 
 ## Parity evidence, per phase
 
