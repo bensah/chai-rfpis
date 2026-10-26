@@ -313,5 +313,45 @@ export function createPipelineRoutes(db: Db) {
     return gzipped(req, json({ year, rows, leads }));
   }
 
-  return { weeks, screen, summary, track };
+  /** The editor's record: one RFP, every column, and the linked grant when asked for.
+   *
+   * Unprojected, unlike every other route here. The editor writes about sixty columns
+   * across five fixed tabs (Opportunity, Eligibility, Decision & Pipeline, Team,
+   * Submission & Award) plus Application and Reporting, so a projection would be a list
+   * of nearly the whole table that then has to be kept in step with the form. One row is
+   * 4.8 KB raw and the page is opened deliberately, not in bulk.
+   *
+   * Which tabs appear is the PAGE's decision, not data: `show_application` and
+   * `show_reporting` are caller flags in rfp_editor.py, and Reporting is shown only from
+   * the Funding page so grant reporting is edited in one place. So this route does not
+   * guess — it fetches the linked grant only when `reporting=1` says the tab is open,
+   * mirroring `if show_reporting` and leaving the lookup unpaid for otherwise.
+   *
+   * A missing row and a row scoped away by RLS both answer 404. Distinguishing them would
+   * tell a caller that a uid exists in a tenant they cannot see.
+   */
+  async function rfp(req: Request, ctx: Ctx, uid: string): Promise<Response> {
+    const sb = db.as(ctx.scope);
+    const rows = await sb.get(
+      "rfp_submissions",
+      `select=*&uid=eq.${q(uid)}&limit=1`,
+    );
+    if (!rows.length) return json({ error: "Not found." }, 404);
+
+    const wantsReporting = new URL(req.url).searchParams.get("reporting") === "1";
+    let grant: Json | null = null;
+    if (wantsReporting) {
+      // form_id_link, not uid: the grant points back at the RFP. Absent is normal — it
+      // means this RFP has no reporting record yet — so a failure here is not an error
+      // for the caller, it is an empty tab.
+      const ag = await sb.get(
+        "applied_funding",
+        `select=*&form_id_link=eq.${q(uid)}&limit=1`,
+      ).catch(() => []);
+      grant = ag[0] ?? null;
+    }
+    return gzipped(req, json({ row: rows[0], grant }));
+  }
+
+  return { weeks, screen, summary, track, rfp };
 }

@@ -141,10 +141,29 @@ columns sections A to E aggregate over. The window defaults to the current
 calendar year when the page sends neither bound. Aggregation happens in the
 browser, over freshly computed scores, like every other page.
 
-### `GET /pipelines/rfp/:uid` — proposed
+### `GET /pipelines/rfp/:uid?reporting=1` — agreed
 
-The full record for the editor, all editable columns, unprojected. One row at
-4.8 KB raw is not worth trimming.
+```
+{ row: RfpSubmission, grant: AppliedFunding | null }
+```
+
+Unprojected, unlike every other route here. The editor writes about sixty
+columns across five fixed tabs (Opportunity, Eligibility, Decision & Pipeline,
+Team, Submission & Award) plus Application and Reporting, so a projection
+would be a list of nearly the whole table that then has to be kept in step
+with the form. One row is 4.8 KB raw and the page is opened deliberately
+rather than in bulk.
+
+Which tabs appear is the PAGE's decision and not the data's: `show_application`
+and `show_reporting` are caller flags in `rfp_editor.py`, and Reporting is
+shown only from the Funding page so grant reporting is edited in one place.
+The route therefore does not guess. `reporting=1` says the tab is open and
+only then is the linked grant fetched, by `form_id_link` rather than `uid`
+because the grant points back at the RFP. `grant` is null when the RFP has no
+reporting record yet, which is the normal case and not an error.
+
+A missing row and a row scoped away by RLS both answer 404. Distinguishing
+them would tell a caller that a uid exists in a tenant they cannot see.
 
 ### `PATCH /pipelines/rfp/:uid` — proposed
 
