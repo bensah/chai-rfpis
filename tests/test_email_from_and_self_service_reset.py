@@ -89,8 +89,9 @@ class SelfServiceResetTests(unittest.TestCase):
         issued, sent = [], []
 
         def _issue(**kw):
+            from core.password_tokens import IssuedToken
             issued.append(kw)
-            return "RAWTOKEN", None
+            return IssuedToken(token="RAWTOKEN", code="246801", expires_at=None)
 
         with mock.patch("core.mailer.is_configured", return_value=configured), \
              mock.patch.object(auth, "service_client", return_value=_Client(rows)), \
@@ -136,11 +137,12 @@ class SelfServiceResetTests(unittest.TestCase):
         # Reaching the send means the account exists, so reporting the failure would
         # confirm it. Must look exactly like an address with no account.
         from auth import authenticator as auth
+        from core.password_tokens import IssuedToken
         with mock.patch("core.mailer.is_configured", return_value=True), \
              mock.patch.object(auth, "service_client",
                                return_value=_Client(self._user())), \
              mock.patch("core.password_tokens.issue_token",
-                        return_value=("RAWTOKEN", None)), \
+                        return_value=IssuedToken("RAWTOKEN", "246801", None)), \
              mock.patch("core.user_emails.send_password_reset_email",
                         side_effect=RuntimeError("smtp down")):
             self.assertEqual(auth._email_reset_link("ada@example.org"),

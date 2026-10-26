@@ -293,9 +293,10 @@ def _create_user_account(user: dict, *, email: str, name: str, role: str,
     try:
         from core.password_tokens import PURPOSE_INVITE, issue_token, build_link
         from core.user_emails import _app_url
-        _raw, _ = issue_token(user_id=new_uid, purpose=PURPOSE_INVITE,
+        _issued = issue_token(user_id=new_uid, purpose=PURPOSE_INVITE,
                               created_by=user.get("email"))
-        out["link"] = build_link(_app_url(), _raw)
+        out["link"] = build_link(_app_url(), _issued.token)
+        out["code"] = _issued.code
     except Exception as exc:
         out["error"] = (f"Account created, but no activation link could be issued ({exc}). "
                         f"Use **Reset password** on the user to send one — the account "
@@ -304,7 +305,8 @@ def _create_user_account(user: dict, *, email: str, name: str, role: str,
     try:
         from core.user_emails import send_welcome_email, MailerNotConfigured
         try:
-            send_welcome_email(to_email=email, to_name=name, setup_link=out["link"])
+            send_welcome_email(to_email=email, to_name=name, setup_link=out["link"],
+                               code=out["code"])
             out["emailed"] = True
             out["link"] = None            # delivered; nothing to share by hand
         except MailerNotConfigured:
@@ -2233,12 +2235,13 @@ def render_manage_users(user: dict, sb) -> None:
                 from core.password_tokens import (
                     PURPOSE_RESET, issue_token, build_link)
                 from core.user_emails import _app_url
-                _raw, _ = issue_token(
+                _issued = issue_token(
                     user_id=_tgt.get("id"),
                     purpose=PURPOSE_RESET,
                     created_by=user.get("email"),
                 )
-                _reset_link = build_link(_app_url(), _raw)
+                _reset_link = build_link(_app_url(), _issued.token)
+                _reset_code = _issued.code
             except Exception as exc:
                 st.error(f"Could not issue a reset link: {exc}")
                 return
@@ -2247,7 +2250,7 @@ def render_manage_users(user: dict, sb) -> None:
                     send_password_reset_email, MailerNotConfigured)
                 send_password_reset_email(
                     to_email=_target_email, to_name=_tgt.get("name"),
-                    reset_link=_reset_link)
+                    reset_link=_reset_link, code=_reset_code)
                 st.success(
                     f"✅ A one-time reset link has been emailed to "
                     f"**{_target_email}**. It expires in 2 hours. Their "

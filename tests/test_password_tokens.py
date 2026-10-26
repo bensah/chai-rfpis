@@ -1,4 +1,4 @@
-"""One-time account-setup links: minted once, single-use, expiring, hash-only at rest.
+﻿"""One-time account-setup links: minted once, single-use, expiring, hash-only at rest.
 
 This flow replaced emailing a plaintext temporary password. It shipped without tests, and
 then never reached `main` at all: its PR was opened against another FEATURE BRANCH as its
@@ -113,15 +113,15 @@ class _Base(unittest.TestCase):
 
 class TheTokenIsNotStoredTests(_Base):
     def test_only_the_digest_is_written(self):
-        raw, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE)
+        raw = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE).token
         row = self.tokens[-1]
         self.assertEqual(row["token_hash"], PT._digest(raw))
         self.assertNotIn(raw, str(row),
                          "the raw token must never be persisted anywhere")
 
     def test_two_tokens_are_never_the_same(self):
-        a, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE)
-        b, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE)
+        a = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE).token
+        b = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE).token
         self.assertNotEqual(a, b)
 
     def test_an_invite_lasts_longer_than_a_reset(self):
@@ -136,43 +136,43 @@ class TheTokenIsNotStoredTests(_Base):
 
 class ALinkWorksOnceTests(_Base):
     def test_a_fresh_token_validates_and_carries_the_user(self):
-        raw, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE)
+        raw = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE).token
         rec = PT.peek_token(raw)
         self.assertIsNotNone(rec)
         self.assertEqual(rec["user"]["email"], "a@example.org")
 
     def test_peeking_does_not_spend_it(self):
         # The commonest thing a confused user does is refresh the page.
-        raw, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE)
+        raw = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE).token
         self.assertIsNotNone(PT.peek_token(raw))
         self.assertIsNotNone(PT.peek_token(raw))
 
     def test_consuming_spends_it(self):
-        raw, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE)
+        raw = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE).token
         self.assertIsNotNone(PT.consume_token(raw))
         self.assertIsNone(PT.peek_token(raw))
 
     def test_two_tabs_racing_cannot_both_spend_it(self):
-        raw, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE)
+        raw = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE).token
         self.assertIsNotNone(PT.consume_token(raw))
         self.assertIsNone(PT.consume_token(raw))
 
 
 class ExpiryAndSupersedingTests(_Base):
     def test_an_expired_link_is_refused(self):
-        raw, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_RESET)
+        raw = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_RESET).token
         self.tokens[-1]["expires_at"] = (
             datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         self.assertIsNone(PT.peek_token(raw))
 
     def test_issuing_a_new_link_retires_the_old_one(self):
-        first, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE)
-        second, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE)
+        first = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE).token
+        second = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE).token
         self.assertIsNone(PT.peek_token(first), "a re-sent invite must retire the first")
         self.assertIsNotNone(PT.peek_token(second))
 
     def test_setting_a_password_retires_every_outstanding_link(self):
-        raw, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_RESET)
+        raw = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_RESET).token
         PT.invalidate_tokens_for_user(USER)
         self.assertIsNone(PT.peek_token(raw))
 
@@ -180,16 +180,16 @@ class ExpiryAndSupersedingTests(_Base):
 class NothingIsRevealedTests(_Base):
     def test_unknown_used_and_expired_all_look_the_same(self):
         # Distinguishing them tells a stranger the link once existed.
-        used, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE)
+        used = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE).token
         PT.consume_token(used)
-        expired, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_RESET)
+        expired = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_RESET).token
         self.tokens[-1]["expires_at"] = (
             datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
         for tok in ("never-existed", used, expired, "", None):
             self.assertIsNone(PT.peek_token(tok))
 
     def test_a_token_for_a_deleted_user_is_refused(self):
-        raw, _ = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE)
+        raw = PT.issue_token(user_id=USER, purpose=PT.PURPOSE_INVITE).token
         self.store["users"].clear()
         self.assertIsNone(PT.peek_token(raw))
 
@@ -276,33 +276,56 @@ class TheEmailIsFramedAsActivationTests(unittest.TestCase):
 
         The link had been removed because it reliably failed - but the cause was a wrong
         host in configuration, not anything about links. With the right host a click is
-        better than copying 43 characters, so the link leads again. The code stays because a
-        link still has ways to fail that are nobody's fault: a mail client rewriting it, a
-        forward to a phone, the host refusing the request before the app runs. Same single
-        secret either way.
+        better than typing, so the link leads again. The code stays because a link still
+        has ways to fail that are nobody's fault: a mail client rewriting it, a forward to
+        a phone, the host refusing the request before the app runs.
+
+        The two are NO LONGER the same secret (owner, 2026-10-26): the link carries the
+        long token, the printed code is six digits.
         """
         from core import user_emails as UE
         got = self._sent(UE.send_welcome_email, to_email="a@example.org",
-                         to_name="A", setup_link="https://x.example/?token=SECRET")
+                         to_name="A", setup_link="https://x.example/?token=SECRET",
+                         code="014725")
         self.assertIn("/activate-account?token=SECRET", got["html"])   # the link
-        self.assertIn("SECRET", got["html"])                            # and the code
+        self.assertIn("014725", got["html"])                            # and the code
 
-    def test_the_invite_still_prints_the_token_as_a_pasteable_code(self):
-        # A link is not a reliable carrier: a hosted Streamlit app bootstraps a session
-        # before serving a cold request, and the round trip DROPS THE QUERY STRING - so the
-        # one visitor the link was written for is exactly the one it fails for. Measured on
-        # the live deployment: /?token=ABC -> /-/auth/app?redirect_uri=<app>/ (no token).
+    def test_the_printed_code_is_the_short_one_not_the_token(self):
+        # The whole point of the change: nobody retypes 43 characters off a phone. The
+        # token must stay in the href and must NOT appear as something to type.
         from core import user_emails as UE
         got = self._sent(UE.send_welcome_email, to_email="a@example.org", to_name="A",
-                         setup_link="https://app.example/?token=TOKEN123abc")
-        self.assertIn("TOKEN123abc", got["html"])
+                         setup_link="https://app.example/?token=TOKEN123abc",
+                         code="246801")
+        self.assertIn("246801", got["html"])
         self.assertIn("activation code", got["html"])
+        # The token appears only inside the link, never in the code block.
+        after_link = got["html"].split("TOKEN123abc")[-1]
+        self.assertNotIn("TOKEN123abc", after_link.split("246801")[-1])
+
+    def test_a_leading_zero_in_the_code_survives(self):
+        # "000123" must print as six digits: dropping the zeros would both shrink the
+        # space and print something that does not match what was stored.
+        from core import user_emails as UE
+        got = self._sent(UE.send_welcome_email, to_email="a@example.org", to_name="A",
+                         setup_link="https://app.example/?token=T", code="000123")
+        self.assertIn("000123", got["html"])
+
+    def test_no_code_means_no_code_block(self):
+        # An email with nothing typeable in it is a bug, so the block is omitted rather
+        # than printed empty.
+        from core import user_emails as UE
+        self.assertEqual(
+            UE._activation_instructions("https://app.example/?token=T", "2 hours",
+                                        code=""),
+            "")
 
     def test_the_reset_prints_its_code_too(self):
         from core import user_emails as UE
         got = self._sent(UE.send_password_reset_email, to_email="a@example.org",
-                         to_name="A", reset_link="https://app.example/?token=RESET9xy")
-        self.assertIn("RESET9xy", got["html"])
+                         to_name="A", reset_link="https://app.example/?token=RESET9xy",
+                         code="135790")
+        self.assertIn("135790", got["html"])
 
     def test_a_link_without_a_token_prints_no_code_block(self):
         from core import user_emails as UE
@@ -311,7 +334,8 @@ class TheEmailIsFramedAsActivationTests(unittest.TestCase):
     def test_the_reset_says_change_your_password(self):
         from core import user_emails as UE
         got = self._sent(UE.send_password_reset_email, to_email="a@example.org",
-                         to_name="A", reset_link="https://x.example/?token=t")
+                         to_name="A", reset_link="https://x.example/?token=t",
+                         code="112233")
         self.assertIn("Change your", got["subject"])
         self.assertIn("reset code", got["html"])
         self.assertIn("/password-reset?token=", got["html"])
@@ -394,7 +418,7 @@ if __name__ == "__main__":
 
 
 class TheActivationPageIsPublicTests(unittest.TestCase):
-    """A person holding an invitation cannot sign in — so activation cannot need a login.
+    """A person holding an invitation cannot sign in â€” so activation cannot need a login.
 
     The code box used to be an expander on the sign-in screen, beside a login form and a
     forgot-password form: two of the three things in front of them were useless and the one
@@ -446,7 +470,7 @@ class TheActivationPageIsPublicTests(unittest.TestCase):
         UE.send_email = lambda to, subject, html: got.update(html=html) or {}
         try:
             UE.send_welcome_email(to_email="a@x.org", to_name="T",
-                                  setup_link="https://x/?token=C")
+                                  setup_link="https://x/?token=C", code="100200")
         finally:
             UE.send_email = orig
         self.assertIn("/activate-account", got["html"])
@@ -522,11 +546,12 @@ class TheRoutesTests(unittest.TestCase):
         UE.send_email = lambda to, subject, html: got.update(html=html) or {}
         try:
             UE.send_welcome_email(to_email="a@x.org", to_name="T",
-                                  setup_link="https://x/?token=A1")
+                                  setup_link="https://x/?token=A1", code="100200")
             self.assertIn("/activate-account?token=A1", got["html"])
             self.assertIn("Activate my account", got["html"])
             UE.send_password_reset_email(to_email="a@x.org", to_name="T",
-                                         reset_link="https://x/?token=R2")
+                                         reset_link="https://x/?token=R2",
+                                         code="300400")
             self.assertIn("/password-reset?token=R2", got["html"])
             self.assertIn("Set a new password", got["html"])
             self.assertNotIn("Activate my account", got["html"])
