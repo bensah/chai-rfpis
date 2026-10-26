@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, Loader2, Lock, RefreshCw,
+  ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, Globe, Info, Lock, RefreshCw,
   Search, Share2, SlidersHorizontal,
 } from "lucide-react";
 import { cachedDonors, fetchDonors } from "../api";
@@ -12,6 +12,7 @@ import {
   toCsv, UNCATEGORISED, webUrl, type Donor, type Filters,
 } from "../donors/model";
 import { GEO_OPTIONS, PA_CATEGORIES } from "../donors/vocab";
+import { Badge, Button, Card, EmptyState, IconButton, Notice, PageHeader, Spinner, fieldClass } from "../ui";
 
 const PER_PAGE = 10;
 const EDIT_LOCK =
@@ -24,6 +25,7 @@ export default function DonorsPage() {
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [showFilters, setShowFilters] = useState(false);
   const [showChart, setShowChart] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [viewing, setViewing] = useState<Donor | null>(null);
@@ -62,6 +64,7 @@ export default function DonorsPage() {
   const has = (col: string) => schema.columns.includes(col);
   const setF = <K extends keyof Filters>(k: K, v: Filters[K]) => setFilters((f) => ({ ...f, [k]: v }));
   const activeFilters = Object.values(filters).filter((v) => (Array.isArray(v) ? v.length : v)).length;
+  const chips = activeFilters - (filters.q ? 1 : 0);
 
   const selectedRows = filtered.filter((r) => selected.has(r.canonical_key));
   const allSelected = filtered.length > 0 && selectedRows.length === filtered.length;
@@ -87,94 +90,100 @@ export default function DonorsPage() {
     download(name, md, "text/markdown");
   };
 
-  if (!donors && loading) {
-    return (
-      <div className="flex items-center gap-2 py-24 text-slate-500">
-        <Loader2 className="h-5 w-5 animate-spin" /> Loading donor records…
-      </div>
-    );
-  }
+  if (!donors && loading) return <Spinner label="Loading donor records…" />;
 
   return (
     <>
-      <section className="pt-8">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <h1 className="text-3xl font-bold text-navy">Your Donor Mapping</h1>
-          <button
-            onClick={load} disabled={loading}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-60"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
-          </button>
-        </div>
-        <p className="mt-2 max-w-4xl text-sm text-slate-600">
-          Your curated list of funders and what each one requires. It is country-agnostic — the same donor
-          record serves every call from that funder — and it is what the eligibility screening reads when it
-          scores an opportunity.
-        </p>
-        <p className="mt-2 max-w-4xl text-sm text-slate-600">
-          <strong>On the requirement questions:</strong> leave one blank only while you genuinely do not know
-          yet — blank is what counts as missing, and it is the only thing that lowers a donor's completeness.{" "}
-          <strong>Not sure</strong> is a real answer: it scores the same as <strong>Not required</strong>, so
-          recording it closes the gap without pretending to a certainty you do not have.
-        </p>
-        {error && (
-          <p role="alert" className="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            {error}{donors ? " Showing the last copy loaded in this browser." : ""}
-          </p>
-        )}
-      </section>
+      <PageHeader
+        title={<span className="flex items-center gap-2.5"><Globe className="h-6 w-6 text-accent-600" strokeWidth={1.9} /> Donor mapping</span>}
+        lead="Your curated list of funders and what each one requires. It is country-agnostic — the same record serves every call from that funder — and it is what eligibility screening reads when it scores an opportunity."
+        actions={<Button onClick={load} busy={loading} icon={<RefreshCw className="h-4 w-4" />}>Refresh</Button>}
+      />
+
+      <button
+        onClick={() => setShowGuide((o) => !o)} aria-expanded={showGuide}
+        className="mb-5 flex items-center gap-2 text-sm font-medium text-accent-700 hover:underline"
+      >
+        <Info className="h-4 w-4" /> How to answer the requirement questions
+        <ChevronDown className={`h-4 w-4 transition-transform ${showGuide ? "rotate-180" : ""}`} />
+      </button>
+      {showGuide && (
+        <Notice tone="brand" className="mb-6">
+          Leave a requirement blank only while you genuinely do not know yet — blank is what counts as missing, and
+          it is the only thing that lowers a donor's completeness. <strong>Not sure</strong> is a real answer: it
+          scores the same as <strong>Not required</strong>, so recording it closes the gap without pretending to a
+          certainty you do not have.
+        </Notice>
+      )}
+
+      {error && (
+        <Notice tone="warn" role="alert" className="mb-6">
+          {error}{donors ? " Showing the last copy loaded in this browser." : ""}
+        </Notice>
+      )}
 
       {rows.length === 0 && !loading && !error ? (
-        <p className="mt-8 rounded-lg bg-sky-50 px-4 py-3 text-sm text-sky-800">
-          No donor records yet. Apply migration 020, then run <code>python scripts/import_donor_intel.py</code>.
-        </p>
+        <Card>
+          <EmptyState icon={<Globe className="h-5 w-5" />} title="No donor records yet">
+            Apply migration 020, then run <code className="rounded bg-ink-100 px-1 py-0.5 text-xs">python scripts/import_donor_intel.py</code>.
+          </EmptyState>
+        </Card>
       ) : (
         <>
-          <section className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Metric label="Donors mapped" value={rows.length} />
             {has("donor_lmic_africa_focus") && <Metric label="LMIC / Africa focus" value={count("donor_lmic_africa_focus", "yes")} />}
             {has("donor_global_multi_country_scope") && <Metric label="Global / multi-country" value={count("donor_global_multi_country_scope", "yes")} />}
             {has("donor_verification_level") && <Metric label="High-confidence" value={count("donor_verification_level", "high")} />}
           </section>
 
-          <Collapsible title="Donors by category" open={showChart} onToggle={() => setShowChart((o) => !o)}>
-            <CategoryChart counts={categories} />
-          </Collapsible>
+          <Card className="mt-4">
+            <button
+              onClick={() => setShowChart((o) => !o)} aria-expanded={showChart}
+              className="flex w-full items-center justify-between rounded-xl px-5 py-3.5 text-left text-sm font-medium text-ink-700 transition-colors hover:bg-ink-50"
+            >
+              Donors by category
+              <ChevronDown className={`h-4 w-4 text-ink-400 transition-transform ${showChart ? "rotate-180" : ""}`} />
+            </button>
+            {showChart && <div className="border-t border-ink-100 px-5 py-5"><CategoryChart counts={categories} /></div>}
+          </Card>
 
-          <section className="mt-8 border-t border-slate-200 pt-6">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-xl font-bold text-navy">All donors</h2>
-              <button disabled title={EDIT_LOCK} className="flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-400">
-                <Lock className="h-4 w-4" /> Add donor
-              </button>
+          <section className="mt-8">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-lg font-bold text-brand-700">All donors</h2>
+              <Button disabled title={EDIT_LOCK} icon={<Lock className="h-4 w-4" />}>Add donor</Button>
             </div>
 
-            <div className="mt-3 flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2.5">
               <div className="relative min-w-60 flex-1">
-                <Search className="pointer-events-none absolute top-2.5 left-3 h-4 w-4 text-slate-400" />
+                <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-ink-400" />
                 <input
                   value={filters.q} onChange={(e) => setF("q", e.target.value)}
-                  placeholder="Search name / acronym / alias"
-                  className="w-full rounded-lg border border-slate-300 py-2 pr-3 pl-9 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+                  placeholder="Search name, acronym or alias" aria-label="Search donors"
+                  className={`${fieldClass} pl-9`}
                 />
               </div>
-              <button
+              <Button
                 onClick={() => setShowFilters((o) => !o)}
-                className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm ${showFilters || activeFilters > (filters.q ? 1 : 0) ? "border-brand bg-brand-soft text-brand" : "border-slate-300 text-slate-700 hover:bg-slate-50"}`}
+                icon={<SlidersHorizontal className="h-4 w-4" />}
+                className={showFilters || chips > 0 ? "border-accent-600/40 bg-accent-50 text-accent-700" : ""}
               >
-                <SlidersHorizontal className="h-4 w-4" /> Filters
-                {activeFilters - (filters.q ? 1 : 0) > 0 && <span className="rounded-full bg-brand px-1.5 text-xs text-white">{activeFilters - (filters.q ? 1 : 0)}</span>}
-              </button>
+                Filters
+                {chips > 0 && (
+                  <span className="ml-1 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-accent-600 px-1.5 py-0.5 text-xs font-semibold text-white">
+                    {chips}
+                  </span>
+                )}
+              </Button>
               {activeFilters > 0 && (
-                <button onClick={() => setFilters(EMPTY_FILTERS)} className="text-sm text-slate-500 underline hover:text-slate-700">
+                <button onClick={() => setFilters(EMPTY_FILTERS)} className="text-sm text-ink-500 underline hover:text-ink-700">
                   Clear all
                 </button>
               )}
             </div>
 
             {showFilters && (
-              <div className="mt-3 grid gap-4 rounded-xl border border-slate-200 bg-surface p-4 md:grid-cols-2 lg:grid-cols-3">
+              <Card className="mt-3 grid gap-4 p-5 md:grid-cols-2 lg:grid-cols-3">
                 <MultiSelect label="Category" options={categories.map(([c]) => c).sort()} value={filters.categories} onChange={(v) => setF("categories", v)} />
                 <MultiSelect label="Verification" options={verificationLevels} value={filters.verification} onChange={(v) => setF("verification", v)} />
                 <MultiSelect label="Strategic priority area" options={PA_CATEGORIES} value={filters.areas} onChange={(v) => setF("areas", v)}
@@ -183,17 +192,17 @@ export default function DonorsPage() {
                   help="Donors whose eligibility allows this applicant type." />
                 <MultiSelect label="Funds in (region / country)" options={GEO_OPTIONS} value={filters.fundsIn} onChange={(v) => setF("fundsIn", v)}
                   help="UN region/tier or country; matches donors that fund there (region ↔ country expansion)." />
-              </div>
+              </Card>
             )}
 
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="text-sm text-slate-600">
-                <strong className="text-slate-900">{filtered.length}</strong> of {rows.length} donors
-                {selected.size > 0 && <> · <strong className="text-slate-900">{selectedRows.length}</strong> selected</>}
+              <div className="text-sm text-ink-600">
+                <strong className="text-ink-900">{filtered.length}</strong> of {rows.length} donors
+                {selected.size > 0 && <> · <strong className="text-ink-900">{selectedRows.length}</strong> selected</>}
                 {filtered.length > 0 && (
                   <button
                     onClick={() => setSelected(allSelected ? new Set() : new Set(filtered.map((r) => r.canonical_key)))}
-                    className="ml-2 text-brand underline hover:text-brand-dark"
+                    className="ml-2 text-accent-700 underline hover:text-accent-800"
                   >
                     {allSelected ? "Clear selection" : `Select all ${filtered.length}`}
                   </button>
@@ -201,87 +210,102 @@ export default function DonorsPage() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {selectedRows.length === 1 && (
-                  <ActionButton onClick={() => setViewing(selectedRows[0])} icon={<Eye className="h-4 w-4" />}>View</ActionButton>
+                  <Button variant="primary" size="sm" onClick={() => setViewing(selectedRows[0])} icon={<Eye className="h-4 w-4" />}>
+                    View
+                  </Button>
                 )}
                 {selectedRows.length > 0 && (
-                  <ActionButton onClick={() => share(selectedRows)} icon={<Share2 className="h-4 w-4" />}>
+                  <Button size="sm" onClick={() => share(selectedRows)} icon={<Share2 className="h-4 w-4" />}>
                     Share{selectedRows.length > 1 ? ` ${selectedRows.length}` : ""} (.md)
-                  </ActionButton>
+                  </Button>
                 )}
                 {selectedRows.length > 0 && (
-                  <button disabled title={EDIT_LOCK} className="flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-400">
-                    <Lock className="h-4 w-4" /> Edit / Delete
-                  </button>
+                  <Button size="sm" disabled title={EDIT_LOCK} icon={<Lock className="h-4 w-4" />}>Edit / Delete</Button>
                 )}
               </div>
             </div>
 
-            <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200">
-              <table className="w-full min-w-[44rem] text-sm">
-                <thead className="bg-surface text-left text-xs font-semibold tracking-wide text-slate-500 uppercase">
-                  <tr>
-                    <th className="w-10 px-3 py-2.5">
-                      <input type="checkbox" checked={pageAllSelected} onChange={togglePage} aria-label="Select this page" className="accent-brand" />
-                    </th>
-                    <th className="px-3 py-2.5">Donor</th>
-                    <th className="px-3 py-2.5">Short</th>
-                    <th className="px-3 py-2.5">Category</th>
-                    <th className="px-3 py-2.5">Verification</th>
-                    <th className="px-3 py-2.5">Website</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pageRows.length === 0 && (
-                    <tr><td colSpan={6} className="px-3 py-10 text-center text-slate-500">No donors match these filters.</td></tr>
-                  )}
-                  {pageRows.map((r) => {
-                    const cat = normalizeCategory(r.donor_category);
-                    const web = webUrl(r.donor_website);
-                    const on = selected.has(r.canonical_key);
-                    return (
-                      <tr key={r.canonical_key} className={`border-t border-slate-100 ${on ? "bg-brand-soft/60" : "hover:bg-slate-50"}`}>
-                        <td className="px-3 py-2.5">
-                          <input type="checkbox" checked={on} onChange={() => toggle(r.canonical_key)} aria-label={`Select ${String(r.donor ?? "")}`} className="accent-brand" />
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <button onClick={() => setViewing(r)} className="text-left font-medium text-navy hover:text-brand hover:underline">
-                            {String(r.donor ?? "—")}
-                          </button>
-                        </td>
-                        <td className="px-3 py-2.5 text-slate-600">{String(r.donor_short ?? "")}</td>
-                        <td className="px-3 py-2.5 text-slate-600">{cat === UNCATEGORISED ? <span className="text-slate-400">{cat}</span> : cat}</td>
-                        <td className="px-3 py-2.5"><Verification level={r.donor_verification_level} /></td>
-                        <td className="px-3 py-2.5">
-                          {web
-                            ? <a href={web} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-brand hover:underline">Open <ExternalLink className="h-3.5 w-3.5" /></a>
-                            : <span className="text-slate-300">—</span>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <Card className="mt-3 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[44rem] text-sm">
+                  <thead>
+                    <tr className="border-b border-ink-200 bg-ink-50 text-left text-[0.7rem] font-semibold tracking-[0.06em] text-ink-500 uppercase">
+                      <th className="w-10 px-4 py-3">
+                        <input
+                          type="checkbox" checked={pageAllSelected} onChange={togglePage}
+                          aria-label="Select this page" className="h-4 w-4 accent-[#117996]"
+                        />
+                      </th>
+                      <th className="px-4 py-3">Donor</th>
+                      <th className="px-4 py-3">Short</th>
+                      <th className="px-4 py-3">Category</th>
+                      <th className="px-4 py-3">Verification</th>
+                      <th className="px-4 py-3">Website</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pageRows.length === 0 && (
+                      <tr><td colSpan={6} className="px-4 py-14 text-center text-ink-500">No donors match these filters.</td></tr>
+                    )}
+                    {pageRows.map((r) => {
+                      const cat = normalizeCategory(r.donor_category);
+                      const web = webUrl(r.donor_website);
+                      const on = selected.has(r.canonical_key);
+                      return (
+                        <tr
+                          key={r.canonical_key}
+                          className={`border-b border-ink-100 transition-colors last:border-0 ${on ? "bg-brand-50" : "hover:bg-ink-50"}`}
+                        >
+                          <td className="px-4 py-3">
+                            <input
+                              type="checkbox" checked={on} onChange={() => toggle(r.canonical_key)}
+                              aria-label={`Select ${String(r.donor ?? "")}`} className="h-4 w-4 accent-[#117996]"
+                            />
+                          </td>
+                          <td className="px-4 py-3">
+                            <button onClick={() => setViewing(r)} className="text-left font-medium text-brand-700 hover:text-accent-700 hover:underline">
+                              {String(r.donor ?? "—")}
+                            </button>
+                          </td>
+                          <td className="px-4 py-3 text-ink-600">{String(r.donor_short ?? "")}</td>
+                          <td className="px-4 py-3 text-ink-600">{cat === UNCATEGORISED ? <span className="text-ink-400">{cat}</span> : cat}</td>
+                          <td className="px-4 py-3"><Verification level={r.donor_verification_level} /></td>
+                          <td className="px-4 py-3">
+                            {web
+                              ? <a href={web} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent-700 hover:underline">Open <ExternalLink className="h-3.5 w-3.5" /></a>
+                              : <span className="text-ink-300">—</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
 
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-600">
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-ink-600">
               <span>
                 Showing {pageRows.length ? (Math.min(page, pages) - 1) * PER_PAGE + 1 : 0}–{(Math.min(page, pages) - 1) * PER_PAGE + pageRows.length} of {filtered.length}
               </span>
               <div className="flex items-center gap-1">
-                <PageButton disabled={page <= 1} onClick={() => setPage((p) => p - 1)} label="Previous page"><ChevronLeft className="h-4 w-4" /></PageButton>
-                <span className="px-2">Page {Math.min(page, pages)} of {pages}</span>
-                <PageButton disabled={page >= pages} onClick={() => setPage((p) => p + 1)} label="Next page"><ChevronRight className="h-4 w-4" /></PageButton>
+                <IconButton label="Previous page" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+                  <ChevronLeft className="h-4 w-4" />
+                </IconButton>
+                <span className="px-2 tabular-nums">Page {Math.min(page, pages)} of {pages}</span>
+                <IconButton label="Next page" disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>
+                  <ChevronRight className="h-4 w-4" />
+                </IconButton>
               </div>
             </div>
 
-            <div className="mt-6 border-t border-slate-200 pt-4">
-              <button
+            <div className="mt-8 border-t border-ink-200 pt-5">
+              <Button
                 onClick={() => download("donor_intelligence_mapping.csv", toCsv(filtered, schema.columns), "text/csv")}
                 title="Exports every row in the current (filtered) table — all pages, all columns. Clear filters first to export the whole dataset."
-                className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                icon={<Download className="h-4 w-4" />}
               >
-                <Download className="h-4 w-4" /> Download all {filtered.length} donors (CSV)
-              </button>
+                Download all {filtered.length} donors (CSV)
+              </Button>
             </div>
           </section>
         </>
@@ -294,44 +318,16 @@ export default function DonorsPage() {
 
 function Metric({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-xl border border-slate-200 p-4">
-      <div className="text-sm text-slate-500">{label}</div>
-      <div className="mt-1 text-3xl font-semibold tabular-nums text-navy">{value}</div>
-    </div>
-  );
-}
-
-function Collapsible({ title, open, onToggle, children }: { title: string; open: boolean; onToggle: () => void; children: React.ReactNode }) {
-  return (
-    <section className="mt-4 rounded-xl border border-slate-200">
-      <button onClick={onToggle} aria-expanded={open} className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium text-slate-700 hover:bg-slate-50">
-        {title}
-        <ChevronDown className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && <div className="border-t border-slate-100 px-4 py-4">{children}</div>}
-    </section>
+    <Card className="p-5">
+      <div className="text-xs font-medium tracking-wide text-ink-500 uppercase">{label}</div>
+      <div className="mt-1.5 text-3xl font-bold tabular-nums text-brand-700">{value}</div>
+    </Card>
   );
 }
 
 function Verification({ level }: { level: unknown }) {
   const v = String(level ?? "").trim().toLowerCase();
-  if (!v) return <span className="text-slate-300">—</span>;
-  const tone = v === "high" ? "bg-green-50 text-green-700" : v === "medium" ? "bg-amber-50 text-amber-700" : v === "low" ? "bg-red-50 text-red-700" : "bg-slate-100 text-slate-600";
-  return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>{v}</span>;
-}
-
-function ActionButton({ onClick, icon, children }: { onClick: () => void; icon: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <button onClick={onClick} className="flex items-center gap-1.5 rounded-lg border border-brand bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-dark">
-      {icon} {children}
-    </button>
-  );
-}
-
-function PageButton({ disabled, onClick, label, children }: { disabled: boolean; onClick: () => void; label: string; children: React.ReactNode }) {
-  return (
-    <button disabled={disabled} onClick={onClick} aria-label={label} className="rounded-lg border border-slate-200 p-1.5 hover:bg-slate-50 disabled:opacity-40">
-      {children}
-    </button>
-  );
+  if (!v) return <span className="text-ink-300">—</span>;
+  const tone = v === "high" ? "good" : v === "medium" ? "warn" : v === "low" ? "bad" : "neutral";
+  return <Badge tone={tone}>{v}</Badge>;
 }

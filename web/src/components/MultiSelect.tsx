@@ -36,46 +36,54 @@ export default function MultiSelect({ label, options, value, onChange, help, for
 
   return (
     <div ref={box} className="relative">
-      <div className="mb-1 text-sm font-medium text-slate-700" title={help}>{label}</div>
+      <div className="mb-1.5 text-sm font-medium text-ink-700" title={help}>{label}</div>
       <button
-        type="button" onClick={() => setOpen((o) => !o)}
-        className="flex min-h-10 w-full items-center gap-1 rounded-lg border border-slate-300 bg-white px-2 py-1 text-left hover:border-slate-400"
+        type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open}
+        className={`flex min-h-10 w-full items-center gap-1 rounded-lg border bg-white px-2 py-1 text-left transition-colors ${
+          open ? "border-accent-600 ring-2 ring-accent-600/15" : "border-ink-300 hover:border-ink-400"
+        }`}
       >
         <div className="flex flex-1 flex-wrap gap-1">
-          {value.length === 0 && <span className="px-1 text-sm text-slate-400">Any</span>}
+          {value.length === 0 && <span className="px-1 text-sm text-ink-400">Any</span>}
           {value.map((v) => (
-            <span key={v} className="flex items-center gap-1 rounded-full bg-brand-soft px-2 py-0.5 text-xs text-brand">
+            <span key={v} className="flex items-center gap-1 rounded-full bg-accent-50 px-2 py-0.5 text-xs font-medium text-accent-700">
               {format(v)}
               <X
-                className="h-3 w-3 cursor-pointer" aria-label={`Remove ${format(v)}`}
+                className="h-3 w-3 cursor-pointer hover:text-accent-800" aria-label={`Remove ${format(v)}`}
                 onClick={(e) => { e.stopPropagation(); toggle(v); }}
               />
             </span>
           ))}
         </div>
-        <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+        <ChevronDown className={`h-4 w-4 shrink-0 text-ink-400 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
-        <div className="absolute z-40 mt-1 w-full rounded-lg border border-slate-200 bg-white shadow-lg">
+        <div className="absolute z-40 mt-1.5 w-full overflow-hidden rounded-xl border border-ink-200 bg-white shadow-float">
           <input
             autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Type to filter…"
-            className="w-full border-b border-slate-100 px-3 py-2 text-sm outline-none"
+            aria-label={`Filter ${label}`}
+            className="w-full border-b border-ink-100 px-3 py-2.5 text-sm outline-none placeholder:text-ink-400"
           />
           <ul className="max-h-64 overflow-auto py-1">
-            {shown.length === 0 && <li className="px-3 py-2 text-sm text-slate-400">No matches</li>}
-            {shown.map((o) => (
-              <li key={o}>
-                <button
-                  type="button" onClick={() => toggle(o)}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-slate-50"
-                >
-                  <span className={`flex h-4 w-4 items-center justify-center rounded border ${value.includes(o) ? "border-brand bg-brand text-white" : "border-slate-300"}`}>
-                    {value.includes(o) && <Check className="h-3 w-3" />}
-                  </span>
-                  {format(o)}
-                </button>
-              </li>
-            ))}
+            {shown.length === 0 && <li className="px-3 py-2.5 text-sm text-ink-400">No matches</li>}
+            {shown.map((o) => {
+              const on = value.includes(o);
+              return (
+                <li key={o}>
+                  <button
+                    type="button" onClick={() => toggle(o)}
+                    className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors hover:bg-ink-50"
+                  >
+                    <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
+                      on ? "border-accent-600 bg-accent-600 text-white" : "border-ink-300"
+                    }`}>
+                      {on && <Check className="h-3 w-3" strokeWidth={3} />}
+                    </span>
+                    {format(o)}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

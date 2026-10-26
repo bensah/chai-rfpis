@@ -9,11 +9,12 @@
  * Python engine (core/opportunity_feed.py), which is what Streamlit runs.
  */
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { ExternalLink, Loader2, Radio } from "lucide-react";
 import { fetchFeedRows } from "../api";
 import { scoreFeed, useEngine } from "../scoring/engine";
 import type { FeedItem, FeedResult } from "../scoring/protocol";
 import { hrefOf, Link } from "../router";
+import { Card, Eyebrow } from "../ui";
 
 /** views/opportunity_rail.py::_fmt_amount */
 export function fmtAmount(amount: number, currency: string): string {
@@ -25,64 +26,68 @@ export function fmtAmount(amount: number, currency: string): string {
   return `${sym}${Math.round(amount).toLocaleString("en-US")}`;
 }
 
-/** views/opportunity_rail.py::_deadline_chip */
-export function deadlineChip(days: number | null): string {
-  if (days === null) return "";
-  if (days < 0) return "⏳ closed";
-  if (days === 0) return "⏳ due today";
-  if (days <= 14) return `🔴 ${days}d left`;
-  if (days <= 45) return `🟠 ${days}d left`;
-  return `🗓 ${days}d`;
+/** views/opportunity_rail.py::_deadline_chip, as a label plus the tone it was coloured by. */
+export function deadlineChip(days: number | null): { text: string; className: string } | null {
+  if (days === null) return null;
+  if (days < 0) return { text: "closed", className: "text-ink-400" };
+  if (days === 0) return { text: "due today", className: "text-bad-700 font-medium" };
+  if (days <= 14) return { text: `${days}d left`, className: "text-bad-700 font-medium" };
+  if (days <= 45) return { text: `${days}d left`, className: "text-gold-700 font-medium" };
+  return { text: `${days}d`, className: "text-ink-500" };
 }
 
 function Item({ item }: { item: FeedItem }) {
   const title = item.title.length > 70 ? `${item.title.slice(0, 70)}…` : item.title;
-  const bits = [item.funder.slice(0, 34), fmtAmount(item.amount, item.currency), deadlineChip(item.days_until)]
-    .filter(Boolean);
   const uid = String(item.uid ?? "").trim();
+  const amount = fmtAmount(item.amount, item.currency);
+  const chip = deadlineChip(item.days_until);
   return (
-    <div className="border-b border-slate-100 py-2.5 last:border-b-0">
+    <div className="border-t border-ink-100 py-2.5 first:border-t-0 first:pt-0">
       {uid ? (
         <Link to={hrefOf("opportunity", { uid })} title="Open this opportunity in full"
-          className="text-sm font-semibold text-brand-dark hover:underline">
+          className="text-sm leading-snug font-semibold text-brand-700 hover:text-accent-700 hover:underline">
           {title}
         </Link>
       ) : (
-        <span className="text-sm font-semibold">{title}</span>
+        <span className="text-sm leading-snug font-semibold text-ink-800">{title}</span>
       )}
-      <div className="mt-0.5 text-xs text-slate-500">
-        {bits.join("  ·  ")}
+      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-500">
+        {item.funder && <span className="truncate">{item.funder.slice(0, 34)}</span>}
+        {amount && <span className="font-medium text-ink-700">{amount}</span>}
+        {chip && <span className={chip.className}>{chip.text}</span>}
         {item.link && (
-          <>
-            {bits.length ? "  ·  " : ""}
-            <a href={item.link} target="_blank" rel="noreferrer" className="text-brand hover:underline">↗</a>
-          </>
+          <a href={item.link} target="_blank" rel="noreferrer" title="Open the call"
+            className="text-accent-600 hover:text-accent-700">
+            <ExternalLink className="h-3 w-3" />
+          </a>
         )}
       </div>
-      {item._why && <div className="mt-0.5 text-xs text-brand">
-        <strong>Why:</strong> {item._why}
-      </div>}
+      {item._why && (
+        <p className="mt-1 text-xs leading-snug text-accent-700">
+          <span className="font-semibold">Why:</span> {item._why}
+        </p>
+      )}
     </div>
   );
 }
 
-function Card({ title, help, items, empty }: {
+function FeedCard({ title, help, items, empty }: {
   title: string; help: string; items: FeedItem[] | undefined; empty: string;
 }) {
   return (
-    <section className="mb-3 rounded-xl border border-slate-200 bg-white p-4">
-      <h3 className="font-semibold text-slate-800">{title}</h3>
-      <p className="mt-0.5 text-xs text-slate-500">{help}</p>
-      <div className="mt-2">
+    <Card className="mb-3 p-4">
+      <h3 className="text-sm font-semibold text-ink-800">{title}</h3>
+      <p className="mt-0.5 text-xs leading-snug text-ink-500">{help}</p>
+      <div className="mt-2.5">
         {items === undefined ? (
-          <div className="py-2 text-xs text-slate-400">…</div>
+          <div className="py-3 text-xs text-ink-400">…</div>
         ) : items.length === 0 ? (
-          <p className="py-1 text-xs italic text-slate-400">{empty}</p>
+          <p className="py-1 text-xs text-ink-400 italic">{empty}</p>
         ) : (
           items.map((it, i) => <Item key={`${it.uid ?? i}`} item={it} />)
         )}
       </div>
-    </section>
+    </Card>
   );
 }
 
@@ -105,24 +110,28 @@ export default function OpportunityRail({ tenantName }: { tenantName?: string | 
 
   return (
     <aside className="w-full">
-      <div className="text-xs font-bold tracking-wide text-brand">🔴 LIVE OPPORTUNITY FEED</div>
-      <p className="mb-2 mt-0.5 text-xs text-slate-500">Every title opens that opportunity in full.</p>
+      <Eyebrow>
+        <span className="inline-flex items-center gap-1.5">
+          <Radio className="h-3.5 w-3.5 text-bad-600" /> Live opportunity feed
+        </span>
+      </Eyebrow>
+      <p className="mt-1 mb-2.5 text-xs text-ink-500">Every title opens that opportunity in full.</p>
       {!feed && !error && (
-        <p className="mb-3 flex items-center gap-1.5 text-xs text-slate-500">
-          <Loader2 className="h-3 w-3 animate-spin" />
+        <p className="mb-3 flex items-center gap-1.5 text-xs text-ink-500">
+          <Loader2 className="h-3 w-3 animate-spin text-accent-600" />
           {engine.state === "starting" ? engine.detail : "Ranking opportunities…"}
         </p>
       )}
-      {error && <p className="mb-3 text-xs italic text-slate-500">Opportunity feed unavailable: {error}</p>}
-      <Card title="🎯 Featured for you"
+      {error && <p className="mb-3 text-xs text-ink-500 italic">Opportunity feed unavailable: {error}</p>}
+      <FeedCard title="🎯 Featured for you"
         help={"Ranked from the whole catalogue against your geography, programme areas and the funders you " +
           "work with — including calls your screening didn't pick up."}
         items={feed?.featured} empty="Nothing to feature yet — run an extraction." />
-      <Card title="✅ Top Matches" help={`Strong fit for ${who} (Proceed / Park / high alignment).`}
+      <FeedCard title="✅ Top Matches" help={`Strong fit for ${who} (Proceed / Park / high alignment).`}
         items={feed?.top_matches} empty="No strong matches yet." />
-      <Card title="💰 Top Funding" help={`Biggest / most-urgent calls ${who} is geographically eligible for.`}
+      <FeedCard title="💰 Top Funding" help={`Biggest / most-urgent calls ${who} is geographically eligible for.`}
         items={feed?.top_funding} empty="No live opportunities yet — run a scan." />
-      <Card title="✨ Also Interesting" help="Fresh calls that aren't a match but are worth a look."
+      <FeedCard title="✨ Also Interesting" help="Fresh calls that aren't a match but are worth a look."
         items={feed?.other} empty="Nothing else new right now." />
     </aside>
   );

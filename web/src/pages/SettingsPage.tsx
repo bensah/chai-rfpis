@@ -5,24 +5,40 @@
  * until its phase lands.
  */
 import { useState } from "react";
-import { Loader2 } from "lucide-react";
+import { CheckCircle2, ExternalLink, PlayCircle, Settings as SettingsIcon } from "lucide-react";
 import { startJob, switchTenant, type Job, type User } from "../api";
 import { JOB_STATUS_LABEL, useJob } from "../jobs";
 import ClassicPage from "./ClassicPage";
+import { Badge, Button, Card, Eyebrow, Notice, PageHeader, Select } from "../ui";
 
 const isSuper = (u: User) => u.role === "super_user";
 
-function Tabs({ tabs, active, onPick }: { tabs: string[]; active: string; onPick: (t: string) => void }) {
+/** The top level reads as a segmented control; the second as quieter pills inside it. */
+function Tabs({ tabs, active, onPick, variant = "solid" }: {
+  tabs: string[]; active: string; onPick: (t: string) => void; variant?: "solid" | "quiet";
+}) {
   return (
-    <div role="tablist" className="mb-5 flex flex-wrap gap-1 border-b border-slate-200">
-      {tabs.map((t) => (
-        <button
-          key={t} role="tab" aria-selected={t === active} onClick={() => onPick(t)}
-          className={`-mb-px border-b-2 px-3 py-2 text-sm ${t === active ? "border-brand font-semibold text-brand-dark" : "border-transparent text-slate-600 hover:text-slate-900"}`}
-        >
-          {t}
-        </button>
-      ))}
+    <div
+      role="tablist"
+      className={`flex flex-wrap gap-1 ${variant === "solid" ? "rounded-xl border border-ink-200 bg-white p-1 shadow-card" : ""}`}
+    >
+      {tabs.map((t) => {
+        const on = t === active;
+        return (
+          <button
+            key={t} role="tab" aria-selected={on} onClick={() => onPick(t)}
+            className={`rounded-lg px-3.5 py-1.5 text-sm transition-colors ${
+              on
+                ? variant === "solid"
+                  ? "bg-brand-700 font-semibold text-white"
+                  : "bg-brand-50 font-semibold text-brand-700"
+                : "text-ink-600 hover:bg-ink-100 hover:text-ink-900"
+            }`}
+          >
+            {t}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -39,19 +55,27 @@ export default function SettingsPage({ user, classicUrl }: { user: User; classic
   const [acct, setAcct] = useState(acctTabs[0]);
 
   return (
-    <section className="pt-4">
-      <h1 className="mb-4 text-3xl font-bold text-navy">⚙️ Settings</h1>
+    <section>
+      <PageHeader
+        title={<span className="flex items-center gap-2.5"><SettingsIcon className="h-6 w-6 text-accent-600" strokeWidth={1.9} /> Settings</span>}
+        lead="Accounts, tenants, records and the scan — everything an administrator controls."
+      />
       <Tabs tabs={tabs} active={tab} onPick={setTab} />
-      {tab !== "Accounts" ? (
-        <ClassicPage page="settings" classicUrl={classicUrl} />
-      ) : (
-        <>
-          <Tabs tabs={acctTabs} active={acct} onPick={setAcct} />
-          {acct === "Active tenant" && <ActiveTenant user={user} />}
-          {acct === "Deployment" && <JobTest />}
-          {acct !== "Active tenant" && <ClassicPage page="settings" classicUrl={classicUrl} />}
-        </>
-      )}
+      <div className="mt-6">
+        {tab !== "Accounts" ? (
+          <ClassicPage page="settings" classicUrl={classicUrl} />
+        ) : (
+          <>
+            <Tabs tabs={acctTabs} active={acct} onPick={setAcct} variant="quiet" />
+            {/* Deployment shows the job test and, under it, the classic link for env_diag. */}
+            <div className="mt-5 space-y-6">
+              {acct === "Active tenant" && <ActiveTenant user={user} />}
+              {acct === "Deployment" && <JobTest />}
+              {acct !== "Active tenant" && <ClassicPage page="settings" classicUrl={classicUrl} />}
+            </div>
+          </>
+        )}
+      </div>
     </section>
   );
 }
@@ -66,25 +90,27 @@ function ActiveTenant({ user }: { user: User }) {
   const label = (m: (typeof mems)[number]) => m.name || m.slug || "tenant";
 
   return (
-    <div className="max-w-2xl">
-      <h2 className="mb-2 text-xl font-semibold">Active tenant</h2>
+    <Card className="max-w-2xl p-6">
+      <Eyebrow>Active tenant</Eyebrow>
       {!mems.length ? (
-        <p className="rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-900">You don't belong to any tenant yet.</p>
+        <Notice tone="brand">You don't belong to any tenant yet.</Notice>
       ) : mems.length === 1 ? (
-        <p>You belong to one tenant: <strong>{label(mems[0])}</strong>. It is selected automatically when you sign in.</p>
+        <p className="text-sm text-ink-700">
+          You belong to one tenant, <strong className="text-brand-700">{label(mems[0])}</strong>. It is selected
+          automatically when you sign in.
+        </p>
       ) : (
         <>
-          <p className="mb-3 text-sm text-slate-500">
+          <p className="mb-4 text-sm leading-relaxed text-ink-600">
             You belong to more than one tenant. Switching scopes every page to the selected tenant, and your choice is
             remembered across sign-ins.
           </p>
-          <div className="flex gap-2">
-            <select value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Tenant"
-              className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2">
+          <div className="flex flex-wrap gap-2">
+            <Select value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Tenant" className="min-w-0 flex-1">
               {mems.map((m) => <option key={m.id} value={m.id}>{label(m)}</option>)}
-            </select>
-            <button
-              disabled={pick === cur || busy}
+            </Select>
+            <Button
+              variant="primary" busy={busy} disabled={pick === cur}
               title={pick === cur ? "This is already your active tenant." : undefined}
               onClick={async () => {
                 setBusy(true);
@@ -97,15 +123,14 @@ function ActiveTenant({ user }: { user: User }) {
                   setBusy(false);
                 }
               }}
-              className="rounded-lg bg-brand px-4 py-2 font-semibold text-white hover:bg-brand-dark disabled:opacity-50"
             >
               Switch
-            </button>
+            </Button>
           </div>
-          {error && <p className="mt-2 text-sm text-red-700">{error}</p>}
+          {error && <Notice tone="bad" className="mt-3">{error}</Notice>}
         </>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -116,14 +141,14 @@ function JobTest() {
   const job = useJob(started);
   const running = !!job && !["done", "failed", "cancelled"].includes(job.status);
   return (
-    <div className="mb-6 max-w-2xl rounded-xl border border-slate-200 p-5">
-      <h2 className="text-lg font-semibold">Background jobs</h2>
-      <p className="mt-1 text-sm text-slate-500">
-        Heavy work (scans, PDF reports, backups) runs on GitHub Actions. This runs an empty test job to check the
-        connection end to end.
+    <Card className="max-w-2xl p-6">
+      <Eyebrow>Background jobs</Eyebrow>
+      <p className="text-sm leading-relaxed text-ink-600">
+        Heavy work — scans, PDF reports, backups — runs on GitHub Actions rather than in the page. This runs an
+        empty test job to check the connection end to end.
       </p>
-      <button
-        disabled={running}
+      <Button
+        busy={running} className="mt-4" icon={<PlayCircle className="h-4 w-4" />}
         onClick={async () => {
           setError(null);
           try {
@@ -132,19 +157,31 @@ function JobTest() {
             setError(e instanceof Error ? e.message : "Could not start the job.");
           }
         }}
-        className="mt-3 flex items-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-60"
       >
-        {running && <Loader2 className="h-4 w-4 animate-spin" />} Run a test job
-      </button>
-      {error && <p className="mt-2 text-sm text-red-700">{error}</p>}
+        Run a test job
+      </Button>
+      {error && <Notice tone="bad" className="mt-3">{error}</Notice>}
       {job && (
-        <div className="mt-3 text-sm">
-          <div><strong>{JOB_STATUS_LABEL[job.status]}</strong>{job.progress?.message ? ` · ${job.progress.message}` : ""}</div>
-          {job.status === "done" && <div className="text-slate-600">Runner: {String(job.result?.runner ?? "?")}</div>}
-          {job.status === "failed" && job.message && <div className="text-red-700">{job.message}</div>}
-          {job.run_url && <a href={job.run_url} target="_blank" rel="noreferrer" className="text-brand hover:underline">Open the Actions run</a>}
+        <div className="mt-4 rounded-lg border border-ink-200 bg-ink-50 p-3.5 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={job.status === "done" ? "good" : job.status === "failed" ? "bad" : "accent"}>
+              {job.status === "done" && <CheckCircle2 className="h-3 w-3" />}
+              {JOB_STATUS_LABEL[job.status]}
+            </Badge>
+            {job.progress?.message && <span className="text-ink-600">{job.progress.message}</span>}
+          </div>
+          {job.status === "done" && <div className="mt-2 text-ink-600">Runner: {String(job.result?.runner ?? "?")}</div>}
+          {job.status === "failed" && job.message && <div className="mt-2 text-bad-700">{job.message}</div>}
+          {job.run_url && (
+            <a
+              href={job.run_url} target="_blank" rel="noreferrer"
+              className="mt-2 inline-flex items-center gap-1 text-accent-700 hover:underline"
+            >
+              Open the Actions run <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          )}
         </div>
       )}
-    </div>
+    </Card>
   );
 }
