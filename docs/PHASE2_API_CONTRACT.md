@@ -88,19 +88,58 @@ counts are a cheap aggregate and carry no rows.
 `drop_concluded` applied server-side in that order, projected to the columns
 Screen draws.
 
-### `GET /pipelines/track` — proposed
+### `GET /pipelines/track?year=<yyyy>` — agreed
 
 ```
 { rows: RfpSubmission[],
+  leads: { uid: string, proposalLeads: string[] }[],
   nextActions: { uid: string, action: string, due: string | null }[] }
 ```
 
-Scoped to rows that are live work rather than a week: the Track filter set
-decides which, and that set is pinned by the parity harness. `nextActions` is
-derived from meeting notes server-side because it is a join the browser would
-otherwise make over data it has no other reason to hold.
+Six conditions from `tracking_rfp.py::_fetch`, all load-bearing, applied
+server-side:
 
-### `GET /pipelines/summary` — open, see below
+1. `is_duplicate` is false
+2. `decision` is exactly `"Proceed"` or `"Proceed as sub"`
+3. the year of `submitted_at` equals `year` (not `review_week`)
+4. `donor_decision`, lower-cased, is `""` or `"not submitted"`
+5. `progress_status`, lower-cased, is not `"completed"` or `"discontinued"`
+6. `call_submission_deadline` is null, or on or after today
+
+**Condition 2 contradicts Screen, deliberately.** Screen uses the EFFECTIVE
+decision: stored falling back to `auto_recommendation`, Proceed matched by
+`startswith`. Track uses the STORED column only, matched exactly against those
+two strings. So a freshly scanned row whose auto-recommendation is Proceed
+appears on Screen and must NOT appear on Track until a person has actually
+decided. Harmonising the two "for consistency" would fill Track with work
+nobody has committed to, which is the opposite of what the page is for.
+
+**Condition 5 overrides condition 2.** A Completed or Discontinued row drops
+out entirely even though its decision is still Proceed, and must not appear in
+the card, the dropdown or the table.
+
+`leads` is the second query: `duplicate_of_uid,proposal_lead` where
+`is_duplicate` is true and `duplicate_of_uid` is among the result uids, so the
+leads on a duplicate group reach the canonical row. Server-side for the same
+reason as `nextActions`: a join over rows the browser has no other reason to
+hold.
+
+Days-to-deadline, deadline status and `_usd` all stay in the browser. `_usd`
+needs FX rates, and the browser already has them: `/scoring/snapshot` returns
+`fx_rates` from `ratesFor()` for exactly the currencies the tenant's rows use.
+Computing it here would mean a second rate source to keep in step with that
+one.
+
+### `GET /pipelines/summary?from=<iso>&to=<iso>` — agreed
+
+```
+{ rows: RfpSubmission[], from: string, to: string }
+```
+
+Rows whose `submitted_at` falls in the half-open window, projected to the
+columns sections A to E aggregate over. The window defaults to the current
+calendar year when the page sends neither bound. Aggregation happens in the
+browser, over freshly computed scores, like every other page.
 
 ### `GET /pipelines/rfp/:uid` — proposed
 
@@ -113,7 +152,49 @@ Body is a sparse object of changed columns only. The route validates column
 names against the editable set and rejects unknown keys rather than ignoring
 them, so a typo in a field name fails loudly instead of silently not saving.
 
-Applies `score_submission` on save and performs the `applied_funding` upsert.
+Applies `score_submission` on save, and stamps `decision_overridden_by` and
+`decision_overridden_at` from the caller.
+
+**The `applied_funding` write is conditional, not a plain upsert.** It happens
+only when the Reporting tab was shown. With a linked row it updates by
+`funding_id`. Without one it inserts ONLY if some reporting value is non-empty,
+seeding `funding_id` as `G-{uid}` and `form_id_link` back to the RFP. An
+unconditional upsert would mint an empty grant row on every save.
+
+**The route must RETURN the completed-without-a-donor-decision condition**, not
+merely save:
+
+```
+{ row: RfpSubmission,
+  warnings: [{ code: "completed_without_donor_decision" }] }
+```
+
+This is a feature and not a side effect, and it is the one thing in this phase
+most likely to be lost in translation. Saving `progress_status` Completed while
+`donor_decision` is blank means the row will not reach Applied Funding. The
+Python warns on screen, and the comment above it (owner, 2026-08-17) records
+that this REPLACED code which silently forced "Under Review" — and that the
+invisible write is how a grant went missing once. The whole point was to stop
+the app deciding quietly and say it out loud. A route that just saves
+reintroduces the silent failure with extra steps, and nobody finds out until
+another grant goes missing.
+
+Checked against the Python before writing this, because the frontend session
+flagged that the settings and users save paths deliberately DROP columns that
+no longer exist (`PGRST204` / schema-cache handling in `core/settings.py` and
+`views/account_sections.py`) so a schema change cannot break a save, and
+rejecting loudly here would then be a behaviour change rather than a
+hardening.
+
+It is not, because the two cases are different. `rfp_editor.py` builds an
+explicit `update` dict from its widgets and calls `.update()` with it
+(line 630); it has no drop-unknown handling, so a column that vanished would
+already surface as an error rather than a silent partial save. And rejecting
+unknown keys here is validation of a CLIENT payload, not tolerance of schema
+drift: it catches a mistyped field name in the React code, which the Python
+form cannot produce because its payload is built from the widgets themselves.
+Schema drift, if it ever reaches this route, still fails the same way it fails
+in the editor today.
 
 ### `POST /pipelines/decision` — proposed
 

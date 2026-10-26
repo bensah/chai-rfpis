@@ -27,6 +27,7 @@ import { corsHeaders, gzipped, HttpError, json, withCors } from "./api/http.ts";
 import { createAuthRoutes, type AuthDeps } from "./api/routes_auth.ts";
 import { createJobRoutes, type Dispatch } from "./api/routes_jobs.ts";
 import { createPhase1Routes } from "./api/routes_phase1.ts";
+import { createPipelineRoutes } from "./api/routes_pipelines.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
 import { createSessions } from "./api/session.ts";
 import { createTenants } from "./api/tenants.ts";
@@ -59,6 +60,7 @@ export function createApi(env: Env, deps: Deps) {
   const shell = createShellRoutes(db);
   const jobs = createJobRoutes(db, deps.dispatchJob ?? null);
   const phase1 = createPhase1Routes(db);
+  const pipelines = createPipelineRoutes(db);
 
   async function route(req: Request, path: string): Promise<Response> {
     const m = req.method;
@@ -83,6 +85,10 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/scoring/snapshot" && m === "GET") return phase1.snapshot(req, ctx);
     if (path === "/home" && m === "GET") return phase1.home(ctx);
     if (path === "/feed" && m === "GET") return phase1.feed(req, ctx);
+    // Phase 2. Same division: these serve rows, the page scores and decides.
+    if (path === "/pipelines/weeks" && m === "GET") return pipelines.weeks(req, ctx);
+    if (path === "/pipelines/screen" && m === "GET") return pipelines.screen(req, ctx);
+    if (path === "/pipelines/summary" && m === "GET") return pipelines.summary(req, ctx);
     if (path === "/opportunity" && m === "GET") {
       const uid = new URL(req.url).searchParams.get("uid")?.trim() ?? "";
       if (!uid) return json({ error: "No opportunity selected." }, 400);
