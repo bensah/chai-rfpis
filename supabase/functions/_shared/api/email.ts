@@ -38,7 +38,14 @@ export function fromHeader(sender: string, display: string): string {
   if (/^[^<]*<[^>]+>$/.test(s)) return s;       // already "Name <addr>"
   const name = display.trim();
   if (!name) return s;
-  // RFC 5322: a display name containing a special must be a quoted-string.
+  // The two things email.utils.formataddr does, both of which matter:
+  //   * RFC 2047-encode a non-ASCII name — "Zoë Ltd" raw is an invalid header;
+  //   * RFC 5322-quote a name containing a special — get the comma wrong and
+  //     "Acme, Inc. <a@b.org>" is parsed as TWO addresses.
+  if (/[^\x20-\x7e]/.test(name)) {
+    const bytes = new TextEncoder().encode(name);
+    return `=?utf-8?b?${btoa(String.fromCharCode(...bytes))}?= <${s}>`;
+  }
   const quoted = /[(),.:;<>@\[\]\\"]/.test(name) ? `"${name.replace(/(["\\])/g, "\\$1")}"` : name;
   return `${quoted} <${s}>`;
 }
@@ -61,8 +68,13 @@ export function createMailer(db: Db, env: MailEnv) {
     return val;
   }
 
+  // The same keys and the same fallbacks as user_emails._product_name / _short_name, which
+  // are deliberately different strings: a deployment can carry a long name in the header and
+  // a tight one in the subject line. Python also consults EMAIL_* environment variables
+  // between the setting and the literal; the Edge Function is given none of them, so
+  // app_settings is the only source here.
   const productName = async () => (await setting("email_product_name")) || "RFP Intelligence System";
-  const shortName = async () => (await setting("email_product_short_name")) || await productName();
+  const shortName = async () => (await setting("email_product_short_name")) || "RFPIS";
   /** mailer._from_name: `email_from_name` wins, else the product name already in the header. */
   const fromName = async () => (await setting("email_from_name")) || (await setting("email_product_name"));
 
