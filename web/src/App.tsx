@@ -6,6 +6,7 @@ import Layout from "./shell/Layout";
 import ClassicPage from "./pages/ClassicPage";
 import DonorsPage from "./pages/DonorsPage";
 import SettingsPage from "./pages/SettingsPage";
+import { EmptyState } from "./ui";
 
 export default function App() {
   useSyncExternalStore(onSessionChange, sessionVersion);
@@ -68,13 +69,13 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
 
   let body;
   if (!page) {
-    body = <p className="pt-10 text-slate-600">Page not found.</p>;
+    body = <EmptyState title="Page not found">That address doesn't match any page in RFPIS.</EmptyState>;
   } else if (shown === "donors") {
     body = <DonorsPage />;
   } else if (shown === "settings") {
     body = user.role === "admin" || user.role === "super_user"
       ? <SettingsPage user={user} classicUrl={classicUrl} />
-      : <p className="pt-10 text-slate-600">You don't have access to Settings.</p>;
+      : <EmptyState title="Settings is for administrators">Ask an administrator if you need something changed here.</EmptyState>;
   } else {
     body = <ClassicPage page={shown} classicUrl={classicUrl} />;
   }

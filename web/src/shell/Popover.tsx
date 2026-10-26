@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-/** A button that opens a panel below it (Streamlit's st.popover). Closes on outside click
- * or Escape; `close` is handed to the content so an action inside can dismiss it. */
-export default function Popover({ label, title, badge, children, align = "right", width = "w-80" }: {
-  label: ReactNode; title: string; badge?: string | null; align?: "left" | "right"; width?: string;
+/**
+ * A button that opens a panel below it (Streamlit's st.popover). Closes on an
+ * outside click or Escape; `close` is handed to the content so an action inside
+ * can dismiss it. Styled for the white top bar.
+ */
+export default function Popover({
+  label, title, badge, children, align = "right", width = "w-80", triggerClass = "",
+}: {
+  label: ReactNode; title: string; badge?: string | null; align?: "left" | "right";
+  width?: string; triggerClass?: string;
   children: (close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -21,23 +27,27 @@ export default function Popover({ label, title, badge, children, align = "right"
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
   return (
     <div ref={ref} className="relative">
       <button
-        type="button" title={title} aria-label={title} aria-expanded={open}
+        type="button" title={title} aria-label={title} aria-expanded={open} aria-haspopup="dialog"
         onClick={() => setOpen((o) => !o)}
-        className="relative flex h-10 w-10 items-center justify-center rounded-lg text-lg text-white hover:bg-white/10"
+        className={`relative inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+          open ? "bg-brand-50 text-brand-700" : "text-ink-500 hover:bg-ink-100 hover:text-ink-800"
+        } ${triggerClass}`}
       >
         {label}
         {badge && (
-          <span className="absolute -right-1 -top-0.5 rounded-full bg-red-600 px-1.5 py-0.5 text-[0.6rem] font-bold leading-none text-white">
+          <span className="absolute -top-0.5 -right-0.5 min-w-[1.05rem] rounded-full bg-accent-600 px-1 py-0.5 text-[0.6rem] leading-none font-bold text-white ring-2 ring-white">
             {badge}
           </span>
         )}
       </button>
       {open && (
         <div
-          className={`absolute top-12 z-50 ${align === "right" ? "right-0" : "left-0"} ${width} max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white p-4 text-slate-800 shadow-xl`}
+          role="dialog" aria-label={title}
+          className={`absolute top-[calc(100%+0.5rem)] z-50 ${align === "right" ? "right-0" : "left-0"} ${width} max-w-[calc(100vw-2rem)] rounded-xl border border-ink-200 bg-white p-4 text-ink-800 shadow-float`}
         >
           {children(() => setOpen(false))}
         </div>

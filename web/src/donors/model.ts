@@ -338,9 +338,10 @@ export function completeness(row: Donor, schema: Schema): { pct: number; have: n
 }
 
 export function completenessBand(pct: number): { label: string; color: string } {
-  if (pct >= 75) return { label: "High", color: "#16a34a" };
-  if (pct >= 50) return { label: "Moderate", color: "#d97706" };
-  return { label: "Low", color: "#dc2626" };
+  // CHAI expanded accents: Dark Green, Dark Gold, Dark Red.
+  if (pct >= 75) return { label: "High", color: "#169E5F" };
+  if (pct >= 50) return { label: "Moderate", color: "#C08E0A" };
+  return { label: "Low", color: "#7C1220" };
 }
 
 // ---------------------------------------------------------------------------

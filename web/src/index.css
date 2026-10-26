@@ -1,23 +1,134 @@
 @import "tailwindcss";
 
-/* Same palette as the Streamlit app (.streamlit/config.toml + the donor dialog CSS). */
+/* ───────────────────────────────────────────────────────────────────────────
+   CHAI design system.
+
+   The palette is the official CHAI one (CHAI Identity Guide) and it is kept
+   deliberately small: Dark Blue carries the brand, Turquoise is the single
+   accent, and everything else is neutral. Gold, green and red appear only
+   where a status has to be read at a glance — never as decoration.
+
+     Dark Blue  #003E78   brand-700   primary: sidebar, headings, buttons
+     Turquoise  #117996   accent-600  links, focus, active marks, charts
+     Gold       #F3B71B   gold-500    attention
+     Light Blue #D5E7EF   brand-100   tinted surfaces
+     Light Grey #F2F2F2               neutral surfaces
+
+   Type is Fira Sans, a CHAI-approved font (Trebuchet MS is the fallback for
+   anyone offline).
+   ─────────────────────────────────────────────────────────────────────────── */
 @theme {
-  --color-brand: #00703c;
-  --color-brand-dark: #005a30;
-  --color-brand-soft: #e6f2eb;
-  --color-navy: #0f3d6e;
-  --color-surface: #f4f6f4;
-  --font-sans: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Brand — CHAI Dark Blue at 700. */
+  --color-brand-50: #f0f5fa;
+  --color-brand-100: #d5e7ef;
+  --color-brand-200: #b3cfe4;
+  --color-brand-300: #85afd0;
+  --color-brand-400: #5287b4;
+  --color-brand-500: #2a6296;
+  --color-brand-600: #0f4d85;
+  --color-brand-700: #003e78;
+  --color-brand-800: #003264;
+  --color-brand-900: #00264e;
+  --color-brand-950: #001930;
+
+  /* Accent — CHAI Turquoise at 600. */
+  --color-accent-50: #eef7fa;
+  --color-accent-100: #d2ebf2;
+  --color-accent-200: #a6d6e4;
+  --color-accent-300: #6bb8ce;
+  --color-accent-400: #3697b4;
+  --color-accent-500: #1a87a4;
+  --color-accent-600: #117996;
+  --color-accent-700: #0d6179;
+  --color-accent-800: #0b4e61;
+
+  /* Gold — attention only. */
+  --color-gold-100: #fdf3d8;
+  --color-gold-300: #f8d476;
+  --color-gold-500: #f3b71b;
+  --color-gold-700: #c08e0a;
+
+  /* Status — the CHAI expanded accents, used only for state. */
+  --color-good-50: #e8f8f0;
+  --color-good-600: #169e5f;
+  --color-good-700: #0f7847;
+  --color-bad-50: #fbeced;
+  --color-bad-600: #a3303c;
+  --color-bad-700: #7c1220;
+
+  /* Neutrals — one cool grey ramp for every surface, border and label. */
+  --color-ink-50: #f7f9fb;
+  --color-ink-100: #eef1f5;
+  --color-ink-200: #e0e5ec;
+  --color-ink-300: #c8d0da;
+  --color-ink-400: #94a1b2;
+  --color-ink-500: #67748a;
+  --color-ink-600: #4b586c;
+  --color-ink-700: #374152;
+  --color-ink-800: #232c3a;
+  --color-ink-900: #141b26;
+
+  --color-canvas: #f5f7fa;
+
+  --font-sans: "Fira Sans", "Trebuchet MS", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --radius-card: 0.75rem;
+  --shadow-card: 0 1px 2px rgb(20 27 38 / 0.04), 0 1px 3px rgb(20 27 38 / 0.06);
+  --shadow-float: 0 10px 30px -12px rgb(20 27 38 / 0.25), 0 2px 8px rgb(20 27 38 / 0.08);
 }
 
-html {
-  color: #1b1b1b;
-  background: #fff;
+/* These are defaults, so they belong in the base layer — unlayered rules would outrank
+   every Tailwind utility and a `text-white` heading would come out blue. */
+@layer base {
+  html {
+    color: var(--color-ink-800);
+    background: var(--color-canvas);
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-feature-settings: "kern", "liga";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Headings carry the brand; body copy stays near-black, as the Identity Guide asks. */
+  h1, h2, h3 {
+    color: var(--color-brand-700);
+    letter-spacing: -0.015em;
+  }
+
+  ::selection {
+    background: var(--color-accent-100);
+    color: var(--color-accent-800);
+  }
+
+  /* One focus treatment everywhere, in the accent, so keyboard use is obvious. */
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-accent-600);
+    outline-offset: 2px;
+  }
 }
 
-body {
-  margin: 0;
-  -webkit-font-smoothing: antialiased;
+/* Slim scrollbars; the dark sidebar gets a light one. */
+@supports (scrollbar-width: thin) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ink-300) transparent;
+  }
+  .scroll-on-dark {
+    scrollbar-color: rgb(255 255 255 / 0.25) transparent;
+  }
+}
+
+/* The sidebar slides in on a phone; respect a reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* "Print / save as PDF" on a donor profile prints just the dialog. */

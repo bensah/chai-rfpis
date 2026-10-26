@@ -8,6 +8,7 @@ import {
   type Schema,
 } from "../donors/model";
 import { categoryFull, RATING_WORD, subareaLabel } from "../donors/vocab";
+import { IconButton } from "../ui";
 
 // Read-only full intelligence for one donor — the Streamlit page's _view_dialog, section for
 // section. "Download / print (PDF)" there is a server-side ReportLab render; here the
@@ -129,23 +130,23 @@ export default function DonorDialog({ row, schema, onClose, onShare }: Props) {
   const institutional = CONTACT_FIELDS.filter((c) => !identity.includes(c) && d(c));
 
   return createPortal(
-    <div className="print-root fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:p-8" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div role="dialog" aria-modal="true" aria-label={title} className="dialog-panel w-full max-w-4xl rounded-2xl bg-white shadow-2xl">
-        <div className="sticky top-0 z-10 rounded-t-2xl border-b-2 border-slate-200 bg-white px-6 pt-5 pb-4">
+    <div className="print-root fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-brand-950/50 p-4 backdrop-blur-[2px] sm:p-8" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div role="dialog" aria-modal="true" aria-label={title} className="dialog-panel w-full max-w-4xl rounded-2xl bg-white shadow-float">
+        <div className="sticky top-0 z-10 rounded-t-2xl border-b border-ink-200 bg-white/95 px-6 pt-5 pb-4 backdrop-blur-md">
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
-              <h2 className="text-2xl leading-tight font-extrabold text-navy">{title}</h2>
-              <div className="mt-1 text-sm text-slate-500">
+              <h2 className="text-2xl leading-tight font-bold text-brand-700">{title}</h2>
+              <div className="mt-1 text-sm text-ink-500">
                 {[cat !== UNCATEGORISED ? cat : null, d("donor_founded") ? `Founded ${d("donor_founded")}` : null,
                   funders.length ? `Partnered with ${funders.slice(0, 3).join(", ")}${funders.length > 3 ? "…" : ""}` : null]
                   .filter(Boolean).join(" · ")}
                 {website && (
                   <> {cat !== UNCATEGORISED || d("donor_founded") || funders.length ? "· " : ""}
-                    <a href={/^https?:\/\//.test(website) ? website : `https://${website}`} target="_blank" rel="noreferrer" className="text-brand hover:underline">{website}</a>
+                    <a href={/^https?:\/\//.test(website) ? website : `https://${website}`} target="_blank" rel="noreferrer" className="text-accent-700 hover:underline">{website}</a>
                   </>
                 )}
               </div>
-              <span className="mt-2 inline-block rounded-full px-3 py-0.5 text-xs font-bold text-white" style={{ background: band.color }}>
+              <span className="mt-2.5 inline-block rounded-full px-3 py-1 text-xs font-semibold text-white" style={{ background: band.color }}>
                 Data completeness {pct}% · {band.label} ({have}/{total} fields)
               </span>
             </div>
@@ -159,8 +160,8 @@ export default function DonorDialog({ row, schema, onClose, onShare }: Props) {
 
         <div className="space-y-4 px-6 py-5">
           {row.donor_verification_level === "low" && (
-            <p className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
-              <AlertTriangle className="h-4 w-4" /> Low verification — confirm against the live call package.
+            <p className="flex items-center gap-2.5 rounded-lg border border-gold-500/30 bg-gold-100 px-3.5 py-2.5 text-sm text-gold-700">
+              <AlertTriangle className="h-4 w-4 shrink-0" /> Low verification — confirm against the live call package.
             </p>
           )}
 
@@ -181,7 +182,12 @@ export default function DonorDialog({ row, schema, onClose, onShare }: Props) {
             <Section icon="💰" title="Funding">
               {facts.length > 0 && (
                 <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
-                  {facts.map(([lbl, v]) => <div key={lbl} className="text-sm"><div className="font-semibold">{lbl}</div><div className="text-slate-700">{v}</div></div>)}
+                  {facts.map(([lbl, v]) => (
+                    <div key={lbl} className="text-sm">
+                      <div className="text-[0.7rem] font-semibold tracking-[0.08em] text-ink-500 uppercase">{lbl}</div>
+                      <div className="mt-0.5 font-medium text-ink-800">{v}</div>
+                    </div>
+                  ))}
                 </div>
               )}
               {mech.length > 0 && <Block title="Funding mechanism"><Chips items={mech} /></Block>}
@@ -202,11 +208,11 @@ export default function DonorDialog({ row, schema, onClose, onShare }: Props) {
                 <Block title="Strategic priority areas">
                   {bars.map(([k, v]) => (
                     <div key={k} className="my-1 flex items-center gap-3">
-                      <div className="w-60 shrink-0 text-sm leading-tight">{subareaLabel(k)} <span className="text-xs text-slate-400">· {categoryFull(k)}</span></div>
-                      <div className="h-3 flex-1 rounded-md bg-slate-100">
-                        <div className="h-3 rounded-md bg-gradient-to-r from-[#34a06b] to-brand" style={{ width: `${(v / 5) * 100}%` }} />
+                      <div className="w-60 shrink-0 text-sm leading-tight">{subareaLabel(k)} <span className="text-xs text-ink-400">· {categoryFull(k)}</span></div>
+                      <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-ink-100">
+                        <div className="h-full rounded-full bg-accent-600" style={{ width: `${(v / 5) * 100}%` }} />
                       </div>
-                      <div className="w-24 shrink-0 text-right text-xs font-semibold text-navy">{v}/5 · {RATING_WORD[v]}</div>
+                      <div className="w-24 shrink-0 text-right text-xs font-semibold text-brand-700">{v}/5 · {RATING_WORD[v]}</div>
                     </div>
                   ))}
                   {ungraded.length > 0 && <Chips items={ungraded.map(subareaLabel)} />}
@@ -243,16 +249,16 @@ export default function DonorDialog({ row, schema, onClose, onShare }: Props) {
 
           {guide.length > 0 && (
             <Section icon="🧭" title="Strategic guidance">
-              <p className="mb-2 text-xs text-slate-500">Funder-centric guidance for any applicant — what this donor rewards, what to avoid, and how to position a strong bid.</p>
+              <p className="mb-3 text-xs text-ink-500">Funder-centric guidance for any applicant — what this donor rewards, what to avoid, and how to position a strong bid.</p>
               {guide.map((c) => <Block key={c} title={label(c)}><Text>{d(c)!}</Text></Block>)}
             </Section>
           )}
 
           <Section icon="📇" title="Contacts — focal persons">
             {institutional.length > 0 && <KvList items={institutional.map((c) => [label(c), d(c)!])} />}
-            {contacts === null && !contactsError && <p className="flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> Loading contacts…</p>}
-            {contactsError && <p className="text-sm text-amber-700">Couldn't load contacts right now.</p>}
-            {contacts && contacts.length === 0 && institutional.length === 0 && <p className="text-sm text-slate-500">No contacts recorded for your organisation.</p>}
+            {contacts === null && !contactsError && <p className="flex items-center gap-2 text-sm text-ink-500"><Loader2 className="h-4 w-4 animate-spin text-accent-600" /> Loading contacts…</p>}
+            {contactsError && <p className="text-sm text-gold-700">Couldn't load contacts right now.</p>}
+            {contacts && contacts.length === 0 && institutional.length === 0 && <p className="text-sm text-ink-500">No contacts recorded for your organisation.</p>}
             {contacts && contacts.length > 0 && (
               <ul className="space-y-2">
                 {contacts.map((c, i) => <ContactLine key={i} c={c} />)}
@@ -285,8 +291,10 @@ export default function DonorDialog({ row, schema, onClose, onShare }: Props) {
 
 function Section({ icon, title, children }: { icon: string; title: string; children: ReactNode }) {
   return (
-    <section className="rounded-xl border border-slate-200 p-4">
-      <h3 className="mb-2 text-base font-bold text-navy"><span aria-hidden>{icon}</span>&nbsp;&nbsp;{title}</h3>
+    <section className="rounded-xl border border-ink-200 p-5">
+      <h3 className="mb-3 flex items-center gap-2 text-[0.95rem] font-bold text-brand-700">
+        <span aria-hidden className="text-base">{icon}</span>{title}
+      </h3>
       {children}
     </section>
   );
@@ -294,53 +302,60 @@ function Section({ icon, title, children }: { icon: string; title: string; child
 
 function Block({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="mt-3 first:mt-0">
-      <div className="mb-1 text-xs font-bold tracking-wider text-slate-500 uppercase">{title}</div>
+    <div className="mt-4 first:mt-0">
+      <div className="mb-1.5 text-[0.7rem] font-semibold tracking-[0.08em] text-ink-500 uppercase">{title}</div>
       {children}
     </div>
   );
 }
 
 function Text({ children }: { children: string }) {
-  return <p className="text-sm whitespace-pre-line text-slate-800">{children}</p>;
+  return <p className="text-sm leading-relaxed whitespace-pre-line text-ink-700">{children}</p>;
 }
 
 function Chips({ items }: { items: string[] }) {
   return (
     <div className="flex flex-wrap gap-1.5">
-      {items.map((t) => <span key={t} className="rounded-full bg-brand-soft px-3 py-0.5 text-sm text-brand">{t}</span>)}
+      {items.map((t) => (
+        <span key={t} className="rounded-full bg-accent-50 px-3 py-1 text-sm font-medium text-accent-700">{t}</span>
+      ))}
     </div>
   );
 }
 
 function MaybeLink({ v }: { v: string }) {
   return /^https?:\/\//.test(v)
-    ? <a href={v} target="_blank" rel="noreferrer" className="break-all text-brand hover:underline">{v}</a>
+    ? <a href={v} target="_blank" rel="noreferrer" className="break-all text-accent-700 hover:underline">{v}</a>
     : <>{v}</>;
 }
 
 function KvList({ items }: { items: [string, string][] }) {
   return (
-    <ul className="list-disc space-y-1 pl-5 text-sm">
-      {items.map(([k, v]) => <li key={k}><strong>{k}:</strong> <MaybeLink v={v} /></li>)}
+    <ul className="space-y-1.5 text-sm">
+      {items.map(([k, v]) => (
+        <li key={k} className="flex flex-wrap gap-x-2">
+          <span className="font-medium text-ink-500">{k}</span>
+          <span className="min-w-0 text-ink-800"><MaybeLink v={v} /></span>
+        </li>
+      ))}
     </ul>
   );
 }
 
 function Table({ cols, rows, linkCol = -1 }: { cols: string[]; rows: string[][]; linkCol?: number }) {
   return (
-    <div className="overflow-x-auto rounded-lg border border-slate-200">
+    <div className="overflow-x-auto rounded-lg border border-ink-200">
       <table className="w-full text-sm">
-        <thead className="bg-surface text-left text-xs text-slate-500">
-          <tr>{cols.map((c) => <th key={c} className="px-3 py-2 font-semibold">{c}</th>)}</tr>
+        <thead className="border-b border-ink-200 bg-ink-50 text-left text-[0.7rem] tracking-[0.06em] text-ink-500 uppercase">
+          <tr>{cols.map((c) => <th key={c} className="px-3 py-2.5 font-semibold">{c}</th>)}</tr>
         </thead>
         <tbody>
           {rows.map((r, i) => (
-            <tr key={i} className="border-t border-slate-100 align-top">
+            <tr key={i} className="border-b border-ink-100 align-top last:border-0">
               {r.map((v, j) => (
-                <td key={j} className="px-3 py-2">
+                <td key={j} className="px-3 py-2.5 text-ink-700">
                   {j === linkCol && v
-                    ? <a href={v} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-brand hover:underline">Open <ExternalLink className="h-3 w-3" /></a>
+                    ? <a href={v} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent-700 hover:underline">Open <ExternalLink className="h-3 w-3" /></a>
                     : v}
                 </td>
               ))}
@@ -356,10 +371,10 @@ function ContactLine({ c }: { c: Contact }) {
   const v = (k: string) => disp(c[k]);
   const linkedin = v("linkedin_url");
   const bits: ReactNode[] = [];
-  if (v("email")) bits.push(<a key="e" href={`mailto:${v("email")}`} className="text-brand hover:underline">✉ {v("email")}</a>);
+  if (v("email")) bits.push(<a key="e" href={`mailto:${v("email")}`} className="text-accent-700 hover:underline">✉ {v("email")}</a>);
   if (v("phone")) bits.push(<span key="p">☎ {v("phone")}</span>);
   if (linkedin) bits.push(linkedin.startsWith("http")
-    ? <a key="l" href={linkedin} target="_blank" rel="noreferrer" className="text-brand hover:underline">LinkedIn</a>
+    ? <a key="l" href={linkedin} target="_blank" rel="noreferrer" className="text-accent-700 hover:underline">LinkedIn</a>
     : <span key="l">LinkedIn: {linkedin}</span>);
   if (v("address")) bits.push(<span key="a">{v("address")}</span>);
   if (v("notes")) bits.push(<em key="n">{v("notes")}</em>);
@@ -369,18 +384,10 @@ function ContactLine({ c }: { c: Contact }) {
       {v("role_title") && <> — {v("role_title")}</>}
       {Boolean(c.is_official) && <> · ✅ official</>}
       {bits.length > 0 && (
-        <div className="text-slate-600">
+        <div className="text-ink-600">
           {bits.map((b, i) => <span key={i}>{i > 0 && " · "}{b}</span>)}
         </div>
       )}
     </li>
-  );
-}
-
-function IconButton({ onClick, label: lbl, children }: { onClick: () => void; label: string; children: ReactNode }) {
-  return (
-    <button onClick={onClick} title={lbl} aria-label={lbl} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-800">
-      {children}
-    </button>
   );
 }

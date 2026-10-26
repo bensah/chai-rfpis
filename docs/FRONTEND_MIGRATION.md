@@ -63,6 +63,43 @@ Phase 0 still needs, outside the code:
    live API is checked.
 6. **Both apps run side by side** until the cut-over phase. They share the database and the
    accounts, so a user can move between them at any point.
+7. **The React app does not copy Streamlit's look.** Behaviour, labels and rules carry over
+   exactly; the visual design does not. Every new page is built from the design system below
+   rather than from a screenshot of the Python page.
+
+## The design system
+
+The owner asked for a full redesign on CHAI's identity rather than a faithful copy of the
+Streamlit app. Tokens live in `web/src/index.css` (`@theme`); the shared components live in
+`web/src/ui.tsx`. Nothing hard-codes a hex value outside those two files.
+
+**Colour.** The palette is the official CHAI one and it is kept deliberately small — Dark
+Blue carries the brand, Turquoise is the single accent, everything else is neutral.
+
+| Token | Hex | Used for |
+|---|---|---|
+| `brand-700` | `#003E78` CHAI Dark Blue | sidebar, headings, primary buttons |
+| `accent-600` | `#117996` CHAI Turquoise | links, focus rings, active marks, chart bars |
+| `brand-100` | `#D5E7EF` CHAI Light Blue | tinted surfaces, selected rows |
+| `gold-500` | `#F3B71B` CHAI Gold | attention only (view-as banner, low verification) |
+| `good-600` / `bad-600` | `#169E5F` / `#A3303C` | state only — never decoration |
+| `ink-*`, `canvas` | cool greys | text, borders, page background |
+
+The green `#00703c` the Streamlit app used is gone. Status colours appear only where a
+state has to be read at a glance.
+
+**Type.** Fira Sans (a CHAI-approved face, loaded from Google Fonts), falling back to
+Trebuchet MS — CHAI's standard — then the system stack.
+
+**Layout.** One CHAI Dark Blue sidebar runs the full height of the window and crosses the
+header band; the white top bar starts at the sidebar's right edge. The sidebar collapses to
+an icon rail (the choice is remembered in `localStorage`) and becomes a drawer below `lg`.
+The top bar carries breadcrumbs, search, notifications, the tenant identity and the account
+menu. Page content sits on `canvas` in white cards, capped at `82rem`.
+
+**Components.** `Button`, `LinkButton`, `IconButton`, `Card`, `PageHeader`, `Eyebrow`,
+`Badge`, `Notice`, `Field`, `Select`, `Spinner`, `EmptyState`. A new page composes these; it
+does not re-style a button inline.
 
 ## The three hard problems, and how each is solved
 
