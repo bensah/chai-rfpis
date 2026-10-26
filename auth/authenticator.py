@@ -575,43 +575,103 @@ def activation_code_entry(expanded: bool | None = None) -> bool:
     return False
 
 
+def _email_reset_link(email: str) -> bool:
+    """Mint a reset token for `email` and send it. True when a mail went out.
+
+    Silent about everything: the caller shows one confirmation whether or not the address
+    exists, so nothing here may raise or report. A missing account, a deactivated one, a
+    blacklisted one and a mail failure all look identical from outside.
+    """
+    try:
+        rows = (service_client().table("users")
+                .select("id,email,name,is_active,is_blacklisted")
+                .eq("email", email).limit(1).execute().data or [])
+    except Exception:
+        return False
+    if not rows:
+        return False
+    u = rows[0]
+    if not u.get("is_active") or u.get("is_blacklisted"):
+        # A deactivated or blacklisted account must not be re-openable by its former
+        # holder asking for a reset.
+        return False
+    try:
+        from core.password_tokens import PURPOSE_RESET, build_link, issue_token
+        from core.user_emails import _app_url, send_password_reset_email
+        raw, _ = issue_token(user_id=u["id"], purpose=PURPOSE_RESET,
+                             created_by="self-service")
+        send_password_reset_email(to_email=u["email"], to_name=u.get("name"),
+                                  reset_link=build_link(_app_url(), raw))
+        return True
+    except Exception:
+        return False
+
+
 def password_reset_request_form(*, heading: bool = False) -> None:
-    """Ask an admin for a password reset. Shared by the login screen and /password-reset.
+    """Request a password reset. Shared by the login screen and /password-reset.
 
     Lifted out of the login screen so the dedicated page can host the same form rather than
     a second copy of it - two copies of an anti-enumeration flow is two places for the
     behaviour to drift.
+
+    THE LINK IS SENT IMMEDIATELY (owner, 2026-10-26). This used to file a row and wait for
+    an administrator to notice it in Manage Users and press "Reset + email". Nobody did:
+    measured on the live database, every reset request ever made was still sitting at
+    status "pending" and not one reset token had ever been issued, so the person who forgot
+    their password simply never heard back. An approval step that is reliably skipped is
+    not a control, it is a dead end.
+
+    Nothing is weakened by sending it. The link proves only that the holder can read that
+    mailbox, which is what a reset is; it expires in two hours, works once, and the old
+    password keeps working until it is used. The request row is still written, so the audit
+    trail of who asked and when survives, and an admin can still issue a link by hand.
     """
     if heading:
         st.subheader("Request a password reset")
     st.caption(
-        "Enter your email and request a reset. Once an admin approves it, the app emails "
-        "you a one-time code and link to set a new password. Your current password keeps "
-        "working until you use it."
+        "Enter your email and we'll send you a one-time link to set a new password. "
+        "It expires in 2 hours, and your current password keeps working until you use it."
     )
     with st.form("forgot_pw_form", clear_on_submit=True):
         fp_email = st.text_input("Email", key="fp_email")
-        fp_submit = st.form_submit_button("📨 Request password reset")
+        fp_submit = st.form_submit_button("📨 Email me a reset link")
 
     if not fp_submit:
         return
     if not fp_email or "@" not in fp_email:
         st.error("Enter a valid email.")
         return
+
+    addr = fp_email.strip()
+    # Record the request first, and never let a failure here stop the email: the audit row
+    # is for us, the link is what the person is waiting for.
     try:
-        # Don't reveal whether the email exists (anti-enumeration). The request is
-        # recorded either way; an admin sees it and decides whether to action it. The
-        # confirmation below is deliberately identical for a known and an unknown
-        # address.
         service_client().table("password_reset_requests").insert({
-            "email": fp_email.strip(),
+            "email": addr,
         }).execute()
-        st.success(
-            "✅ Request received. After an admin approves it, the app will email you a "
-            "one-time code and link to set a new password. It expires in 2 hours."
-        )
-    except Exception as exc:
-        st.error(f"Could not record request: {exc}")
+    except Exception:
+        pass
+
+    sent = _email_reset_link(addr)
+
+    if sent:
+        # Close the request we just filed, so Manage Users does not show a queue of
+        # requests the app has already answered by itself.
+        try:
+            service_client().table("password_reset_requests").update({
+                "status": "handled",
+                "handled_by": "self-service",
+                "handled_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("email", addr).eq("status", "pending").execute()
+        except Exception:
+            pass
+
+    # Deliberately identical whether or not the address exists (anti-enumeration): this
+    # form must not be usable to discover who has an account.
+    st.success(
+        "✅ If that address has an account, a one-time link to set a new password is on "
+        "its way. It expires in 2 hours. Check spam if it does not arrive shortly."
+    )
 
 
 def has_session_cookie() -> bool:
