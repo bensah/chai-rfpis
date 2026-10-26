@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RFPIS scoring trial</title>
+    <style>
+      body { font: 14px/1.5 "Segoe UI", system-ui, sans-serif; margin: 2rem; color: #1b1b1b; }
+      h1 { color: #0f3d6e; font-size: 1.4rem; }
+      #log { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+      .ok { color: #00703c; font-weight: 600; }
+      .bad { color: #b91c1c; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <h1>Does the Python scoring engine run in the browser?</h1>
+    <p>Loads the repo's own <code>core/</code> modules under Pyodide, scores the fixture rows
+      against a snapshot, and compares every result with what Python produced.</p>
+    <div id="log">starting…</div>
+    <script type="module" src="./run.js"></script>
+  </body>
+</html>
