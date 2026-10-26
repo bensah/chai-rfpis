@@ -139,6 +139,41 @@ export const redeemToken = (c: Credential, password: string, confirm: string) =>
 export const requestReset = (email: string) =>
   post<{ ok: true; message: string }>("/password/reset-request", { email });
 
+// ── Pipeline ─────────────────────────────────────────────────────────────────
+/** A screened row, as `/pipelines/screen` projects it. Fields the projection does not yet
+ *  carry are optional rather than assumed: the page renders a dash and keeps working. */
+export type ScreenRow = {
+  uid: string;
+  opportunity_title: string | null;
+  funding_agency: string | null;
+  call_award_value: number | null;
+  currency: string | null;
+  call_submission_deadline: string | null;
+  call_geographic_scope: string[] | null;
+  call_domain_areas: string[] | null;
+  opportunity_link: string | null;
+  review_week: string | null;
+  alignment_score: number | null;
+  auto_recommendation: string | null;
+  decision: string | null;
+  is_duplicate: boolean | null;
+  duplicate_of_uid: string | null;
+  applicant_role?: string | null;
+  key_risks?: string | null;
+  feasibility?: string | null;
+};
+
+export type Weeks = {
+  year: number;
+  weeks: string[];
+  current: string;
+  weeksWithData: { week: string; count: number }[];
+};
+
+export const fetchWeeks = () => call<Weeks>("/pipelines/weeks");
+export const fetchScreen = (week: string) =>
+  call<{ rows: ScreenRow[] }>(`/pipelines/screen?week=${encodeURIComponent(week)}`);
+
 // ── App shell ────────────────────────────────────────────────────────────────
 export type FeedItem = { ts: number; icon: string; title: string; detail: string; nav: string; uid: string | null };
 export type Shell = {

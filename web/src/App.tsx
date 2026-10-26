@@ -7,6 +7,7 @@ import ClassicPage from "./pages/ClassicPage";
 import DonorsPage from "./pages/DonorsPage";
 import HomePage from "./pages/HomePage";
 import OpportunityPage from "./pages/OpportunityPage";
+import PipelinePage from "./pages/PipelinePage";
 import SettingsPage from "./pages/SettingsPage";
 import { warmEngine } from "./scoring/engine";
 import { EmptyState } from "./ui";
@@ -80,6 +81,8 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
     body = <HomePage user={user} />;
   } else if (shown === "opportunity") {
     body = <OpportunityPage uid={params.get("uid")?.trim() ?? ""} user={user} />;
+  } else if (shown === "pipelines") {
+    body = <PipelinePage user={user} />;
   } else if (shown === "donors") {
     body = <DonorsPage />;
   } else if (shown === "settings") {

@@ -6,9 +6,13 @@
  * to summarised without changing how you ask for a period. So the period is a value, it
  * lives above the stages, and every stage reads the same one.
  *
- * Ranges are HALF-OPEN — `from` inclusive, `to` exclusive — because that is what the API
- * filters with (`submitted_at=gte.from&submitted_at=lt.to`). A closed range would drop or
- * double-count the boundary day depending on whether a timestamp carried a time.
+ * Ranges are HALF-OPEN — `from` inclusive, `to` exclusive. Matching the API's
+ * `gte.from & lt.to` is the smaller reason. The real one is that half-open periods TILE:
+ * one period's `to` is exactly the next one's `from`, so a quarter's rows are precisely the
+ * sum of its three months' rows and nothing is counted twice or missed at a boundary. That
+ * property is what makes a summary agree with the pages underneath it. A closed range would
+ * drop or double-count the boundary day depending on whether a timestamp carried a time,
+ * and the error would show up only as a total that is quietly one row out.
  *
  * "To date" is not a separate kind. A period whose range contains today is to-date by
  * definition, and `isToDate` only changes how it is labelled.
