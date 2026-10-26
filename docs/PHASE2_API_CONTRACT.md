@@ -78,23 +78,72 @@ ordering.
 `screened_rfp.py` line 67. `weeksWithData` feeds only the empty state, so the
 counts are a cheap aggregate and carry no rows.
 
-### `GET /pipelines/screen?week=<label>` — agreed
+### `GET /pipelines/screen?week=<label>` or `?from=&to=` — agreed
 
 ```
-{ rows: RfpSubmission[] }
+{ week, rows }              // by label
+{ from, to, weeks, rows }   // by range
 ```
 
-`rfp_submissions` where `review_week = week`, with `clean_df` then
-`drop_concluded` applied server-side in that order, projected to the columns
-Screen draws.
+`rfp_submissions` with `drop_concluded` applied server-side, projected.
 
-### `GET /pipelines/track?year=<yyyy>` — agreed
+**Both parameters, not one.** "Show me Week 43" is exact and needs no mapping,
+so `week=` stays. "Show me October" is the period-spine case, and a label is
+not a date range, so replacing `week=` would push every lookup through a
+mapping even when the caller already holds the label.
+
+A range selects the review_weeks whose own **Monday** falls inside it, not the
+rows whose `submitted_at` does. The review_week is the screening period: a row
+submitted on the Friday of September's last week belongs to that week's
+screening, and filtering by `submitted_at` would move it into October and make
+the weekly and monthly views disagree. Half-open, so periods tile.
+
+#### The projection, and why `brief_description` stays
+
+Three fields are drawn and were missing: `applicant_role` (the Role column,
+and the denominator of the Prime and Sub KPIs), `key_risks` (a table column)
+and `feasibility` (one of the four filters).
+
+`brief_description` and `instrument_type` are NOT drawn and are carried
+anyway, which looks like exactly the waste the projection exists to remove. It
+is not. Both are among the seven `_CALL_KEY_FIELDS` that
+`data_quality.call_completeness` counts, and that feeds the table's Confidence
+band. Dropping `brief_description` would make every row look less complete
+than it is and quietly shift Confidence down. **A column being invisible is
+not the same as a column being unused.**
+
+Measured on the busiest week, 78 rows:
+
+| Projection | gzipped | columns |
+|---|---|---|
+| `select=*` | 54 KB | 99 |
+| previous | 34 KB | 24 |
+| **revised** | **36 KB** | 28 |
+| revised without `brief_description` | 11 KB | 27 |
+
+So the four additions cost 1.8 KB, and dropping `brief_description` would save
+24 KB — real, but it buys that by breaking Confidence unless the band is
+computed server-side instead. That would mean porting `call_completeness`,
+`donor_completeness`, `match_donor` and the blend into TypeScript: a second
+implementation of donor matching, which is the same class of drift as the
+70/45 banding this phase just finished removing. 36 KB for a page load is not
+worth that. If the payload ever does become the problem, the answer is a
+server-computed `confidence` held to the Python by the parity harness, not an
+untested port done to save 24 KB.
+
+### `GET /pipelines/track?year=<yyyy>` or `?from=&to=` — agreed
 
 ```
-{ rows: RfpSubmission[],
-  leads: { uid: string, proposalLeads: string[] }[],
-  nextActions: { uid: string, action: string, due: string | null }[] }
+{ year | from+to, rows, leads: { uid, proposalLeads[] }[] }
 ```
+
+A range replaces condition 3 below and nothing else: the other five are about
+whether a row is live work, not about when it arrived. Half-open, like
+Summary, so the periods tile.
+
+`nextActions` is NOT here. An earlier draft had it as a bulk array, which was
+wrong: `tracking_rfp.py` fetches meeting logs per RFP when the card opens, so
+a bulk array would be a join for rows nobody expands. See the notes route.
 
 Six conditions from `tracking_rfp.py::_fetch`, all load-bearing, applied
 server-side:
@@ -118,7 +167,42 @@ nobody has committed to, which is the opposite of what the page is for.
 out entirely even though its decision is still Proceed, and must not appear in
 the card, the dropdown or the table.
 
-`leads` is the second query: `duplicate_of_uid,proposal_lead` where
+### `GET /pipelines/rfp/:uid/meeting-notes?year=<yyyy>` — agreed
+
+```
+{ year,
+  notes: { meetingDate, actions, owner, deadline }[],   // meeting_date desc
+  weeks: { label, monday }[],
+  defaultWeek: string | null }
+```
+
+Per RFP and on demand, matching the card. `weeks` pairs every label of the
+year with its Monday, resolved **server-side**, because the browser must not
+own a second definition of which week a row belongs to — that mapping is
+jan4 and ISO-week arithmetic in `review_week.py`, and two definitions of one
+number is what the scoring drift was. Given the pairs, the page matches
+strings and adds seven days for the default due date.
+
+`defaultWeek` is the week whose Monday equals the latest note's
+`meeting_date`; failing that the current ISO week; failing that the first
+label. The selector offers every week of the year, not only weeks with notes,
+because a user picks a week to write into as well as to read.
+
+**One deliberate divergence from `review_week.monday_from_week_label`.** That
+helper reads only the week number and offsets from the week containing Jan 4,
+which is wrong for exactly one label a year: `all_weeks_for_year` ends a year
+with the FOLLOWING year's week 1 (2024's last label is "Week 1 (30 Dec - 5
+Jan)") and the arithmetic sends it back to the January at the start of the
+year. Harmless in the Streamlit selector, which only round-trips what it just
+rendered. Not harmless here, where these Mondays decide range membership on
+Screened: a mis-resolved week would put December's screening in January and
+break the tiling. Resolved by relabelling candidates and taking the exact
+match instead, so the function can only return a Monday that renders as the
+label asked for. Caught by a round-trip test across four years.
+
+---
+
+`leads` on the track route is the second query: `duplicate_of_uid,proposal_lead` where
 `is_duplicate` is true and `duplicate_of_uid` is among the result uids, so the
 leads on a duplicate group reach the canonical row. Server-side for the same
 reason as `nextActions`: a join over rows the browser has no other reason to
@@ -141,10 +225,29 @@ columns sections A to E aggregate over. The window defaults to the current
 calendar year when the page sends neither bound. Aggregation happens in the
 browser, over freshly computed scores, like every other page.
 
-### `GET /pipelines/rfp/:uid` — proposed
+### `GET /pipelines/rfp/:uid?reporting=1` — agreed
 
-The full record for the editor, all editable columns, unprojected. One row at
-4.8 KB raw is not worth trimming.
+```
+{ row: RfpSubmission, grant: AppliedFunding | null }
+```
+
+Unprojected, unlike every other route here. The editor writes about sixty
+columns across five fixed tabs (Opportunity, Eligibility, Decision & Pipeline,
+Team, Submission & Award) plus Application and Reporting, so a projection
+would be a list of nearly the whole table that then has to be kept in step
+with the form. One row is 4.8 KB raw and the page is opened deliberately
+rather than in bulk.
+
+Which tabs appear is the PAGE's decision and not the data's: `show_application`
+and `show_reporting` are caller flags in `rfp_editor.py`, and Reporting is
+shown only from the Funding page so grant reporting is edited in one place.
+The route therefore does not guess. `reporting=1` says the tab is open and
+only then is the linked grant fetched, by `form_id_link` rather than `uid`
+because the grant points back at the RFP. `grant` is null when the RFP has no
+reporting record yet, which is the normal case and not an error.
+
+A missing row and a row scoped away by RLS both answer 404. Distinguishing
+them would tell a caller that a uid exists in a tenant they cannot see.
 
 ### `PATCH /pipelines/rfp/:uid` — proposed
 
