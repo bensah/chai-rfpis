@@ -91,9 +91,14 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/pipelines/summary" && m === "GET") return pipelines.summary(req, ctx);
     if (path === "/pipelines/track" && m === "GET") return pipelines.track(req, ctx);
     if (path.startsWith("/pipelines/rfp/") && m === "GET") {
-      const uid = decodeURIComponent(path.slice("/pipelines/rfp/".length)).trim();
+      const rest = path.slice("/pipelines/rfp/".length);
+      const notes = rest.endsWith("/meeting-notes");
+      const uid = decodeURIComponent(
+        notes ? rest.slice(0, -"/meeting-notes".length) : rest).trim();
       if (!uid) return json({ error: "No RFP selected." }, 400);
-      return pipelines.rfp(req, ctx, uid);
+      return notes
+        ? pipelines.meetingNotes(req, ctx, uid)
+        : pipelines.rfp(req, ctx, uid);
     }
     if (path === "/opportunity" && m === "GET") {
       const uid = new URL(req.url).searchParams.get("uid")?.trim() ?? "";

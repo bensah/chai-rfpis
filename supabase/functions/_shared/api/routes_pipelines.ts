@@ -26,13 +26,25 @@ import { gzipped, json, str } from "./http.ts";
 import type { Json } from "./jwt.ts";
 import type { Ctx } from "./session.ts";
 
-/** views/screened_rfp.py draws these. Not `*`: see the file header. */
+/** What Screened draws, PLUS what its Confidence column is computed from. Not `*`: see
+ * the file header.
+ *
+ * applicant_role, key_risks and feasibility are drawn: the first is the Role column and
+ * the denominator of the Prime and Sub KPIs, the second is a table column, the third is
+ * one of the four filters.
+ *
+ * brief_description and instrument_type are NOT drawn, and are here anyway. They are two
+ * of the seven `_CALL_KEY_FIELDS` that `data_quality.call_completeness` counts, which
+ * feeds the Confidence band. Dropping brief_description as "unused" — it is about a
+ * fifth of this payload, so it is tempting — would make every row look less complete
+ * than it is and quietly shift Confidence down a band. A column being invisible is not
+ * the same as a column being unused. */
 const SCREEN_FIELDS = "uid,opportunity_title,funding_agency,brief_description," +
   "call_award_value,currency,call_submission_deadline,call_geographic_scope," +
-  "call_domain_areas,focus_theme,opportunity_link,date_posted,search_date," +
-  "submitted_at,created_at,review_week,alignment_score,auto_recommendation," +
-  "decision,decision_date,donor_decision,progress_status,is_duplicate," +
-  "duplicate_of_uid";
+  "call_domain_areas,instrument_type,focus_theme,opportunity_link,date_posted," +
+  "search_date,submitted_at,created_at,review_week,alignment_score," +
+  "auto_recommendation,decision,decision_date,donor_decision,progress_status," +
+  "applicant_role,key_risks,feasibility,is_duplicate,duplicate_of_uid";
 
 /** Sections A to E aggregate over these. No prose: Summary counts and sums, it does not
  * render a call's description, and dropping `brief_description` alone takes about a fifth
@@ -103,6 +115,49 @@ export function allWeeksForYear(year: number): string[] {
   return labels;
 }
 
+/** core/review_week.py::monday_from_week_label — "Week 23 (1 Jun - 7 Jun)" → 2026-06-01.
+ *
+ * Exported because the browser needs label-to-Monday and must not own a second
+ * definition of which week a row belongs to. The period model deliberately refuses to
+ * derive it, and the scoring drift we just removed is what two definitions of one number
+ * looks like after a year.
+ *
+ * Resolved by SEARCH rather than by week-number arithmetic, and that is a deliberate
+ * divergence from `review_week.monday_from_week_label`. The arithmetic version reads only
+ * the number and offsets from the week containing Jan 4, which is wrong for one label a
+ * year: `all_weeks_for_year` ends a year with the FOLLOWING year's week 1 — 2024's last
+ * label is "Week 1 (30 Dec - 5 Jan)" — and the arithmetic sends that back to the January
+ * at the START of the year instead. Harmless in the Streamlit selector, which only round
+ * trips what it just rendered, but not harmless here: the range filter on Screened
+ * decides membership from these Mondays, so a mis-resolved week would put December's
+ * screening in January and break the tiling the half-open ranges exist to guarantee.
+ *
+ * The labels themselves are unambiguous — they carry their own dates — so the Monday is
+ * found by relabelling candidates and taking the exact match. That makes the function
+ * self-verifying: it can only return a Monday that renders as the label asked for.
+ * Returns an ISO date string, or null for a label nothing matches.
+ */
+export function mondayFromWeekLabel(label: string, year: number): string | null {
+  const want = String(label).trim();
+  if (!/^Week\s+\d+\s/.test(want)) return null;
+  // A year's labels can start in the previous December and end in the next January, so
+  // the candidates span three years. About 157 iterations, on a rarely-called path.
+  let d = monday(new Date(Date.UTC(year - 1, 0, 4)));
+  const end = Date.UTC(year + 2, 0, 15);
+  while (d.getTime() <= end) {
+    if (reviewWeekLabel(d) === want) return d.toISOString().slice(0, 10);
+    d = new Date(d.getTime() + 7 * 86400_000);
+  }
+  return null;
+}
+
+/** The year's labels paired with the Monday each one starts on. */
+export function weekMondays(year: number): { label: string; monday: string }[] {
+  return allWeeksForYear(year)
+    .map((label) => ({ label, monday: mondayFromWeekLabel(label, year) }))
+    .filter((w): w is { label: string; monday: string } => w.monday !== null);
+}
+
 /** core/records.py::drop_concluded — a rule, so it is ported rather than left to the page.
  *
  * A concluded solicitation is one the funder has answered, or one the team has finished
@@ -124,7 +179,12 @@ function dropConcluded(rows: Json[]): Json[] {
  *
  * `today` is passed in rather than read, so a test can pin the deadline boundary.
  */
-export function selectTrackRows(rows: Json[], year: number, today: string): Json[] {
+export function selectTrackRows(
+  rows: Json[],
+  year: number | null,
+  today: string,
+  window?: { from: string; to: string },
+): Json[] {
   return rows.filter((r) => {
     // 2. The STORED decision, matched EXACTLY against the two strings.
     //
@@ -135,10 +195,17 @@ export function selectTrackRows(rows: Json[], year: number, today: string): Json
     // Track with work nobody committed to, which is the opposite of the page's purpose.
     if (!TRACK_DECISIONS.has(str(r.decision).trim())) return false;
 
-    // 3. Year of submitted_at, read off the ISO prefix rather than parsed to an instant,
-    // so a row just inside a new year at a positive UTC offset keeps the year its text
-    // says — which is the year the Python reads.
-    if (str(r.submitted_at).slice(0, 4) !== String(year)) return false;
+    // 3. When the row arrived. Either the year of submitted_at, or an explicit half-open
+    // range when the period control supplies one. Read off the ISO prefix rather than
+    // parsed to an instant, so a row just inside a new year at a positive UTC offset
+    // keeps the year its text says — which is the year the Python reads.
+    const submitted = str(r.submitted_at);
+    if (window) {
+      const d = submitted.slice(0, 10);
+      if (d === "" || d < window.from || d >= window.to) return false;
+    } else if (submitted.slice(0, 4) !== String(year)) {
+      return false;
+    }
 
     // 4. donor_decision is lower-cased but NOT stripped, unlike progress_status below.
     // That asymmetry is the Python's, and it differs from records.drop_concluded, which
@@ -208,17 +275,60 @@ export function createPipelineRoutes(db: Db) {
     return gzipped(req, json({ year, weeks: weeksOut, current, weeksWithData }));
   }
 
-  /** Screened: one week's rows, concluded ones removed. Everything else is the page's. */
+  /** Screened: one week's rows, or a date range's, concluded ones removed.
+   *
+   * BOTH, not one or the other. Two different questions get asked of this page. "Show me
+   * Week 43" is the Monday-call case: exact, one label, no mapping needed, so `week=`
+   * stays. "Show me October" is the period-spine case, and a label is not a date range,
+   * so replacing `week=` would force every lookup through a mapping even when the caller
+   * already holds the label.
+   *
+   * A range selects the review_weeks whose own MONDAY falls inside it, not the rows whose
+   * submitted_at does. The review_week is the screening period: a row submitted on the
+   * Friday of September's last week belongs to that week's screening, and filtering by
+   * submitted_at would push it into October and make the weekly and monthly views
+   * disagree. Half-open, so the periods tile and a quarter is the sum of its months.
+   */
   async function screen(req: Request, ctx: Ctx): Promise<Response> {
     const url = new URL(req.url);
     const week = str(url.searchParams.get("week")).trim();
-    if (!week) return json({ error: "week is required" }, 400);
+    const from = str(url.searchParams.get("from")).trim();
+    const to = str(url.searchParams.get("to")).trim();
+    const sb = db.as(ctx.scope);
 
-    const rows = await db.as(ctx.scope).get(
+    if (week) {
+      const rows = await sb.get(
+        "rfp_submissions",
+        `select=${SCREEN_FIELDS}&review_week=eq.${q(week)}`,
+      );
+      return gzipped(req, json({ week, rows: dropConcluded(rows) }));
+    }
+
+    if (!from || !to) {
+      return json({ error: "week, or from and to, are required" }, 400);
+    }
+    if (!/^\d{4}-\d{2}-\d{2}/.test(from) || !/^\d{4}-\d{2}-\d{2}/.test(to)) {
+      return json({ error: "from and to must be ISO dates" }, 400);
+    }
+    if (to <= from) return json({ error: "to must be after from" }, 400);
+
+    // A range can span a year boundary, so every year it touches contributes labels.
+    const years = new Set<number>([
+      Number(from.slice(0, 4)),
+      Number(to.slice(0, 4)),
+    ]);
+    const labels = [...years]
+      .flatMap((y) => weekMondays(y))
+      .filter((w) => w.monday >= from && w.monday < to)
+      .map((w) => w.label);
+    if (!labels.length) return gzipped(req, json({ from, to, weeks: [], rows: [] }));
+
+    const list = labels.map((l) => `"${l.replace(/"/g, '""')}"`).join(",");
+    const rows = await sb.get(
       "rfp_submissions",
-      `select=${SCREEN_FIELDS}&review_week=eq.${q(week)}`,
+      `select=${SCREEN_FIELDS}&review_week=in.(${encodeURI(list)})`,
     );
-    return gzipped(req, json({ week, rows: dropConcluded(rows) }));
+    return gzipped(req, json({ from, to, weeks: labels, rows: dropConcluded(rows) }));
   }
 
   /** Summary: rows for a date window, aggregated in the browser.
@@ -277,16 +387,31 @@ export function createPipelineRoutes(db: Db) {
    */
   async function track(req: Request, ctx: Ctx): Promise<Response> {
     const url = new URL(req.url);
+    const from = str(url.searchParams.get("from")).trim();
+    const to = str(url.searchParams.get("to")).trim();
     const year = Number(url.searchParams.get("year")) || new Date().getUTCFullYear();
     const today = new Date().toISOString().slice(0, 10);
     const sb = db.as(ctx.scope);
+
+    if ((from || to) && !(from && to)) {
+      return json({ error: "from and to must be given together" }, 400);
+    }
+    if (from && (!/^\d{4}-\d{2}-\d{2}/.test(from) || !/^\d{4}-\d{2}-\d{2}/.test(to))) {
+      return json({ error: "from and to must be ISO dates" }, 400);
+    }
+    if (from && to <= from) return json({ error: "to must be after from" }, 400);
 
     const all = await sb.get(
       "rfp_submissions",
       `select=${TRACK_FIELDS}&is_duplicate=is.false`,
     );
 
-    const rows = selectTrackRows(all, year, today);
+    // A range replaces condition 3 only. The other five are unchanged, because they are
+    // about whether a row is live work rather than when it arrived. Half-open, like
+    // Summary, so the periods tile.
+    const rows = from
+      ? selectTrackRows(all, null, today, { from, to })
+      : selectTrackRows(all, year, today);
     const uids = rows.map((r) => str(r.uid)).filter(Boolean);
     let dups: Json[] = [];
     if (uids.length) {
@@ -353,5 +478,52 @@ export function createPipelineRoutes(db: Db) {
     return gzipped(req, json({ row: rows[0], grant }));
   }
 
-  return { weeks, screen, summary, track, rfp };
+  /** The meeting-log card on one RFP: its notes, every week it could be filed under, and
+   * which week to open on.
+   *
+   * Per RFP and on demand, because that is what tracking_rfp.py does — the card fetches
+   * when it opens. An earlier draft of the contract had these as a bulk array on
+   * /pipelines/track, which would have been a join for rows nobody expands.
+   *
+   * `weeks` pairs each label with its Monday, resolved HERE. The browser must not own a
+   * second definition of which week a row belongs to: that mapping is jan4 and ISO-week
+   * arithmetic in review_week.py, and two definitions of one number is exactly what the
+   * scoring drift was. Given the pairs, the page matches strings.
+   *
+   * `defaultWeek` carries the selection rule, which is not guessable: the week whose
+   * Monday is the LATEST note's meeting_date; failing that the current ISO week; failing
+   * that the first label. The selector offers every week of the year and not only weeks
+   * with notes, because a user picks a week to write into as well as to read.
+   */
+  async function meetingNotes(req: Request, ctx: Ctx, uid: string): Promise<Response> {
+    const url = new URL(req.url);
+    const year = Number(url.searchParams.get("year")) || new Date().getUTCFullYear();
+    const sb = db.as(ctx.scope);
+
+    const raw = await sb.get(
+      "meeting_logs",
+      `select=meeting_date,actions,owner,deadline&rfp_uid=eq.${q(uid)}` +
+        `&order=meeting_date.desc`,
+    ).catch(() => []);
+    const notes = raw.map((n) => ({
+      meetingDate: str(n.meeting_date).slice(0, 10) || null,
+      actions: n.actions ?? null,
+      owner: n.owner ?? null,
+      deadline: n.deadline ?? null,
+    }));
+
+    const weeks = weekMondays(year);
+    const latest = notes.find((n) => n.meetingDate)?.meetingDate ?? null;
+    const byMonday = latest ? weeks.find((w) => w.monday === latest) : undefined;
+    const currentMonday = monday(new Date()).toISOString().slice(0, 10);
+    const defaultWeek =
+      byMonday?.label ??
+      weeks.find((w) => w.monday === currentMonday)?.label ??
+      weeks[0]?.label ??
+      null;
+
+    return gzipped(req, json({ year, notes, weeks, defaultWeek }));
+  }
+
+  return { weeks, screen, summary, track, rfp, meetingNotes };
 }
