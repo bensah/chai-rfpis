@@ -129,9 +129,13 @@ export const viewAs = (key: string | null) => post<Stored>("/session/view", { ke
 
 // ── Public account flows ─────────────────────────────────────────────────────
 export type TokenInfo = { valid: boolean; purpose?: "invite" | "reset"; email?: string; rules?: string; error?: string };
-export const peekToken = (token: string) => post<TokenInfo>("/tokens/peek", { token });
-export const redeemToken = (token: string, password: string, confirm: string) =>
-  post<{ ok: true; email: string; purpose: "invite" | "reset" }>("/tokens/redeem", { token, password, confirm });
+/** The two forms of the same credential: a link's long token, or an emailed six-digit
+ *  code, which is only ever checked against the account its email names. */
+export type Credential = { token: string } | { email: string; code: string };
+export const peekToken = (c: Credential) => post<TokenInfo>("/tokens/peek", c);
+export const redeemToken = (c: Credential, password: string, confirm: string) =>
+  post<{ ok: true; email: string; purpose: "invite" | "reset" }>("/tokens/redeem",
+    { ...c, password, confirm });
 export const requestReset = (email: string) =>
   post<{ ok: true; message: string }>("/password/reset-request", { email });
 

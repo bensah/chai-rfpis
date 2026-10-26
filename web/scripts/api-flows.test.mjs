@@ -40,7 +40,10 @@ function fakeDb(tables) {
   // Column defaults the API relies on reading back, as the migrations declare them. Without
   // these an inserted row looks different here than in Postgres, and a filter on the default
   // value (status=eq.pending) matches nothing.
-  const DEFAULTS = { password_reset_requests: { status: "pending" } };   // migration 016
+  const DEFAULTS = {
+    password_reset_requests: { status: "pending" },        // migration 016
+    user_password_tokens: { attempts: 0 },                 // migration 100
+  };
   function filtered(rows, params) {
     return rows.filter((r) => [...params].every(([k, v]) => RESERVED.has(k) || match(r, k, v)));
   }
@@ -359,6 +362,75 @@ test("reset request: the link is sent at once, and only to an account that may u
   // Still recorded, so the audit trail of who asked survives.
   assert.deepEqual(db.tables.password_reset_requests.map((x) => x.email),
     ["admin@x.org", "ghost@x.org", "off@x.org", "bl@x.org"]);
+});
+
+/** The six-digit code from the reset email, as the recipient reads it. */
+const codeFrom = (html) => html.match(/>\s*(\d{6})\s*</)?.[1];
+
+test("reset code: bound to one address, normalised, and burned by too many guesses", async () => {
+  const { call, db, sent } = setup();
+  await call("POST", "/password/reset-request", { email: "admin@x.org" });
+  const code = codeFrom(sent[0].html);
+  assert.ok(code, "the email carries a six-digit code");
+  const tok = () => db.tables.user_password_tokens.find((t) => t.user_id === "u-admin");
+  // Only the hash is stored — the code exists in the email and nowhere else.
+  assert.equal(createHash("sha256").update(code).digest("hex"), tok().code_hash);
+
+  // The right code against the WRONG account is simply wrong, not a way in.
+  assert.equal((await call("POST", "/tokens/peek", { email: "col@x.org", code })).body.valid, false);
+  // People space codes in threes; that is not a wrong code.
+  const spaced = await call("POST", "/tokens/peek", { email: "admin@x.org", code: `${code.slice(0, 3)} ${code.slice(3)}` });
+  assert.equal(spaced.body.valid, true);
+  assert.equal(spaced.body.purpose, "reset");
+  assert.equal(spaced.body.email, "admin@x.org");
+  assert.equal(tok().used_at, undefined, "a check does not consume the credential");
+
+  // Every check against THIS account is counted, the successful ones included. The guess
+  // aimed at col@x.org above resolved that account first and never reached this row, so it
+  // did not spend an attempt here — one address cannot burn down another's credential.
+  assert.equal(tok().attempts, 1);
+
+  // Guessing burns it: once the limit is passed the credential is destroyed, not merely
+  // refused, so an attacker who exhausts it loses the thing they were guessing at.
+  for (let i = 0; i < 5; i++) await call("POST", "/tokens/peek", { email: "admin@x.org", code: "000001" });
+  assert.ok(tok().used_at, "the token is burned once the attempt limit is passed");
+  assert.equal((await call("POST", "/tokens/peek", { email: "admin@x.org", code })).body.valid, false,
+    "the real code no longer works either");
+});
+
+test("reset code: a mistyped confirmation must not cost an attempt", async () => {
+  const { call, db, sent } = setup();
+  await call("POST", "/password/reset-request", { email: "admin@x.org" });
+  const code = codeFrom(sent[0].html);
+  const attempts = () => db.tables.user_password_tokens.find((t) => t.user_id === "u-admin").attempts;
+  const before = attempts();
+  const r = await call("POST", "/tokens/redeem",
+    { email: "admin@x.org", code, password: "new pass 1", confirm: "different 1" });
+  assert.equal(r.status, 400);
+  assert.equal(attempts(), before, "the password is checked before the credential is");
+
+  // And the real thing still works afterwards.
+  const ok = await call("POST", "/tokens/redeem",
+    { email: "admin@x.org", code, password: "new pass 1", confirm: "new pass 1" });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.email, "admin@x.org");
+  assert.ok(db.tables.user_password_tokens.find((t) => t.user_id === "u-admin").used_at,
+    "redeeming consumes it");
+});
+
+test("reset code: a deactivated or blacklisted account cannot be reopened by one", async () => {
+  const { call, db } = setup();
+  // Give both a live token with a known code, as though one had been issued earlier.
+  for (const uid of ["u-off", "u-bl"]) {
+    db.tables.user_password_tokens.push({
+      id: `t-${uid}`, user_id: uid, purpose: "reset", attempts: 0,
+      token_hash: "x", code_hash: createHash("sha256").update("123456").digest("hex"),
+      expires_at: new Date(Date.now() + 3600_000).toISOString(), used_at: null,
+    });
+  }
+  for (const email of ["off@x.org", "bl@x.org"]) {
+    assert.equal((await call("POST", "/tokens/peek", { email, code: "123456" })).body.valid, false, email);
+  }
 });
 
 test("From header: the cases email.utils.formataddr handles, and the two guards", () => {

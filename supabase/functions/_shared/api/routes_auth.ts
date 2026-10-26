@@ -22,6 +22,26 @@ const DUMMY_HASH = "$2b$12$viRKiPpRBNOUFb16VqLUQ.AnuulKgZ5a1NrWOgL0gMJN7waTNQ9cq
 const INVALID_LINK = "Setup and reset links can only be used once, and they expire. " +
   "Ask an administrator to send you a new one.";
 
+// password_tokens.CODE_DIGITS / MAX_CODE_ATTEMPTS. Six digits is one in a million, which
+// is only defensible because of the account binding and the attempt limit in `checkCode`.
+const CODE_DIGITS = 6;
+const MAX_CODE_ATTEMPTS = 5;
+
+/** password_tokens._gen_code: a zero-padded six-digit code, rejection-sampled so the
+ *  modulo does not bias the low values. Leading zeros are kept — dropping them would
+ *  shrink the space. */
+function genCode(): string {
+  const limit = 10 ** CODE_DIGITS;
+  const ceiling = Math.floor(0x100000000 / limit) * limit;
+  const buf = new Uint32Array(1);
+  let n = 0;
+  do {
+    crypto.getRandomValues(buf);
+    n = buf[0];
+  } while (n >= ceiling);
+  return String(n % limit).padStart(CODE_DIGITS, "0");
+}
+
 export function createAuthRoutes(
   db: Db, tenants: Tenants, sessions: Sessions, deps: AuthDeps,
   mail: { mailer: Mailer | null; allowedOrigins?: string[] } = { mailer: null },
@@ -144,12 +164,11 @@ export function createAuthRoutes(
     return json(await appSession(user));
   }
 
-  /** password_tokens.peek_token: unknown, used and expired are one answer. */
-  async function peek(raw: string): Promise<(Json & { user: Json }) | null> {
-    if (!raw) return null;
-    const rows = await db.service.get("user_password_tokens",
-      `select=id,user_id,purpose,expires_at,used_at&token_hash=eq.${await sha256Hex(raw)}&limit=1`);
-    const row = rows[0];
+  /**
+   * password_tokens._live_and_owned: the unused / unexpired / owner-exists checks,
+   * factored out so the code path cannot drift from the token path.
+   */
+  async function liveAndOwned(row: Json): Promise<(Json & { user: Json }) | null> {
     if (!row || row.used_at) return null;
     const exp = Date.parse(String(row.expires_at));
     if (!Number.isFinite(exp) || exp <= Date.now()) return null;
@@ -158,8 +177,92 @@ export function createAuthRoutes(
     return { ...row, user: users[0] };
   }
 
+  /** password_tokens.peek_token: unknown, used and expired are one answer. */
+  async function peek(raw: string): Promise<(Json & { user: Json }) | null> {
+    if (!raw) return null;
+    const rows = await db.service.get("user_password_tokens",
+      `select=id,user_id,purpose,expires_at,used_at&token_hash=eq.${await sha256Hex(raw)}&limit=1`);
+    return rows[0] ? liveAndOwned(rows[0]) : null;
+  }
+
+  /** password_tokens.invalidate_tokens_for_user. */
+  async function invalidateFor(userId: string) {
+    await db.service.update("user_password_tokens", `user_id=eq.${q(userId)}&used_at=is.null`,
+      { used_at: nowIso() }).catch(() => undefined);
+  }
+
+  /** password_tokens.normalise_code: what they typed, reduced to the digits they meant. */
+  const normaliseCode = (s: string) => String(s ?? "").replace(/\D/g, "");
+
+  /** Equal-length hex compare that does not leak where it differed. */
+  function sameDigest(a: string, b: string): boolean {
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return diff === 0;
+  }
+
+  /**
+   * password_tokens.check_code — a port, rule for rule.
+   *
+   * Six digits is one in a million, so unlike the long token it is never looked up on its
+   * own. Two things make it defensible and both live here: it is only ever checked against
+   * the account named by `email`, so the holder must know the address too; and every check
+   * is counted, with the credential BURNED once the limit is passed, so an attacker who
+   * exhausts the limit destroys the thing they were guessing at.
+   *
+   * Does NOT consume on success — that happens when the new password is accepted, exactly
+   * as with a link.
+   */
+  async function checkCode(email: string, code: string): Promise<(Json & { user: Json }) | null> {
+    const digits = normaliseCode(code);
+    if (digits.length !== CODE_DIGITS || !email.trim()) return null;
+
+    const users = await db.service.get("users",
+      `select=id,email,name,is_active,is_blacklisted&email=eq.${q(email.trim())}&limit=1`);
+    const u = users[0];
+    if (!u || !u.is_active || u.is_blacklisted) return null;
+    const uid = String(u.id);
+
+    const rows = await db.service.get("user_password_tokens",
+      `select=id,user_id,purpose,expires_at,used_at,code_hash,attempts&user_id=eq.${q(uid)}` +
+      "&used_at=is.null&order=created_at.desc&limit=1");
+    const row = rows[0];
+    // No code_hash means a token issued before short codes existed: nothing to check,
+    // which is not the same as a wrong code.
+    if (!row || !row.code_hash) return null;
+
+    const attempts = Number(row.attempts ?? 0);
+    if (attempts >= MAX_CODE_ATTEMPTS) {
+      await invalidateFor(uid);
+      return null;
+    }
+    // Count the attempt BEFORE comparing, so a failure between the two costs a guess
+    // rather than granting a free one. PostgREST cannot do attempts = attempts + 1 server
+    // side without an RPC, so the write is conditional on still being under the limit and
+    // the loser of a race simply is not counted twice.
+    const updated = await db.service.update("user_password_tokens",
+      `id=eq.${q(String(row.id))}&attempts=lt.${MAX_CODE_ATTEMPTS}`, { attempts: attempts + 1 });
+    if (!updated.length) {
+      await invalidateFor(uid);
+      return null;
+    }
+    if (!sameDigest(String(row.code_hash), await sha256Hex(digits))) {
+      if (attempts + 1 >= MAX_CODE_ATTEMPTS) await invalidateFor(uid);
+      return null;
+    }
+    return liveAndOwned(row);
+  }
+
+  /** Either credential resolves to the same record: a link's token, or an emailed code. */
+  async function resolve(b: Json): Promise<(Json & { user: Json }) | null> {
+    const token = str(b.token).trim();
+    if (token) return peek(token);
+    return checkCode(str(b.email), str(b.code));
+  }
+
   async function tokenPeek(req: Request): Promise<Response> {
-    const rec = await peek(str((await body(req)).token).trim());
+    const rec = await resolve(await body(req));
     if (!rec) return json({ valid: false, error: INVALID_LINK });
     return json({ valid: true, purpose: rec.purpose === "invite" ? "invite" : "reset",
       email: str(rec.user.email), rules: PASSWORD_RULES_TEXT });
@@ -168,12 +271,15 @@ export function createAuthRoutes(
   /** handle_setup_token's save: burn the token BEFORE writing the password. */
   async function tokenRedeem(req: Request): Promise<Response> {
     const b = await body(req);
-    const raw = str(b.token).trim(), next = str(b.password), confirm = str(b.confirm);
-    const rec = await peek(raw);
-    if (!rec) return json({ error: INVALID_LINK, invalid: true }, 400);
+    const next = str(b.password), confirm = str(b.confirm);
+    // The password is validated FIRST, before the credential is checked. A short code
+    // spends an attempt on every check, so letting a mistyped confirmation cost one would
+    // let three fumbled retries burn a credential the person holds legitimately.
     const errs = passwordProblems(next);
     if (next !== confirm) errs.push("The two passwords do not match.");
     if (errs.length) return json({ error: "Please fix:", problems: errs }, 400);
+    const rec = await resolve(b);
+    if (!rec) return json({ error: INVALID_LINK, invalid: true }, 400);
 
     // consume_token: conditional on used_at is null, so two tabs cannot both succeed.
     const burned = await db.service.update("user_password_tokens",
@@ -213,6 +319,7 @@ export function createAuthRoutes(
     const bytes = crypto.getRandomValues(new Uint8Array(32));
     const raw = btoa(String.fromCharCode(...bytes))
       .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const code = genCode();
     const ttlMs = purpose === "invite" ? 7 * 24 * 3600_000 : 2 * 3600_000;
     // A failure to retire the old ones must not block issuing the new one: the new link is
     // what the person is waiting on, and the old ones still expire by themselves.
@@ -221,11 +328,14 @@ export function createAuthRoutes(
     await db.service.insert("user_password_tokens", {
       user_id: userId,
       token_hash: await sha256Hex(raw),
+      code_hash: await sha256Hex(code),
       purpose,
       expires_at: new Date(Date.now() + ttlMs).toISOString(),
       created_by: createdBy,
     }, "return=minimal");
-    return raw;
+    // The two are alternatives, not a pair: either proves the same thing, and the code
+    // exists because a 43-character token is not something to retype off a phone.
+    return { token: raw, code };
   }
 
   /**
@@ -246,9 +356,9 @@ export function createAuthRoutes(
       // A deactivated or blacklisted account must not be re-openable by its former holder
       // asking for a reset.
       if (!u || !u.is_active || u.is_blacklisted) return false;
-      const raw = await issueToken(String(u.id), "reset", "self-service");
+      const { token, code } = await issueToken(String(u.id), "reset", "self-service");
       return await mail.mailer.sendPasswordReset({
-        toEmail: str(u.email), toName: typeof u.name === "string" ? u.name : null, token: raw,
+        toEmail: str(u.email), toName: typeof u.name === "string" ? u.name : null, token, code,
         origin: req.headers.get("origin"), allowedOrigins: mail.allowedOrigins,
       });
     } catch {

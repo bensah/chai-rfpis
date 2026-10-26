@@ -9,16 +9,24 @@ export type PageKey =
 
 type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boolean; public?: boolean };
 
-/** App.py::_pages, in rail order. `rail` = shown in the sidebar (the CSS-hidden ones are not). */
+/**
+ * App.py::_pages, in rail order. `rail` = shown in the sidebar.
+ *
+ * The URL paths are the Streamlit app's `url_path`s and must stay as they are until
+ * cut-over, so a link copied from one app opens the same page in the other. The TITLES are
+ * what a user reads, and those are ours: one name per page, used in the rail, on Home and
+ * in the page heading alike. "Pipelines"/"Pipeline" and "Grants"/"Applied funding" were
+ * the same page under two names, which reads as two products.
+ */
 export const PAGES: Record<PageKey, PageInfo> = {
   home: { title: "Home", icon: "🏠", rail: true },
-  pipelines: { title: "Pipelines", icon: "📚", rail: true },
-  grants: { title: "Grants", icon: "💼", rail: true },
+  pipelines: { title: "Pipeline", icon: "📚", rail: true },
+  grants: { title: "Funding", icon: "💼", rail: true },
   actions: { title: "Actions", icon: "🗒️", rail: true },
   report: { title: "Report", icon: "📊", rail: true },
   donors: { title: "Donors", icon: "🗺️", rail: true },
   // Organization and Submit are registered in the rail and not hidden by the header CSS.
-  organization: { title: "Tenant", icon: "🏢", rail: true },
+  organization: { title: "Organisation", icon: "🏢", rail: true },
   "submit-new-rfp": { title: "Submit", icon: "📝", rail: true },
   opportunity: { title: "Opportunity", icon: "🎯" },
   profile: { title: "Profile", icon: "👤" },

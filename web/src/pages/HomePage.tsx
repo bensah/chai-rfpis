@@ -10,24 +10,22 @@ import { useEffect, useState } from "react";
 import { BookOpen, ChevronDown, Download } from "lucide-react";
 import { fetchHome, type HomeKpis, type User } from "../api";
 import OpportunityRail from "../components/OpportunityRail";
-import { hrefOf, Link, type PageKey } from "../router";
+import { hrefOf, Link, PAGES, type PageKey } from "../router";
 import { NAV_ICON } from "../shell/navIcons";
 import { Card, LinkButton, Notice, PageHeader } from "../ui";
 
-const CARDS: [PageKey, string, string][] = [
-  ["pipelines", "Pipeline",
-    "Screen, review, track and summarise every opportunity across its lifecycle."],
-  ["grants", "Applied funding",
-    "Grants under donor review or already awarded, with their reporting deadlines."],
-  ["actions", "Check-ins & engagements",
-    "Weekly meeting notes, donor engagement touchpoints and pending follow-ups."],
-  ["report", "KPI dashboard",
-    "Activity from search and reviews through to grants secured, at a glance."],
-  ["organization", "Organization",
-    "Your organisation — profile, bid-fitness, eligibility, partners and team."],
+// Headline comes from PAGES[key].title, never a second copy of it — a card that carried
+// its own label is how "Pipelines" in the rail became "Pipeline" here, and "Grants" became
+// "Applied funding". One name per page, defined once, in the router.
+const CARDS: [PageKey, string][] = [
+  ["pipelines", "Every opportunity across its lifecycle: screened, reviewed, decided, tracked."],
+  ["grants", "What you have applied for — under donor review or awarded, with reporting deadlines."],
+  ["actions", "Weekly meeting notes, donor engagement touchpoints and pending follow-ups."],
+  ["report", "Activity from search and reviews through to funding secured, at a glance."],
+  ["organization", "Your organisation — profile, bid-fitness, eligibility, partners and team."],
 ];
 
-const SETTINGS_CARD: [PageKey, string, string] = ["settings", "Settings",
+const SETTINGS_CARD: [PageKey, string] = ["settings",
   "Setup, users, data, donor sources, Excel sync, rates and manual scans."];
 
 function Tile({ label, value, note, alarm }: {
@@ -79,8 +77,9 @@ export default function HomePage({ user }: { user: User }) {
 
         <h2 className="mt-9 mb-3 text-lg font-semibold text-brand-700">Where to start</h2>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {cards.map(([page, headline, body]) => {
+          {cards.map(([page, body]) => {
             const Icon = NAV_ICON[page];
+            const headline = PAGES[page].title;
             return (
               <Card key={page} className="p-4 transition-shadow hover:shadow-float">
                 <Link to={hrefOf(page)} title={`Go to ${headline}`}
@@ -121,13 +120,13 @@ export default function HomePage({ user }: { user: User }) {
               <ol className="list-decimal space-y-1.5 pl-5">
                 <li><strong>Friday morning</strong> — the automated scan pulls new opportunities from the
                   donor sources into the shared store, the bell shows <strong>Scan completed</strong>,
-                  and everyone is emailed any new Proceed / Park calls. Open <strong>Pipelines →
-                  Screen</strong> and click <strong>Eligibility Scan</strong> to screen against your
+                  and everyone is emailed any new Proceed / Park calls. Open <strong>Pipeline →
+                  Screened</strong> and click <strong>Eligibility Scan</strong> to screen against your
                   organisation.</li>
                 <li><strong>Friday → Sunday</strong> — anyone who finds an RFP outside the scan submits it
-                  via <strong>Submit New Funding</strong> on the Screen tab. It is scored and tagged to
+                  via <strong>Submit New Funding</strong> on the Screened tab. It is scored and tagged to
                   the current review week.</li>
-                <li><strong>Monday</strong> — the team call. Walk through <strong>Screen</strong>, open
+                <li><strong>Monday</strong> — the team call. Walk through <strong>Screened</strong>, open
                   <strong> Review</strong> for each RFP and record the outcome with <strong>Update
                   Decision</strong>. Capture notes and agreed actions in <strong>Actions →
                   Meetings</strong>, linked to the RFP.</li>
