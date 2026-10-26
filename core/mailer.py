@@ -33,6 +33,18 @@ def _secret(name: str) -> str | None:
     return None
 
 
+def is_configured() -> bool:
+    """True when send_email has what it needs to reach the transport.
+
+    Exists so a caller can tell "this deployment cannot send mail to ANYBODY", which is
+    safe to say out loud, from "that address has no account", which is not. Without the
+    distinction an anti-enumeration flow reports success to a visitor while the whole
+    mailer is unconfigured, and nobody finds out until someone complains their email
+    never arrived.
+    """
+    return bool(_secret("RESEND_API_KEY") and _secret("RESEND_FROM_EMAIL"))
+
+
 def _from_name() -> str:
     """The display name every outgoing email should be FROM.
 

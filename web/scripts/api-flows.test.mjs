@@ -18,6 +18,7 @@ import bcrypt from "bcryptjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
 const { createApi } = await import(pathToFileURL(path.join(root, "supabase/functions/_shared/rfpis_api.ts")).href);
+const { fromHeader } = await import(pathToFileURL(path.join(root, "supabase/functions/_shared/api/email.ts")).href);
 
 const SERVICE_KEY = "service-key";
 const SECRET = "test-jwt-secret-of-reasonable-length-0123456789";
@@ -25,6 +26,7 @@ const SECRET = "test-jwt-secret-of-reasonable-length-0123456789";
 // ── Fake PostgREST ───────────────────────────────────────────────────────────
 function fakeDb(tables) {
   const log = [];
+  const sent = [];   // emails the API handed to Resend
   function match(row, k, v) {
     const cell = row[k];
     if (v.startsWith("eq.")) return String(cell) === decodeURIComponent(v.slice(3)) || (cell === true && v === "eq.true");
@@ -35,6 +37,10 @@ function fakeDb(tables) {
     throw new Error(`fake: unsupported filter ${k}=${v}`);
   }
   const RESERVED = new Set(["select", "order", "limit", "on_conflict", "or"]);
+  // Column defaults the API relies on reading back, as the migrations declare them. Without
+  // these an inserted row looks different here than in Postgres, and a filter on the default
+  // value (status=eq.pending) matches nothing.
+  const DEFAULTS = { password_reset_requests: { status: "pending" } };   // migration 016
   function filtered(rows, params) {
     return rows.filter((r) => [...params].every(([k, v]) => RESERVED.has(k) || match(r, k, v)));
   }
@@ -49,6 +55,12 @@ function fakeDb(tables) {
   }
   async function fetch(url, init = {}) {
     const u = new URL(url);
+    // Outgoing mail (api/email.ts) goes to Resend, not PostgREST: capture it so a test can
+    // assert what was sent, and to whom, without a network call.
+    if (u.host === "api.resend.com") {
+      sent.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ id: "fake-mail-id" }), { status: 200 });
+    }
     if (!u.pathname.startsWith("/rest/v1/")) throw new Error(`fake: unexpected fetch ${url}`);
     const table = u.pathname.slice("/rest/v1/".length);
     const method = init.method || "GET";
@@ -82,7 +94,7 @@ function fakeDb(tables) {
           Object.assign(existing, it);
           out.push(existing);
         } else {
-          const r = { id: randomUUID(), ...it };
+          const r = { id: randomUUID(), ...(DEFAULTS[table] ?? {}), ...it };
           rows.push(r);
           out.push(r);
         }
@@ -101,7 +113,7 @@ function fakeDb(tables) {
     }
     throw new Error(`fake: method ${method}`);
   }
-  return { fetch, log, tables };
+  return { fetch, log, tables, sent };
 }
 
 // ── Fixture ──────────────────────────────────────────────────────────────────
@@ -141,7 +153,13 @@ function fixture() {
     user_password_tokens: [],
     password_reset_requests: [],
     login_logs: [],
-    app_settings: [{ key: "app_public_url", value: "https://classic.example" }],
+    app_settings: [
+      { key: "app_public_url", value: "https://classic.example" },
+      // Two deliberately different strings, as the live deployment has them: a long name
+      // for the From header, a tight one for the subject line.
+      { key: "email_product_name", value: "CHAI RFP Intelligence System" },
+      { key: "email_product_short_name", value: "CHAI RFPIS" },
+    ],
     tenant_settings: [{ tenant_id: T1, key: "schedule_json",
       value: JSON.stringify([{ date: "2099-01-05", note_taker: "Ada", presenter: "", chair: "Sam" }, { date: "2001-01-01" }]) }],
     scan_logs: [
@@ -161,7 +179,10 @@ function setup() {
   globalThis.fetch = db.fetch;
   const dispatched = [];
   const api = createApi(
-    { supabaseUrl: "https://fake.supabase.co", supabaseKey: SERVICE_KEY, jwtSecret: SECRET },
+    {
+      supabaseUrl: "https://fake.supabase.co", supabaseKey: SERVICE_KEY, jwtSecret: SECRET,
+      resendApiKey: "re_fake", resendFrom: "no-reply@x.org", appPublicUrl: "https://app.example.org",
+    },
     {
       bcryptCompare: (p, h) => bcrypt.compare(p, h),
       bcryptHash: (p) => bcrypt.hash(p, 4),
@@ -178,7 +199,7 @@ function setup() {
     return { status: r.status, body: await r.json() };
   }
   const signIn = async (email, password) => (await call("POST", "/login", { email, password })).body;
-  return { db, call, signIn, dispatched };
+  return { db, call, signIn, dispatched, sent: db.sent };
 }
 
 // ── Sign in ──────────────────────────────────────────────────────────────────
@@ -300,6 +321,83 @@ test("reset request: validated, recorded, same answer for any address", async ()
   assert.equal(a.status, 200);
   assert.equal(a.body.message, b.body.message);
   assert.deepEqual(db.tables.password_reset_requests.map((x) => x.email), ["ghost@x.org", "admin@x.org"]);
+});
+
+test("reset request: the link is sent at once, and only to an account that may use it", async () => {
+  const { call, db, sent } = setup();
+  // An account that exists and is usable: one mail, carrying a live token, and the request
+  // row closed so Manage Users shows no queue the app has already answered itself.
+  await call("POST", "/password/reset-request", { email: "admin@x.org" });
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].to, ["admin@x.org"]);
+  const tokens = db.tables.user_password_tokens.filter((t) => t.user_id === "u-admin");
+  assert.equal(tokens.length, 1);
+  assert.equal(tokens[0].purpose, "reset");
+  assert.equal(tokens[0].created_by, "self-service");
+  assert.equal(tokens[0].used_at, undefined);
+  assert.ok(Date.parse(tokens[0].expires_at) > Date.now(), "the token is still live");
+  assert.equal(db.tables.password_reset_requests[0].status, "handled");
+  assert.equal(db.tables.password_reset_requests[0].handled_by, "self-service");
+  // The token is in the email and nowhere else: only its hash is stored.
+  const link = sent[0].html.match(/https:\/\/classic\.example\/password-reset\?token=([A-Za-z0-9_-]+)/);
+  assert.ok(link, "the email links to the configured app_public_url, carrying the token");
+  assert.equal(createHash("sha256").update(link[1]).digest("hex"), tokens[0].token_hash);
+  // The From header is named, not a bare address (core/mailer.py::_from_header), and the
+  // subject uses the SHORT name — a different app_settings key, so the two can diverge.
+  assert.equal(sent[0].from, "CHAI RFP Intelligence System <no-reply@x.org>");
+  assert.equal(sent[0].subject, "Change your CHAI RFPIS password");
+
+  // Nobody else gets one: an unknown address, a deactivated account and a blacklisted one
+  // must all look identical from outside, and none may re-open an account by asking.
+  for (const email of ["ghost@x.org", "off@x.org", "bl@x.org"]) {
+    const before = sent.length;
+    const r = await call("POST", "/password/reset-request", { email });
+    assert.equal(r.status, 200);
+    assert.equal(sent.length, before, `${email} must not be emailed a reset link`);
+  }
+  assert.equal(db.tables.user_password_tokens.length, 1, "no token minted for those three");
+  // Still recorded, so the audit trail of who asked survives.
+  assert.deepEqual(db.tables.password_reset_requests.map((x) => x.email),
+    ["admin@x.org", "ghost@x.org", "off@x.org", "bl@x.org"]);
+});
+
+test("From header: the cases email.utils.formataddr handles, and the two guards", () => {
+  const addr = "no-reply@x.org";
+  // The plain case, which is what goes out today.
+  assert.equal(fromHeader(addr, "CHAI RFP Intelligence System"),
+    "CHAI RFP Intelligence System <no-reply@x.org>");
+  // A special in the name must be quoted, or the comma splits one address into two.
+  assert.equal(fromHeader(addr, "Acme, Inc."), '"Acme, Inc." <no-reply@x.org>');
+  assert.equal(fromHeader(addr, 'He said "hi"'), '"He said \\"hi\\"" <no-reply@x.org>');
+  // A non-ASCII name must be RFC 2047 encoded, or the header is invalid.
+  assert.equal(fromHeader(addr, "Zoë Ltd"), "=?utf-8?b?Wm/DqyBMdGQ=?= <no-reply@x.org>");
+  // mailer._from_header's guards: naming an address twice produces an invalid header, and
+  // a value that is not an address is passed through as configured rather than rewritten.
+  assert.equal(fromHeader("Already Named <a@b.org>", "Ignored"), "Already Named <a@b.org>");
+  assert.equal(fromHeader("not-an-address", "Some Name"), "not-an-address");
+  // No name resolved: the bare address, not an empty display name.
+  assert.equal(fromHeader(addr, ""), addr);
+});
+
+test("reset request: with no mail configured it answers the same and mints nothing", async () => {
+  // The Edge Function without RESEND_API_KEY. The person must not be able to tell, and a
+  // token nobody can receive must not be left live on the account.
+  const db = fakeDb(fixture());
+  globalThis.fetch = db.fetch;
+  const api = createApi(
+    { supabaseUrl: "https://fake.supabase.co", supabaseKey: SERVICE_KEY, jwtSecret: SECRET },
+    { bcryptCompare: (p, h) => bcrypt.compare(p, h), bcryptHash: (p) => bcrypt.hash(p, 4) },
+  );
+  const r = await api.handle(new Request("http://localhost/api/password/reset-request", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "admin@x.org" }),
+  }));
+  const bodyJson = await r.json();
+  assert.equal(r.status, 200);
+  assert.match(bodyJson.message, /on its way/);
+  assert.equal(db.sent.length, 0);
+  assert.equal(db.tables.user_password_tokens.length, 0, "no token nobody can receive");
+  assert.equal(db.tables.password_reset_requests[0].status, "pending", "left for an admin to action");
 });
 
 // ── Session checks ───────────────────────────────────────────────────────────

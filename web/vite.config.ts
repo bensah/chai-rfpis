@@ -35,7 +35,13 @@ function devApi(mode: string): Plugin {
         const { createApi } = (await server.ssrLoadModule(apiModule)) as
           typeof import("../supabase/functions/_shared/rfpis_api");
         const api = createApi(
-          { supabaseUrl: e.SUPABASE_URL, supabaseKey: e.SUPABASE_KEY, jwtSecret: e.SUPABASE_JWT_SECRET },
+          {
+            supabaseUrl: e.SUPABASE_URL, supabaseKey: e.SUPABASE_KEY, jwtSecret: e.SUPABASE_JWT_SECRET,
+            // Same keys the Streamlit app reads (core/mailer.py). Unset locally just means
+            // the reset email is not sent; the flow still answers identically.
+            resendApiKey: e.RESEND_API_KEY, resendFrom: e.RESEND_FROM_EMAIL,
+            appPublicUrl: e.APP_PUBLIC_URL,
+          },
           {
             bcryptCompare: (plain, hash) => bcrypt.compare(plain, hash),
             bcryptHash: (plain) => bcrypt.hash(plain, 12),

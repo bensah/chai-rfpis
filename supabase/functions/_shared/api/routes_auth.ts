@@ -3,6 +3,7 @@
  * the session parts of auth/tenant_context.py. Messages are the Streamlit app's wording.
  */
 import { q, type Db } from "./db.ts";
+import type { Mailer } from "./email.ts";
 import { body, HttpError, json, str } from "./http.ts";
 import { sha256Hex, type Json } from "./jwt.ts";
 import { isSuperUser, passwordProblems, PASSWORD_RULES_TEXT } from "./permissions.ts";
@@ -21,7 +22,10 @@ const DUMMY_HASH = "$2b$12$viRKiPpRBNOUFb16VqLUQ.AnuulKgZ5a1NrWOgL0gMJN7waTNQ9cq
 const INVALID_LINK = "Setup and reset links can only be used once, and they expire. " +
   "Ask an administrator to send you a new one.";
 
-export function createAuthRoutes(db: Db, tenants: Tenants, sessions: Sessions, deps: AuthDeps) {
+export function createAuthRoutes(
+  db: Db, tenants: Tenants, sessions: Sessions, deps: AuthDeps,
+  mail: { mailer: Mailer | null; allowedOrigins?: string[] } = { mailer: null },
+) {
   const nowIso = () => new Date().toISOString();
 
   /** authenticator._client_ip_ua: first X-Forwarded-For hop, else X-Real-IP. */
@@ -200,13 +204,92 @@ export function createAuthRoutes(db: Db, tenants: Tenants, sessions: Sessions, d
     return json({ ok: true, email: str(rec.user.email), purpose: rec.purpose === "invite" ? "invite" : "reset" });
   }
 
-  /** password_reset_request_form: recorded either way, same answer for any address. */
+  /**
+   * password_tokens.issue_token. 32 bytes of CSPRNG, URL-safe, stored only as sha256 —
+   * the token exists in the email and nowhere else. Any outstanding token for the account
+   * is retired first, so a re-sent link replaces the old one rather than adding a second.
+   */
+  async function issueToken(userId: string, purpose: "reset" | "invite", createdBy: string) {
+    const bytes = crypto.getRandomValues(new Uint8Array(32));
+    const raw = btoa(String.fromCharCode(...bytes))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const ttlMs = purpose === "invite" ? 7 * 24 * 3600_000 : 2 * 3600_000;
+    // A failure to retire the old ones must not block issuing the new one: the new link is
+    // what the person is waiting on, and the old ones still expire by themselves.
+    await db.service.update("user_password_tokens", `user_id=eq.${q(userId)}&used_at=is.null`,
+      { used_at: nowIso() }).catch(() => undefined);
+    await db.service.insert("user_password_tokens", {
+      user_id: userId,
+      token_hash: await sha256Hex(raw),
+      purpose,
+      expires_at: new Date(Date.now() + ttlMs).toISOString(),
+      created_by: createdBy,
+    }, "return=minimal");
+    return raw;
+  }
+
+  /**
+   * authenticator._email_reset_link. Silent about everything: a missing account, a
+   * deactivated one, a blacklisted one and a mail failure all look identical from outside,
+   * because the caller shows one confirmation either way.
+   */
+  async function emailResetLink(email: string, req: Request): Promise<boolean> {
+    // One deliberate difference from Python, which mints the token first and only then
+    // discovers the mailer is unconfigured: with no mail set up there is nobody to receive
+    // the link, so minting leaves a live reset token on the account that nobody asked for
+    // and nobody can use. Nothing observable changes — the caller's answer is the same.
+    if (!mail.mailer?.configured()) return false;
+    try {
+      const rows = await db.service.get("users",
+        `select=id,email,name,is_active,is_blacklisted&email=eq.${q(email)}&limit=1`);
+      const u = rows[0];
+      // A deactivated or blacklisted account must not be re-openable by its former holder
+      // asking for a reset.
+      if (!u || !u.is_active || u.is_blacklisted) return false;
+      const raw = await issueToken(String(u.id), "reset", "self-service");
+      return await mail.mailer.sendPasswordReset({
+        toEmail: str(u.email), toName: typeof u.name === "string" ? u.name : null, token: raw,
+        origin: req.headers.get("origin"), allowedOrigins: mail.allowedOrigins,
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * password_reset_request_form. THE LINK IS SENT IMMEDIATELY (owner, 2026-10-26): this
+   * used to file a row and wait for an administrator to press "Reset + email" in Manage
+   * Users, and measured on the live database not one request had ever been actioned, so
+   * the person who forgot their password simply never heard back.
+   *
+   * Nothing is weakened by sending it. The link proves only that the holder can read that
+   * mailbox, which is what a reset is; it expires in two hours, works once, and the old
+   * password keeps working until it is used. The request row is still written, so the
+   * audit trail of who asked and when survives.
+   */
   async function resetRequest(req: Request): Promise<Response> {
     const email = str((await body(req)).email);
     if (!email || !email.includes("@")) return json({ error: "Enter a valid email." }, 400);
-    await db.service.insert("password_reset_requests", { email: email.trim() }, "return=minimal");
-    return json({ ok: true, message: "Request received. After an admin approves it, the app will " +
-      "email you a one-time code and link to set a new password. It expires in 2 hours." });
+    const addr = email.trim();
+
+    // Record first, and never let a failure here stop the email: the audit row is for us,
+    // the link is what the person is waiting for.
+    await db.service.insert("password_reset_requests", { email: addr }, "return=minimal")
+      .catch(() => undefined);
+
+    if (await emailResetLink(addr, req)) {
+      // Close the request we just filed, so Manage Users does not show a queue of requests
+      // the app has already answered by itself.
+      await db.service.update("password_reset_requests",
+        `email=eq.${q(addr)}&status=eq.pending`,
+        { status: "handled", handled_by: "self-service", handled_at: nowIso() })
+        .catch(() => undefined);
+    }
+
+    // Deliberately identical whether or not the address exists (anti-enumeration): this
+    // form must not be usable to discover who has an account.
+    return json({ ok: true, message: "If that address has an account, a one-time link to set a " +
+      "new password is on its way. It expires in 2 hours. Check spam if it does not arrive shortly." });
   }
 
   /** Settings → Accounts → Active tenant (render_active_tenant → set_active_tenant). */

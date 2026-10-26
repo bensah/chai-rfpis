@@ -7,6 +7,7 @@ on first login (Phase 1 path: admin sets initial hash via the Admin panel).
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -21,6 +22,8 @@ import streamlit_authenticator as stauth
 # get_client(): most of these run before a tenant exists, and the rest (the credential cache,
 # a forced password change) must not depend on a tenant JWT at all.
 from db.supabase_client import service_client
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +505,12 @@ def _maybe_onboard(user: dict[str, Any]) -> None:
 
 _TOKEN_SS_KEY = "_activation_token"
 
+# Set once a six-digit code has been checked. The code proves WHICH token row this is
+# without revealing the long token, so the set-password screen keys on the row id for
+# the rest of its reruns. The row is re-read every time rather than trusted, so a
+# credential spent in another tab stops working here too.
+_ROW_SS_KEY = "_activation_row_id"
+
 
 def _activation_token() -> str:
     """The activation/reset token for this run, from any route that works.
@@ -536,11 +545,21 @@ def _activation_token() -> str:
 
 
 def activation_code_entry(expanded: bool | None = None) -> bool:
-    """Offer to accept a pasted activation code. True when one was submitted.
+    """Offer to accept a typed activation code. True when one was submitted.
 
     Rendered on the login screen because the link cannot be relied on to carry the token
-    (see `_activation_token`). The email prints the same code beneath the button, so a
-    recipient whose link arrived stripped is not stuck waiting for an administrator.
+    (see `_activation_token`). The email prints a code beneath the button, so a recipient
+    whose link arrived stripped is not stuck waiting for an administrator.
+
+    IT ASKS FOR THE EMAIL ADDRESS TOO, and that is not a convenience. The code used to be
+    the 43-character token printed a second time, which could be looked up on its own
+    because guessing it was not a strategy. It is now six digits (owner, 2026-10-26),
+    which is one in a million, and a million is small. Six digits are only safe checked
+    against ONE named account a limited number of times, so the address is half the
+    credential: see `core.password_tokens.check_code`.
+
+    A long token pasted here still works without the address, for anyone holding an older
+    email, and is told apart by being non-numeric.
     """
     # OPEN ON ARRIVAL when the invitation sent them here. The email's only link is
     # `?activate=1`, so a recipient lands with the box already open and the next thing they
@@ -557,54 +576,109 @@ def activation_code_entry(expanded: bool | None = None) -> bool:
         _want_open = bool(expanded)
     with st.expander("🔑 Have an activation or reset code?", expanded=_want_open):
         st.caption(
-            "If the button in your email did not open a password screen, paste the code "
-            "printed underneath it here.")
+            "If the button in your email did not open a password screen, enter your email "
+            "address and the 6-digit code printed underneath it.")
         with st.form("activation_code_form", clear_on_submit=False):
-            code = st.text_input("Activation / reset code", key="activation_code_input")
+            addr = st.text_input("Email address", key="activation_email_input")
+            code = st.text_input("6-digit code", key="activation_code_input",
+                                 max_chars=64, placeholder="123456")
             ok = st.form_submit_button("Continue")
         if ok:
             code = (code or "").strip()
+            addr = (addr or "").strip()
             if not code:
-                st.error("Paste the code from your email.")
+                st.error("Enter the code from your email.")
                 return False
-            # Stored, not validated here: handle_setup_token owns the verdict, so a bad
-            # code produces the same single message as a stale link and this screen never
-            # becomes a place to test whether a code exists.
-            st.session_state[_TOKEN_SS_KEY] = code
-            st.rerun()
+
+            from core.password_tokens import CODE_DIGITS, check_code, normalise_code
+            digits = normalise_code(code)
+
+            if len(digits) == CODE_DIGITS:
+                if not addr:
+                    st.error("Enter the email address the code was sent to.")
+                    return False
+                record = check_code(addr, digits)
+                if record is None:
+                    # One message for every failure: wrong code, wrong address, no such
+                    # account, expired, or too many tries. Separating them would turn this
+                    # box into somewhere to discover which addresses have accounts, and
+                    # tell an attacker when a guess was close.
+                    st.error(
+                        "That code is not valid. Check the address and the code, or ask "
+                        "for a new one — codes expire, work once, and stop accepting "
+                        "guesses after a few tries.")
+                    return False
+                # Validated: the row is now known, so the rest of the flow keys on it
+                # rather than on a token it cannot recover from six digits.
+                st.session_state[_ROW_SS_KEY] = record["id"]
+                st.rerun()
+            else:
+                # A long token from an older email. Stored, not validated here:
+                # handle_setup_token owns the verdict, so a bad one produces the same
+                # single message as a stale link.
+                st.session_state[_TOKEN_SS_KEY] = code
+                st.rerun()
     return False
 
 
-def _email_reset_link(email: str) -> bool:
-    """Mint a reset token for `email` and send it. True when a mail went out.
+RESET_SENT = "sent"
+RESET_NO_ACCOUNT = "no_account"
+RESET_UNAVAILABLE = "unavailable"
 
-    Silent about everything: the caller shows one confirmation whether or not the address
-    exists, so nothing here may raise or report. A missing account, a deactivated one, a
-    blacklisted one and a mail failure all look identical from outside.
+
+def _email_reset_link(email: str) -> str:
+    """Mint a reset token for `email` and send it. Returns one of the RESET_* outcomes.
+
+    Two kinds of failure, and conflating them is a real bug rather than a nicety.
+
+    Whether an address HAS AN ACCOUNT must never leak, so a missing account, a
+    deactivated one and a blacklisted one all return the same thing the caller reports
+    as success.
+
+    Whether this deployment can reach its database and its mailer AT ALL says nothing
+    about any particular account, and hiding it is how a broken deployment goes
+    unnoticed: on 2026-10-26 the live app answered "a link is on its way" to a reset
+    request while it had no Supabase credentials whatsoever, because every exception
+    here was swallowed. /password-reset renders without touching the database, so the
+    page looked healthy. Those cases now return RESET_UNAVAILABLE and are reported.
+
+    The split is drawn BEFORE the account is known, which is what keeps it safe: the
+    mailer check does not depend on the address, and a lookup that raises has not yet
+    established whether the account exists. Anything that fails AFTER the account is
+    known to exist stays silent, because surfacing it would confirm the account.
     """
+    from core.mailer import is_configured
+    if not is_configured():
+        log.error("password reset for %s: mail transport is not configured", email)
+        return RESET_UNAVAILABLE
     try:
         rows = (service_client().table("users")
                 .select("id,email,name,is_active,is_blacklisted")
                 .eq("email", email).limit(1).execute().data or [])
-    except Exception:
-        return False
+    except Exception as exc:
+        log.error("password reset for %s: user lookup failed: %s", email, exc)
+        return RESET_UNAVAILABLE
     if not rows:
-        return False
+        return RESET_NO_ACCOUNT
     u = rows[0]
     if not u.get("is_active") or u.get("is_blacklisted"):
         # A deactivated or blacklisted account must not be re-openable by its former
         # holder asking for a reset.
-        return False
+        return RESET_NO_ACCOUNT
     try:
         from core.password_tokens import PURPOSE_RESET, build_link, issue_token
         from core.user_emails import _app_url, send_password_reset_email
-        raw, _ = issue_token(user_id=u["id"], purpose=PURPOSE_RESET,
+        issued = issue_token(user_id=u["id"], purpose=PURPOSE_RESET,
                              created_by="self-service")
         send_password_reset_email(to_email=u["email"], to_name=u.get("name"),
-                                  reset_link=build_link(_app_url(), raw))
-        return True
-    except Exception:
-        return False
+                                  reset_link=build_link(_app_url(), issued.token),
+                                  code=issued.code)
+        return RESET_SENT
+    except Exception as exc:
+        # Deliberately NOT reported: reaching here means the account exists, so saying
+        # anything distinguishes it from an address that does not. Logged instead.
+        log.error("password reset for %s: issue or send failed: %s", email, exc)
+        return RESET_NO_ACCOUNT
 
 
 def password_reset_request_form(*, heading: bool = False) -> None:
@@ -652,9 +726,20 @@ def password_reset_request_form(*, heading: bool = False) -> None:
     except Exception:
         pass
 
-    sent = _email_reset_link(addr)
+    outcome = _email_reset_link(addr)
 
-    if sent:
+    if outcome == RESET_UNAVAILABLE:
+        # Says nothing about the address: this answer is the same for every one of them,
+        # because the thing that failed is the deployment, not the account. Reporting it
+        # is the difference between an administrator finding out now and finding out when
+        # somebody eventually mentions that no email ever came.
+        st.error(
+            "We can't send reset emails at the moment — this is a problem on our side, "
+            "not with your address. Please tell an administrator, and try again later."
+        )
+        return
+
+    if outcome == RESET_SENT:
         # Close the request we just filed, so Manage Users does not show a queue of
         # requests the app has already answered by itself.
         try:
@@ -708,14 +793,18 @@ def handle_setup_token() -> None:
     a dictionary lookup.
     """
     raw = _activation_token()
-    if not raw:
+    row_id = str(st.session_state.get(_ROW_SS_KEY) or "")
+    if not raw and not row_id:
         return
 
     from core.password_tokens import (
-        consume_token, invalidate_tokens_for_user, peek_token)
+        consume_by_id, consume_token, invalidate_tokens_for_user, peek_by_id,
+        peek_token)
 
     _hide_sidebar_on_login()
-    record = peek_token(raw)
+    # A link carries the token; a six-digit code only identifies the row, because six
+    # digits cannot be turned back into the token. Both end in the same record.
+    record = peek_token(raw) if raw else peek_by_id(row_id)
 
     if record is None:
         # Unknown, expired and already-used are deliberately one message.
@@ -791,7 +880,7 @@ def handle_setup_token() -> None:
             # fails the user asks for a new link, which is recoverable. The
             # other order can leave a live link after the password has
             # already changed - a credential nobody is tracking.
-            if consume_token(raw) is None:
+            if (consume_token(raw) if raw else consume_by_id(row_id)) is None:
                 st.error(
                     "This link was just used somewhere else. Ask an "
                     "administrator for a new one.")
@@ -836,6 +925,7 @@ def handle_setup_token() -> None:
             # link token kept across the reruns of this form). Leaving it there would
             # re-enter this screen on the next rerun with a token already spent.
             st.session_state.pop(_TOKEN_SS_KEY, None)
+            st.session_state.pop(_ROW_SS_KEY, None)
 
             # Remembered so the activation / reset PAGE can show a completed state instead
             # of re-rendering its "paste your code" form. That fallback is what made the

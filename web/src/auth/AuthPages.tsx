@@ -190,14 +190,14 @@ function ResetRequestForm() {
       }
     }}>
       <p className="mb-3 text-xs text-ink-500">
-        Enter your email and request a reset. Once an admin approves it, the app emails you a one-time code and
-        link to set a new password. Your current password keeps working until you use it.
+        Enter your email and we'll send you a one-time link to set a new password. It expires in 2 hours, and
+        your current password keeps working until you use it.
       </p>
       <Field id="fp_email" label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
       <Problems error={error} />
       {done && <Notice tone="good" className="mb-3" icon={<CheckCircle2 className="h-4 w-4" />}>{done}</Notice>}
       <Button type="submit" busy={busy} icon={<Mail className="h-4 w-4" />} className="w-full">
-        Request password reset
+        Email me a reset link
       </Button>
     </form>
   );

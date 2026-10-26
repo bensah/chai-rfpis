@@ -22,6 +22,7 @@
  *   routes_*.ts     the routes, grouped by area
  */
 import { createDb, q } from "./api/db.ts";
+import { createMailer } from "./api/email.ts";
 import { corsHeaders, gzipped, HttpError, json, withCors } from "./api/http.ts";
 import { createAuthRoutes, type AuthDeps } from "./api/routes_auth.ts";
 import { createJobRoutes, type Dispatch } from "./api/routes_jobs.ts";
@@ -35,6 +36,11 @@ export type Env = {
   supabaseKey: string;      // service-role key
   jwtSecret: string;        // project legacy HS256 JWT secret (SUPABASE_JWT_SECRET)
   allowedOrigins?: string[]; // CORS allow-list; empty/undefined = any origin (bearer auth, no cookies)
+  // Email (core/mailer.py's RESEND_API_KEY / RESEND_FROM_EMAIL). Unset = the API sends no
+  // mail, and the self-service reset goes back to being a dead end — see api/email.ts.
+  resendApiKey?: string;
+  resendFrom?: string;
+  appPublicUrl?: string;    // fallback for link building when app_settings has none
 };
 
 export type Deps = AuthDeps & {
@@ -45,7 +51,11 @@ export function createApi(env: Env, deps: Deps) {
   const db = createDb(env);
   const tenants = createTenants(db);
   const sessions = createSessions(env.jwtSecret, db, tenants);
-  const auth = createAuthRoutes(db, tenants, sessions, deps);
+  const mailer = createMailer(db, {
+    resendApiKey: env.resendApiKey, resendFrom: env.resendFrom, appPublicUrl: env.appPublicUrl,
+  });
+  const auth = createAuthRoutes(db, tenants, sessions, deps,
+    { mailer, allowedOrigins: env.allowedOrigins });
   const shell = createShellRoutes(db);
   const jobs = createJobRoutes(db, deps.dispatchJob ?? null);
   const phase1 = createPhase1Routes(db);
