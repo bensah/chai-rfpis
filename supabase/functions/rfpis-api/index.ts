@@ -23,7 +23,10 @@ import { githubDispatch } from "../_shared/api/routes_jobs.ts";
 const origins = (Deno.env.get("RFPIS_WEB_ORIGINS") ?? "")
   .split(",").map((s) => s.trim()).filter(Boolean);
 const ghToken = Deno.env.get("RFPIS_GH_DISPATCH_TOKEN") ?? "";
-const ghRepo = Deno.env.get("RFPIS_GH_REPO") ?? "bensah/rfp-intelligence-system";
+// Renamed 2026-10-26 from rfp-intelligence-system. Git clones survive that on GitHub's
+// redirect, which is why the old name went unnoticed for a while, but this default feeds
+// the REST API for workflow_dispatch and a redirect is not something to rely on there.
+const ghRepo = Deno.env.get("RFPIS_GH_REPO") ?? "bensah/chai-rfpis";
 
 const api = createApi(
   {
