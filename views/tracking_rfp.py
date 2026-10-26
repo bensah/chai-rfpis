@@ -30,7 +30,7 @@ from core.currency import format_money
 from core.scorer import criterion_score
 from core.records import clean_record, clean_df
 from core.pipeline import days_to_deadline, deadline_status, usd_value
-from core.review_week import all_weeks_for_year, week_bounds
+from core.review_week import all_weeks_for_year, monday_from_week_label, week_bounds
 from db.supabase_client import get_client
 from views.rfp_editor import render_rfp_editor
 from core.cache_scope import scope_key
@@ -267,11 +267,13 @@ with st.container(border=True):
 
     all_weeks = all_weeks_for_year(year)
 
+    # Was a local copy of review_week.monday_from_week_label's arithmetic, and carried the
+    # same fault: a year can begin AND end with a label reading "Week 1", so resolving by
+    # week number sent the last week of the year to a Monday twelve months earlier and this
+    # selector looked up the wrong week's note. Use the shared one, which resolves by
+    # relabelling, rather than keeping a second copy that has to be fixed twice.
     def _monday_label_to_date(label: str) -> date:
-        week_num = int(label.split(" ")[1])
-        jan4 = date(year, 1, 4)
-        mon, _ = week_bounds(jan4)
-        return mon + timedelta(days=(week_num - mon.isocalendar().week) * 7)
+        return monday_from_week_label(label, year)
 
     # Default: the latest week with a note for this RFP, else current week
     if weeks_with_notes:

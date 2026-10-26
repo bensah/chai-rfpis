@@ -53,7 +53,36 @@ def all_weeks_for_year(year: int) -> list[str]:
 
 
 def monday_from_week_label(label: str, year: int) -> date:
-    """Parse 'Week 23 (1 Jun - 7 Jun)' → date(2026, 6, 1) for year=2026."""
+    """'Week 23 (1 Jun - 7 Jun)' → date(2026, 6, 1) for year=2026.
+
+    Resolved by RELABELLING the year's Mondays and taking the one that renders as the
+    label asked for, rather than by arithmetic on the week number.
+
+    THE WEEK NUMBER IS NOT UNIQUE within a year's labels. `all_weeks_for_year` walks from
+    the Monday of the week containing 4 January, which can belong to the PREVIOUS calendar
+    year, and keeps going while that Monday's year is still `year` — so a year can both
+    begin and end with a label reading "Week 1". 2025's list starts with
+    "Week 1 (30 Dec - 5 Jan)" and ends with "Week 1 (29 Dec - 4 Jan)".
+
+    Resolving "Week 1" by number therefore returned the FIRST one for both, and the last
+    week of the year came back as a date twelve months earlier. Measured over 2023-2027,
+    two labels failed to round-trip. It was invisible in a selector, which only ever turns
+    back a label it just rendered, and wrong where a label is turned into a date to read
+    data with: `summary_rfp` resolves the selected week to a start date, and `tracking_rfp`
+    looks up the meeting note whose `meeting_date` equals that Monday. Both would have read
+    the wrong week — and it is the week spanning the new year, when a team is reviewing
+    what the year did.
+
+    An unrecognised label (a stale one from another year) falls back to the old arithmetic,
+    so a caller still gets a date rather than an exception.
+    """
+    d = date(year, 1, 4)          # 4 January is always in ISO week 1
+    mon, _ = week_bounds(d)
+    while mon.year <= year:
+        if review_week_label(mon) == label:
+            return mon
+        mon = mon + timedelta(days=7)
+
     week_num = int(label.split()[1])
     jan4 = date(year, 1, 4)
     base_mon, _ = week_bounds(jan4)
