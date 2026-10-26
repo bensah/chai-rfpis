@@ -341,7 +341,11 @@ def send_pipeline_digest(tenant_id: str, since_iso: str, *, dry_run: bool = Fals
         try:
             # One message per person: a shared To: line would show every member's address
             # to everyone, and lets the greeting use their own name.
-            send(to=[p["email"]], subject=subject, html=body)
+            # purpose="alerts": the scan's mail comes from its own address, so a
+            # recipient can filter or mute the weekly alerts without also losing
+            # the account mail that lets them get back in.
+            send(to=[p["email"]], subject=subject, html=body,
+                 purpose=ue.PURPOSE_ALERTS)
             out["sent"] += 1
         except ue.MailerNotConfigured as exc:
             out["skipped"] = f"mail not configured: {exc}"

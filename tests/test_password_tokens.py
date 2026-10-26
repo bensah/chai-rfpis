@@ -251,8 +251,8 @@ class TheEmailIsFramedAsActivationTests(unittest.TestCase):
         from core import user_emails as UE
         captured = {}
 
-        def _fake(to, subject, html):
-            captured.update(to=to, subject=subject, html=html)
+        def _fake(to, subject, html, **kw):
+            captured.update(to=to, subject=subject, html=html, **kw)
             return {"id": "x"}
 
         orig = UE.send_email
@@ -467,7 +467,7 @@ class TheActivationPageIsPublicTests(unittest.TestCase):
         from core import user_emails as UE
         got = {}
         orig = UE.send_email
-        UE.send_email = lambda to, subject, html: got.update(html=html) or {}
+        UE.send_email = lambda to, subject, html, **kw: got.update(html=html) or {}
         try:
             UE.send_welcome_email(to_email="a@x.org", to_name="T",
                                   setup_link="https://x/?token=C", code="100200")
@@ -543,7 +543,7 @@ class TheRoutesTests(unittest.TestCase):
         from core import user_emails as UE
         orig = UE.send_email
         got = {}
-        UE.send_email = lambda to, subject, html: got.update(html=html) or {}
+        UE.send_email = lambda to, subject, html, **kw: got.update(html=html) or {}
         try:
             UE.send_welcome_email(to_email="a@x.org", to_name="T",
                                   setup_link="https://x/?token=A1", code="100200")

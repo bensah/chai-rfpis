@@ -31,7 +31,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from core.mailer import MailerNotConfigured, send_email
+from core.mailer import (
+    PURPOSE_ACCOUNT, PURPOSE_ALERTS, PURPOSE_REPORTS, MailerNotConfigured, send_email)
 
 
 def _html_escape(text: str) -> str:
@@ -134,41 +135,29 @@ def _help_url() -> str:
     return _app_url().rstrip("/") + "/help"
 
 
-def _branded_html(*, recipient_name: str, body_html: str) -> str:
-    """Wrap a body in the RFPIS-branded email shell. Inline styles only —
+def _branded_html(*, recipient_name: str, body_html: str, heading: str = "") -> str:
+    """Wrap a body in the shared email shell. Inline styles only —
     most email clients strip <style> blocks."""
     import html as _html
     app_url = _app_url()
     help_url = _help_url()
     safe_name = recipient_name or "there"
     _pb = _powered_by()
-    _powered_html = (
-        f'<div style="font-size:12px; color:#94a3b8; margin-bottom:20px;">'
-        f'Powered by {_html.escape(_pb)}</div>' if _pb else "")
-    return f"""
-<!doctype html>
-<html>
-  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f5f7fa; padding:24px; margin:0;">
-    <div style="max-width:560px; margin:0 auto; background:#ffffff; border-radius:8px; padding:32px 28px; border:1px solid #e3e7e3;">
-      <div style="font-size:18px; font-weight:700; color:#1e3a8a; margin-bottom:4px;">{_html.escape(_product_name())}</div>
-      {_powered_html}
-      <div style="font-size:15px; color:#1f2937; line-height:1.55;">
-        <p>Hi <strong>{safe_name}</strong>,</p>
-        {body_html}
-        <p style="margin-top:28px; font-size:13px; color:#475569;">
-          Log in at <a href="{app_url}" style="color:#00703C;">{app_url}</a>
-          &nbsp;·&nbsp;
-          <a href="{help_url}" style="color:#00703C;">Help</a>
-        </p>
-        <p style="font-size:12px; color:#94a3b8; margin-top:24px;">
-          This is an automated message. If you didn't expect this email,
-          contact your administrator.
-        </p>
-      </div>
-    </div>
-  </body>
-</html>
-"""
+    # The shared shell, so an invitation and the weekly alert look like one product
+    # (owner, 2026-10-26). These emails used to carry their own layout and an older
+    # palette, which is why they looked like a different system to the digest.
+    from core.email_theme import BODY_TEXT, FONT, shell
+    rows = (f'<tr><td style="font-family:{FONT};font-size:15px;color:{BODY_TEXT};'
+            f'line-height:1.55;">{body_html}</td></tr>')
+    return shell(
+        eyebrow=_html.escape(_product_name()),
+        heading=heading or _product_name(),
+        greeting=safe_name,
+        body_rows=rows,
+        footer_note=(f"Powered by {_html.escape(_pb)}" if _pb else ""),
+        app_url=app_url,
+        help_url=help_url,
+    )
 
 
 # The button label per destination - "Activate my account" is wrong on a reset email.
@@ -337,7 +326,9 @@ def send_welcome_email(
     return send_email(
         to=[to_email],
         subject=f"Activate your {short} account",
-        html=_branded_html(recipient_name=to_name or "", body_html=body),
+        purpose=PURPOSE_ACCOUNT,
+        html=_branded_html(recipient_name=to_name or "", body_html=body,
+                           heading="Activate your account"),
     )
 
 
@@ -369,7 +360,9 @@ def send_password_reset_email(
     return send_email(
         to=[to_email],
         subject=f"Change your {short} password",
-        html=_branded_html(recipient_name=to_name or "", body_html=body),
+        purpose=PURPOSE_ACCOUNT,
+        html=_branded_html(recipient_name=to_name or "", body_html=body,
+                           heading="Choose a new password"),
     )
 
 
@@ -395,7 +388,9 @@ def send_signup_received_email(
     return send_email(
         to=[to_email],
         subject=f"{_short_name()} — your registration is pending approval",
-        html=_branded_html(recipient_name=to_name or "", body_html=body),
+        purpose=PURPOSE_ACCOUNT,
+        html=_branded_html(recipient_name=to_name or "", body_html=body,
+                           heading="Registration received"),
     )
 
 
@@ -414,7 +409,9 @@ def send_account_approved_email(
     return send_email(
         to=[to_email],
         subject=f"{_short_name()} — your account is now active",
-        html=_branded_html(recipient_name=to_name or "", body_html=body),
+        purpose=PURPOSE_ACCOUNT,
+        html=_branded_html(recipient_name=to_name or "", body_html=body,
+                           heading="Your account is active"),
     )
 
 
@@ -424,4 +421,9 @@ __all__ = [
     "send_signup_received_email",
     "send_account_approved_email",
     "MailerNotConfigured",
+    # Re-exported so callers that already import send_email from here can name a
+    # sending purpose without also reaching into core.mailer.
+    "PURPOSE_ACCOUNT",
+    "PURPOSE_ALERTS",
+    "PURPOSE_REPORTS",
 ]
