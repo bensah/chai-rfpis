@@ -180,7 +180,29 @@ def _count_cell(n: int, label: str, color: str) -> str:
             f'<div style="font-family:{FONT};font-size:13px;color:#000000;">{label}</div></td>')
 
 
-def _item(row: dict[str, Any], base: str, slug: str | None) -> str:
+_STATUS_COLOUR = {"Proceed": DARK_GREEN, "Park": DARK_GOLD, "Decline": DARK_RED}
+
+
+def status_badge(status: str, *, decided: bool) -> str:
+    """A coloured pill saying where a call stands, and WHO put it there.
+
+    The distinction matters more than the colour: "Proceed" from the screening
+    engine is a suggestion nobody has looked at, and "Proceed" from the team is a
+    commitment. An email that renders them identically invites somebody to think a
+    call is agreed when it is only scored.
+    """
+    if not status:
+        return ""
+    colour = _STATUS_COLOUR.get(status, TURQUOISE)
+    label = status if decided else f"{status} (suggested)"
+    bg, fg = (colour, "#ffffff") if decided else (LIGHT_GREY, colour)
+    border = "" if decided else f"border:1px solid {colour};"
+    return (f'<span style="background:{bg};color:{fg};{border}font-family:{FONT};'
+            f'font-size:12px;font-weight:bold;letter-spacing:0.4px;padding:4px 10px;'
+            f'border-radius:999px;display:inline-block;">{_esc(label)}</span>')
+
+
+def _item(row: dict[str, Any], base: str, slug: str | None, badge: str = "") -> str:
     url = opportunity_url(base, row["uid"], slug)
     meta = [row.get("funding_agency") or "Funder not stated",
             amount_text(row.get("call_award_value"), row.get("currency")),
@@ -194,6 +216,7 @@ def _item(row: dict[str, Any], base: str, slug: str | None) -> str:
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
                style="border:1px solid {LIGHT_BLUE};border-radius:8px;">
           <tr><td style="padding:14px 16px;">
+            {f'<div style="margin-bottom:9px;">{badge}</div>' if badge else ''}
             <a href="{_esc(url)}" style="font-family:{FONT};font-size:16px;font-weight:bold;
                color:{DARK_BLUE};text-decoration:none;line-height:1.35;">{_esc(row.get("opportunity_title") or row["uid"])}</a>
             <div style="font-family:{FONT};font-size:13px;color:#4a4a4a;margin:6px 0 8px;">
@@ -286,6 +309,234 @@ def subject_line(tenant_name: str, proceed: int, park: int) -> str:
 
 
 # ── Send ────────────────────────────────────────────────────────────────────
+
+# ── Monday review summary ───────────────────────────────────────────────────
+#
+# A second, different email (owner, 2026-10-26). The Friday digest answers "what
+# did the scan just find"; this answers "where did last week get to", on Monday
+# morning when somebody is deciding what to work on. It therefore leads with what
+# is still WAITING on the team, and shows decisions as decisions.
+
+_REVIEW_COLS = _ROW_COLS + ",decision_date,submitted_at"
+
+
+def week_window(now: datetime | None = None) -> tuple[datetime, datetime]:
+    """The previous Monday 00:00 UTC up to this Monday 00:00 UTC, half-open.
+
+    Anchored to Monday rather than "the last seven days" so the email covers the
+    same ground every week and two consecutive sends can neither overlap nor leave
+    a gap, whatever time the cron actually fires. Friday's scan sits inside it.
+    """
+    from datetime import timedelta, timezone
+    now = now or datetime.now(timezone.utc)
+    this_monday = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    return this_monday - timedelta(days=7), this_monday
+
+
+def _rows_in_window(client: Any, tenant_id: str, column: str,
+                    start: datetime, end: datetime) -> list[dict[str, Any]]:
+    rows = (client.table("rfp_submissions").select(_REVIEW_COLS)
+            .eq("tenant_id", tenant_id)
+            .gte(column, start.isoformat()).lt(column, end.isoformat())
+            .execute().data or [])
+    return [r for r in rows if not r.get("is_duplicate")]
+
+
+def _is_decided(row: dict[str, Any]) -> bool:
+    """True when a person recorded a decision, as opposed to the engine scoring one."""
+    return bool((row.get("decision") or "").strip())
+
+
+def weekly_review_data(client: Any, tenant_id: str, start: datetime,
+                       end: datetime) -> dict[str, Any]:
+    """What last week looked like: what is waiting, and what was settled.
+
+    Two different questions over two different date columns, so a call found in
+    an earlier week but decided last week still counts as last week's work. A call
+    found AND decided last week appears once, under decided: the team has dealt
+    with it and does not need chasing.
+    """
+    found = _rows_in_window(client, tenant_id, "submitted_at", start, end)
+    decided = _rows_in_window(client, tenant_id, "decision_date", start, end)
+    decided = [r for r in decided if _is_decided(r)]
+    decided_uids = {r.get("uid") for r in decided}
+
+    waiting: dict[str, list[dict]] = {"Proceed": [], "Park": []}
+    declined_untouched = 0
+    for r in found:
+        if r.get("uid") in decided_uids or _is_decided(r):
+            continue
+        v = verdict(r)
+        if v in waiting:
+            waiting[v].append(r)
+        elif v == "Decline":
+            declined_untouched += 1
+    for k in waiting:
+        waiting[k].sort(key=lambda r: -(r.get("alignment_score") or 0))
+
+    settled: dict[str, list[dict]] = {"Proceed": [], "Park": [], "Decline": []}
+    for r in decided:
+        v = verdict(r)
+        if v in settled:
+            settled[v].append(r)
+
+    return {"waiting": waiting, "settled": settled,
+            "declined_untouched": declined_untouched,
+            "found_total": len(found), "decided_total": len(decided)}
+
+
+def weekly_subject(tenant_name: str, waiting: int, decided: int) -> str:
+    if not waiting and not decided:
+        return f"{tenant_name}: a quiet week in the pipeline"
+    bits = []
+    if waiting:
+        bits.append(f"{waiting} awaiting review")
+    if decided:
+        bits.append(f"{decided} decided")
+    return f"{tenant_name}: last week in the pipeline ({', '.join(bits)})"
+
+
+def render_weekly_review_html(*, recipient_name: str, tenant_name: str, product: str,
+                              base_url: str, slug: str | None, data: dict[str, Any],
+                              start: datetime, end: datetime) -> str:
+    """The Monday email. Pure function, so it can be previewed and tested."""
+    from datetime import timedelta
+    waiting, settled = data["waiting"], data["settled"]
+    n_wait = len(waiting["Proceed"]) + len(waiting["Park"])
+    n_settled = sum(len(v) for v in settled.values())
+    pipe_url = f"{base_url.rstrip('/')}/pipelines" + (
+        f"?tenant={quote(slug)}" if slug else "")
+    greet = _esc(recipient_name.split()[0]) if recipient_name else "there"
+    span = (f"{start.strftime('%B')} {start.day} to "
+            f"{(end - timedelta(days=1)).strftime('%B')} {(end - timedelta(days=1)).day}")
+
+    def _block(title: str, rows: list[dict], decided: bool) -> str:
+        if not rows:
+            return ""
+        items = "".join(
+            _item(r, base_url, slug, badge=status_badge(verdict(r), decided=decided))
+            for r in rows[:MAX_LISTED])
+        return (f'<tr><td style="padding:22px 0 10px 0;font-family:{FONT};font-size:18px;'
+                f'font-weight:bold;color:{TURQUOISE};">{_esc(title)} ({len(rows)})</td></tr>'
+                f'{items}')
+
+    waiting_blocks = (_block("Waiting on you: rated Proceed", waiting["Proceed"], False)
+                      + _block("Waiting on you: rated Park", waiting["Park"], False))
+    settled_blocks = "".join(
+        _block(f"Decided: {name}", settled[name], True)
+        for name in ("Proceed", "Park", "Decline"))
+
+    if n_wait:
+        lead = (f"<b>{n_wait}</b> {'call is' if n_wait == 1 else 'calls are'} still "
+                f"waiting for a decision from the team.")
+    elif n_settled:
+        lead = "Nothing is waiting on the team — last week's calls have all been decided."
+    else:
+        lead = "No new calls and no decisions last week."
+    quiet = ('<tr><td style="font-family:%s;font-size:14px;color:#4a4a4a;padding:8px 0 0;">'
+             'Nothing to action. The next scan runs Friday.</td></tr>' % FONT) \
+        if not (n_wait or n_settled) else ""
+    skipped = (f'<tr><td style="font-family:{FONT};font-size:13px;color:#4a4a4a;'
+               f'padding:4px 0 0;">{data["declined_untouched"]} further '
+               f'{"call was" if data["declined_untouched"] == 1 else "calls were"} rated '
+               f'Decline by the system and {"is" if data["declined_untouched"] == 1 else "are"} '
+               f'not listed.</td></tr>') if data["declined_untouched"] else ""
+
+    return f"""<!doctype html>
+<html><body style="margin:0;padding:0;background:{LIGHT_GREY};">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{LIGHT_GREY};">
+<tr><td align="center" style="padding:24px 12px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+         style="max-width:640px;background:#ffffff;border-radius:10px;overflow:hidden;">
+    <tr><td style="background:{DARK_BLUE};padding:22px 28px;">
+      <div style="font-family:{FONT};font-size:12px;letter-spacing:1px;color:{LIGHT_BLUE};
+                  text-transform:uppercase;">{_esc(product)} &nbsp;·&nbsp; {_esc(tenant_name)}</div>
+      <div style="font-family:{FONT};font-size:22px;font-weight:bold;color:#ffffff;margin-top:6px;
+                  line-height:1.3;">Last week in the pipeline</div>
+      <div style="font-family:{FONT};font-size:13px;color:{LIGHT_BLUE};margin-top:4px;">{_esc(span)}</div>
+    </td></tr>
+    <tr><td style="padding:24px 28px 8px 28px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+        <tr><td style="font-family:{FONT};font-size:15px;color:#000000;line-height:1.55;padding-bottom:16px;">
+          Hi {greet},<br><br>{lead}
+        </td></tr>
+        <tr><td style="padding-bottom:6px;"><table role="presentation" width="100%"
+                 cellpadding="0" cellspacing="6"><tr>
+          {_count_cell(n_wait, "awaiting review", DARK_GOLD)}
+          {_count_cell(n_settled, "decided", DARK_GREEN)}
+          {_count_cell(data["found_total"], "found last week", DARK_BLUE)}
+        </tr></table></td></tr>
+        {skipped}
+        {quiet}
+        {waiting_blocks}
+        {settled_blocks}
+        <tr><td style="padding:18px 0 6px 0;">{_button(pipe_url, "Open the pipeline", DARK_BLUE)}</td></tr>
+        <tr><td style="font-family:{FONT};font-size:12px;color:#94a3b8;padding-top:18px;">
+          This is an automated weekly summary. It covers {_esc(span)}.
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</td></tr>
+</table>
+</body></html>
+"""
+
+
+def send_weekly_review(tenant_id: str, *, now: datetime | None = None,
+                       dry_run: bool = False, client: Any = None,
+                       send: Callable[..., Any] | None = None,
+                       only_to: Iterable[str] | None = None) -> dict[str, Any]:
+    """Email the tenant's members a summary of last week. Never raises for an ordinary miss.
+
+    Unlike the Friday digest this DOES send on a quiet week, because "nothing is
+    waiting on you" is useful on a Monday and its absence is indistinguishable from
+    a broken cron.
+    """
+    from core import user_emails as ue
+    if client is None:
+        from db.supabase_client import service_client
+        client = service_client()
+    start, end = week_window(now)
+    data = weekly_review_data(client, tenant_id, start, end)
+    n_wait = sum(len(v) for v in data["waiting"].values())
+    out: dict[str, Any] = {"window": [start.isoformat(), end.isoformat()],
+                           "found": data["found_total"], "awaiting": n_wait,
+                           "decided": data["decided_total"], "sent": 0, "failed": 0}
+    people = recipients(client, tenant_id)
+    if only_to is not None:
+        wanted = {e.strip().lower() for e in only_to}
+        people = [p for p in people if p["email"].lower() in wanted] or \
+                 [{"email": e, "name": ""} for e in wanted]
+    if not people:
+        out["skipped"] = "no active members with an email address"
+        return out
+    t = _tenant(client, tenant_id)
+    tenant_name = t.get("name") or "your organization"
+    subject = weekly_subject(tenant_name, n_wait, data["decided_total"])
+    out["subject"] = subject
+    out["recipients"] = len(people)
+    if dry_run:
+        out["skipped"] = "dry run"
+        return out
+    send = send or ue.send_email
+    for p in people:
+        body = render_weekly_review_html(
+            recipient_name=p["name"], tenant_name=tenant_name, product=ue._short_name(),
+            base_url=ue._app_url(), slug=t.get("slug"), data=data, start=start, end=end)
+        try:
+            send(to=[p["email"]], subject=subject, html=body,
+                 purpose=ue.PURPOSE_ALERTS)
+            out["sent"] += 1
+        except ue.MailerNotConfigured as exc:
+            out["skipped"] = f"mail not configured: {exc}"
+            break
+        except Exception as exc:
+            out["failed"] += 1
+            log.warning("weekly review to %s failed: %s", p["email"], exc)
+    return out
+
 
 def send_pipeline_digest(tenant_id: str, since_iso: str, *, dry_run: bool = False,
                          client: Any = None, send: Callable[..., Any] | None = None,
