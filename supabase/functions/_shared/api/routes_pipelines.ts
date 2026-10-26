@@ -42,6 +42,14 @@ const SUMMARY_FIELDS = "uid,funding_agency,call_award_value,currency," +
   "submitted_at,review_week,alignment_score,auto_recommendation,decision," +
   "decision_date,donor_decision,progress_status,is_duplicate,duplicate_of_uid";
 
+/** views/tracking_rfp.py draws these, plus proposal_lead for the duplicate-group leads. */
+const TRACK_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,currency," +
+  "call_submission_deadline,call_geographic_scope,focus_theme,opportunity_link," +
+  "submitted_at,review_week,alignment_score,decision,donor_decision," +
+  "progress_status,proposal_lead,is_duplicate,duplicate_of_uid";
+
+const TRACK_DECISIONS = new Set(["Proceed", "Proceed as sub"]);
+
 const norm = (v: unknown) => str(v).trim().toLowerCase();
 
 /** core/review_week.py::week_bounds — the Monday of the ISO week containing `d`. */
@@ -107,6 +115,65 @@ function dropConcluded(rows: Json[]): Json[] {
     if (dd !== "" && dd !== "not submitted") return false;
     const ps = norm(r.progress_status);
     return ps !== "completed" && ps !== "discontinued";
+  });
+}
+
+/** Conditions 2 to 6 of tracking_rfp.py::_fetch, over rows already narrowed to
+ * non-duplicates. Exported as a pure function because this filter, not the HTTP around
+ * it, is what parity is about: web/scripts/pipelines.test.mjs drives it directly.
+ *
+ * `today` is passed in rather than read, so a test can pin the deadline boundary.
+ */
+export function selectTrackRows(rows: Json[], year: number, today: string): Json[] {
+  return rows.filter((r) => {
+    // 2. The STORED decision, matched EXACTLY against the two strings.
+    //
+    // THIS DELIBERATELY DISAGREES WITH SCREENED, which uses the effective decision —
+    // stored falling back to auto_recommendation, Proceed matched by startswith. A
+    // freshly scanned row whose auto-recommendation is Proceed belongs on Screened and
+    // NOT here, until a person has actually decided. Harmonising the two would fill
+    // Track with work nobody committed to, which is the opposite of the page's purpose.
+    if (!TRACK_DECISIONS.has(str(r.decision).trim())) return false;
+
+    // 3. Year of submitted_at, read off the ISO prefix rather than parsed to an instant,
+    // so a row just inside a new year at a positive UTC offset keeps the year its text
+    // says — which is the year the Python reads.
+    if (str(r.submitted_at).slice(0, 4) !== String(year)) return false;
+
+    // 4. donor_decision is lower-cased but NOT stripped, unlike progress_status below.
+    // That asymmetry is the Python's, and it differs from records.drop_concluded, which
+    // strips both. Matched as written rather than tidied: tidying it would silently
+    // admit rows the Streamlit page excludes.
+    const dd = str(r.donor_decision).toLowerCase();
+    if (dd !== "" && dd !== "not submitted") return false;
+
+    // 5. progress_status OVERRIDES the decision: a Completed or Discontinued row drops
+    // out entirely even though its decision is still Proceed, and must not appear in the
+    // card, the dropdown or the table.
+    const ps = norm(r.progress_status);
+    if (ps === "completed" || ps === "discontinued") return false;
+
+    // 6. No deadline, or one that has not passed.
+    const dl = str(r.call_submission_deadline).slice(0, 10);
+    return dl === "" || dl >= today;
+  });
+}
+
+/** The leads on a duplicate group belong to the canonical row: a colleague who picked up
+ * the duplicate is still the lead. Blanks and non-strings are dropped, then the set is
+ * deduplicated and sorted, as the Python does. */
+export function leadsFor(rows: Json[], dups: Json[]): { uid: string; proposalLeads: string[] }[] {
+  const extra = new Map<string, string[]>();
+  for (const d of dups) {
+    const of = str(d.duplicate_of_uid);
+    const lead = str(d.proposal_lead).trim();
+    if (of && lead) extra.set(of, [...(extra.get(of) ?? []), lead]);
+  }
+  return rows.map((r) => {
+    const uid = str(r.uid);
+    const own = str(r.proposal_lead).trim();
+    const set = new Set([...(own ? [own] : []), ...(extra.get(uid) ?? [])]);
+    return { uid, proposalLeads: [...set].sort() };
   });
 }
 
@@ -185,5 +252,66 @@ export function createPipelineRoutes(db: Db) {
     return gzipped(req, json({ from, to, rows }));
   }
 
-  return { weeks, screen, summary };
+  /** Track: the active Proceed work for a year, and the leads across each duplicate group.
+   *
+   * Six conditions from tracking_rfp.py::_fetch, and the first of them is the one to be
+   * careful with:
+   *
+   * TRACK AND SCREENED DELIBERATELY DISAGREE. Screened uses the EFFECTIVE decision —
+   * stored falling back to auto_recommendation, Proceed matched by startswith — while
+   * this filters the STORED column, matched exactly against the two strings. So a freshly
+   * scanned row whose auto-recommendation is Proceed shows on Screened and must NOT show
+   * here until a person has actually decided. Harmonising the two "for consistency" would
+   * fill Track with work nobody has committed to, which is the opposite of the page's
+   * purpose.
+   *
+   * progress_status OVERRIDES the decision: a Completed or Discontinued row drops out
+   * entirely even though its decision is still Proceed, and must not appear in the card,
+   * the dropdown or the table.
+   *
+   * Everything is filtered here rather than in PostgREST because a tenant's whole
+   * non-duplicate history is small — 148 rows for the largest, measured — and expressing
+   * these six in query syntax would trade exact, readable fidelity for nothing. Days to
+   * deadline, deadline status and the USD value stay in the browser, which already holds
+   * the FX rates from /scoring/snapshot; a second rate source here would drift from it.
+   */
+  async function track(req: Request, ctx: Ctx): Promise<Response> {
+    const url = new URL(req.url);
+    const year = Number(url.searchParams.get("year")) || new Date().getUTCFullYear();
+    const today = new Date().toISOString().slice(0, 10);
+    const sb = db.as(ctx.scope);
+
+    const all = await sb.get(
+      "rfp_submissions",
+      `select=${TRACK_FIELDS}&is_duplicate=is.false`,
+    );
+
+    const rows = selectTrackRows(all, year, today);
+    const uids = rows.map((r) => str(r.uid)).filter(Boolean);
+    let dups: Json[] = [];
+    if (uids.length) {
+      const list = uids.map((u) => `"${u.replace(/"/g, '""')}"`).join(",");
+      dups = await sb.get(
+        "rfp_submissions",
+        `select=duplicate_of_uid,proposal_lead&is_duplicate=is.true` +
+          `&duplicate_of_uid=in.(${encodeURI(list)})`,
+      ).catch(() => []);
+    }
+    const extra = new Map<string, string[]>();
+    for (const d of dups) {
+      const of = str(d.duplicate_of_uid);
+      const lead = str(d.proposal_lead).trim();
+      if (of && lead) extra.set(of, [...(extra.get(of) ?? []), lead]);
+    }
+    const leads = rows.map((r) => {
+      const uid = str(r.uid);
+      const own = str(r.proposal_lead).trim();
+      const set = new Set([...(own ? [own] : []), ...(extra.get(uid) ?? [])]);
+      return { uid, proposalLeads: [...set].sort() };
+    });
+
+    return gzipped(req, json({ year, rows, leads }));
+  }
+
+  return { weeks, screen, summary, track };
 }
