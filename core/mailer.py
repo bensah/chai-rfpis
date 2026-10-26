@@ -33,6 +33,42 @@ def _secret(name: str) -> str | None:
     return None
 
 
+# What a message is FOR, which decides the address it comes from. Account mail, the
+# scan alerts and the periodic reports are different conversations: a recipient who
+# filters or mutes one should not lose the others, and a reply to an alert should not
+# land in the same place as a reply to an invitation.
+PURPOSE_ACCOUNT = "account"
+PURPOSE_ALERTS = "alerts"
+PURPOSE_REPORTS = "reports"
+
+
+def from_address(purpose: str = "") -> str:
+    """The address a message of this kind comes from.
+
+    Resolved, never hardcoded, like the rest of the email identity: the deploying
+    organisation's domain must not be baked into the source. A deployment sets
+    `email_from_account`, `email_from_alerts` and `email_from_reports` in app_settings
+    (or EMAIL_FROM_ACCOUNT / _ALERTS / _REPORTS in env) and gets a per-purpose sender;
+    set none of them and everything falls back to RESEND_FROM_EMAIL exactly as before.
+
+    Only the mailbox differs. The display name is shared, so all three still read as one
+    product in an inbox.
+    """
+    if purpose:
+        key = f"email_from_{purpose}"
+        try:
+            from core.settings import get_setting
+            v = (get_setting(key) or "").strip()
+            if v:
+                return v
+        except Exception:
+            pass
+        v = (os.environ.get(f"EMAIL_FROM_{purpose.upper()}") or "").strip()
+        if v:
+            return v
+    return (_secret("RESEND_FROM_EMAIL") or "").strip()
+
+
 def is_configured() -> bool:
     """True when send_email has what it needs to reach the transport.
 
@@ -99,9 +135,11 @@ def send_email(
     subject: str,
     html: str,
     reply_to: str | None = None,
+    purpose: str = "",
 ) -> dict[str, Any]:
+    """Send one message. `purpose` picks the sending address; see `from_address`."""
     api_key = _secret("RESEND_API_KEY")
-    sender = _secret("RESEND_FROM_EMAIL")
+    sender = from_address(purpose)
     if not api_key or not sender:
         raise MailerNotConfigured(
             "RESEND_API_KEY and RESEND_FROM_EMAIL must be set in env or secrets."
