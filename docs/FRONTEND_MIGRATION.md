@@ -35,8 +35,26 @@ Phase 0 still needs, outside the code:
 ## Rules every phase follows
 
 1. **Free tiers only.** Cloudflare Pages, Supabase Edge Functions, Supabase Storage (1 GB),
-   GitHub Actions. The repository is public, so Actions minutes on standard runners are free.
-   No paid hosting.
+   GitHub Actions. No paid hosting.
+
+   **The repository is going private** (owner's decision, 2026-10-26). Streamlit Community
+   Cloud can deploy from a private repo, which was not understood when this was planned; it
+   needs the `repo` OAuth scope, repo admin rights, and creates a read-only deploy key it
+   pulls over SSH. Cloudflare Pages handles private repos through its GitHub App, so
+   `rfpis.pages.dev` is unaffected. Two things change, and neither is Streamlit:
+
+   - **Actions minutes stop being free.** A public repo gets unlimited GitHub-hosted
+     minutes; a private repo on the Free plan gets 2,000 a month, billed 1× on
+     `ubuntu-latest`. Today that is `scan.yml` weekly (20–40 min), `backup.yml` weekly,
+     `web-job.yml` on demand (an `extract` job is 20–40 min), and `tests.yml` on **every
+     push and pull request**, Chromium install included. Normal months fit; a busy week of
+     pushes across parallel sessions, or a few manual extractions, will not. When the quota
+     runs out everything stops, the weekly scan and backup with it. The workflows were left
+     as they are (owner's call); `tests.yml` is the one to trim first if minutes get tight.
+   - **Streamlit's app visibility is a separate setting from the repo's.** An app deployed
+     from a private repo defaults to being visible only to workspace developers. RFPIS has
+     its own login gate and real tenant users, so the app must stay publicly viewable or
+     tenants are locked out before they reach the sign-in page.
 2. **The browser never talks to Supabase.** Every read and write goes through `rfpis-api`,
    which holds the service-role key. The browser's session token is signed with a key
    derived from the JWT secret, so it is never a valid PostgREST token. The legacy HS256 key
@@ -180,9 +198,11 @@ GitHub Actions: scripts/run_web_job.py <job_id>
 
 - The GitHub token is a fine-grained PAT that can only dispatch workflows on this repo,
   stored as the Edge Function secret `RFPIS_GH_DISPATCH_TOKEN`.
-- **The repo is public, so Actions logs are public.** Workflow inputs carry only the job
-  id. The runner prints no tenant data, only counts and status. Results go to the database
-  or to Storage, never to the log.
+- **Actions logs.** These were public while the repository was, so workflow inputs carry
+  only the job id and the runner prints no tenant data, only counts and status; results go
+  to the database or to Storage, never to the log. Going private (rule 1) closes that
+  exposure, but the discipline stays — it costs nothing and it survives the repo being made
+  public again.
 - Files (backup ZIPs, report PDFs, CSV exports too big to build in the API) go to a private
   Storage bucket. The API hands out a short-lived signed URL after a permission check.
 - Concurrency: one running scan at a time (the same `rfp-scan` group as `scan.yml`); other
@@ -426,3 +446,12 @@ later clean-up.
   Postgres-side session) needs its own plan. It is not urgent.
 - `scan_logs` reads are open to every authenticated user across tenants (see
   `docs/RLS_LOCKDOWN.md`). The API scopes them itself until a migration narrows the policy.
+- **`npm run parity` reports false differences on Windows.** The checks read the Python
+  helpers' stdout as UTF-8 but nothing tells Python to write UTF-8, so on a cp1252 console
+  every em dash comes back mangled and the string compare fails: 2026-10-26 it claimed
+  "47064 cases, 39 differences", all of them `py="<?>"` against `ts="—"` in `roleLabel` and
+  `passwordProblems`. Worse, the chain is `&&`, so routing, shell and scoring never ran.
+  `PYTHONIOENCODING=utf-8 npm run parity` gives 0 differences on all four. It passes on CI
+  and fails on a developer's machine, which is the wrong way round. The fix is
+  `sys.stdout.reconfigure(encoding="utf-8")` in the `*_py.py` helpers, or the variable in
+  the npm script; not done yet.
