@@ -7,6 +7,7 @@ on first login (Phase 1 path: admin sets initial hash via the Admin panel).
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -21,6 +22,8 @@ import streamlit_authenticator as stauth
 # get_client(): most of these run before a tenant exists, and the rest (the credential cache,
 # a forced password change) must not depend on a tenant JWT at all.
 from db.supabase_client import service_client
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -575,26 +578,50 @@ def activation_code_entry(expanded: bool | None = None) -> bool:
     return False
 
 
-def _email_reset_link(email: str) -> bool:
-    """Mint a reset token for `email` and send it. True when a mail went out.
+RESET_SENT = "sent"
+RESET_NO_ACCOUNT = "no_account"
+RESET_UNAVAILABLE = "unavailable"
 
-    Silent about everything: the caller shows one confirmation whether or not the address
-    exists, so nothing here may raise or report. A missing account, a deactivated one, a
-    blacklisted one and a mail failure all look identical from outside.
+
+def _email_reset_link(email: str) -> str:
+    """Mint a reset token for `email` and send it. Returns one of the RESET_* outcomes.
+
+    Two kinds of failure, and conflating them is a real bug rather than a nicety.
+
+    Whether an address HAS AN ACCOUNT must never leak, so a missing account, a
+    deactivated one and a blacklisted one all return the same thing the caller reports
+    as success.
+
+    Whether this deployment can reach its database and its mailer AT ALL says nothing
+    about any particular account, and hiding it is how a broken deployment goes
+    unnoticed: on 2026-10-26 the live app answered "a link is on its way" to a reset
+    request while it had no Supabase credentials whatsoever, because every exception
+    here was swallowed. /password-reset renders without touching the database, so the
+    page looked healthy. Those cases now return RESET_UNAVAILABLE and are reported.
+
+    The split is drawn BEFORE the account is known, which is what keeps it safe: the
+    mailer check does not depend on the address, and a lookup that raises has not yet
+    established whether the account exists. Anything that fails AFTER the account is
+    known to exist stays silent, because surfacing it would confirm the account.
     """
+    from core.mailer import is_configured
+    if not is_configured():
+        log.error("password reset for %s: mail transport is not configured", email)
+        return RESET_UNAVAILABLE
     try:
         rows = (service_client().table("users")
                 .select("id,email,name,is_active,is_blacklisted")
                 .eq("email", email).limit(1).execute().data or [])
-    except Exception:
-        return False
+    except Exception as exc:
+        log.error("password reset for %s: user lookup failed: %s", email, exc)
+        return RESET_UNAVAILABLE
     if not rows:
-        return False
+        return RESET_NO_ACCOUNT
     u = rows[0]
     if not u.get("is_active") or u.get("is_blacklisted"):
         # A deactivated or blacklisted account must not be re-openable by its former
         # holder asking for a reset.
-        return False
+        return RESET_NO_ACCOUNT
     try:
         from core.password_tokens import PURPOSE_RESET, build_link, issue_token
         from core.user_emails import _app_url, send_password_reset_email
@@ -602,9 +629,12 @@ def _email_reset_link(email: str) -> bool:
                              created_by="self-service")
         send_password_reset_email(to_email=u["email"], to_name=u.get("name"),
                                   reset_link=build_link(_app_url(), raw))
-        return True
-    except Exception:
-        return False
+        return RESET_SENT
+    except Exception as exc:
+        # Deliberately NOT reported: reaching here means the account exists, so saying
+        # anything distinguishes it from an address that does not. Logged instead.
+        log.error("password reset for %s: issue or send failed: %s", email, exc)
+        return RESET_NO_ACCOUNT
 
 
 def password_reset_request_form(*, heading: bool = False) -> None:
@@ -652,9 +682,20 @@ def password_reset_request_form(*, heading: bool = False) -> None:
     except Exception:
         pass
 
-    sent = _email_reset_link(addr)
+    outcome = _email_reset_link(addr)
 
-    if sent:
+    if outcome == RESET_UNAVAILABLE:
+        # Says nothing about the address: this answer is the same for every one of them,
+        # because the thing that failed is the deployment, not the account. Reporting it
+        # is the difference between an administrator finding out now and finding out when
+        # somebody eventually mentions that no email ever came.
+        st.error(
+            "We can't send reset emails at the moment — this is a problem on our side, "
+            "not with your address. Please tell an administrator, and try again later."
+        )
+        return
+
+    if outcome == RESET_SENT:
         # Close the request we just filed, so Manage Users does not show a queue of
         # requests the app has already answered by itself.
         try:
