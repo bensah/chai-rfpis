@@ -222,23 +222,52 @@ and with the live scoring seam. But the payload is the unbounded one: 108 KB
 gzipped today for the largest tenant, growing with every scan, and the page
 cannot render until Pyodide has scored the lot.
 
-This side's recommendation is to ship rows, bounded by a date window the page
-chooses, defaulting to the current year. It keeps Summary consistent with the
-rest of the app, which is what parity is for, and makes the payload a function
-of the window rather than of how long the deployment has been running. The
-alternative silently reintroduces the 70/45 versus 90/70 discrepancy as a
-visible disagreement between pages.
+**Decided: ship rows, windowed, default current year** (owner, 2026-10-27).
 
-Not this side's call alone: it changes what Summary shows. Flagging to the
-owner rather than deciding it here.
+The original argument was that aggregating from the stored score would
+reintroduce the 70/45 versus 90/70 discrepancy as a visible disagreement
+between pages. That argument has since gone: the two bandings were reconciled
+the same day, so a stored score now bands the same way a fresh one does.
 
-## Parity traps carried over exactly
+The decision still holds on the remaining grounds, which are the stronger ones
+anyway. Aggregating in the browser keeps ONE scoring implementation rather
+than a second one in TypeScript that must be kept in step. Phase 5's Report
+already commits to exactly this shape — aggregation in the browser, the API
+streaming rows, gzipped — so this applies a decision already made rather than
+setting a new precedent. And the owner has since asked for selectable periods
+(daily, weekly, monthly, quarterly, semester, yearly, plus explicit ranges)
+across found, review and track, not only Summary, which wants a windowed-rows
+spine rather than a fixed server-side aggregate per page.
 
-Agreed by both sessions, encoded and commented, never quietly corrected:
+## Parity traps
 
-- `score_submission` applies 70/45 on save, while the composite rule for
-  display is 90/70.
-- `decision_date` is the "reviewed" flag.
+### 70/45 versus 90/70 — RESOLVED, no longer carried (owner, 2026-10-27)
+
+This was treated as a trap to preserve. It was drift, and the owner reversed
+it. Both numbers banded the SAME quantity, `alignment_score` over the nine
+weighted criteria: `auto_scorer.recommend_from_composite` at 90/70, which
+every live display uses, and `config/scoring_weights.yaml` at 70/45, which
+Submit and the RFP editor wrote through. A row scoring 75 was Park if the scan
+found it and Proceed if a person submitted it by hand.
+
+Reconciled to 90/70 everywhere in `b608d7d`. Verified on live data from this
+side before the contract was changed: of 266 scored rows, **95 band
+differently** — 65 Park to Decline, 30 Proceed to Park. Of those, 63 have no
+human decision and so visibly move; the other 32 already carry one, which
+overrides the engine everywhere. By tenant, the visible moves are 34, 14, 9
+and 6.
+
+Nothing in this contract depends on the old banding any more. Do not
+reintroduce it as a compatibility shim.
+
+### `decision_date` is the "reviewed" flag — still carried
+
+Encoded and commented, never quietly corrected.
+
+### Track versus Screened — carried, and not a trap to fix
+
+The disagreement documented under `/pipelines/track` is deliberate and stays:
+Screened reads the effective decision, Track reads the stored one exactly.
 
 ## Behaviours pinned so they are not improved by accident
 
