@@ -27,6 +27,7 @@ import { corsHeaders, gzipped, HttpError, json, withCors } from "./api/http.ts";
 import { createAuthRoutes, type AuthDeps } from "./api/routes_auth.ts";
 import { createJobRoutes, type Dispatch } from "./api/routes_jobs.ts";
 import { createPhase1Routes } from "./api/routes_phase1.ts";
+import { createPipelineWrites } from "./api/pipeline_writes.ts";
 import { createPipelineRoutes } from "./api/routes_pipelines.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
 import { createSessions } from "./api/session.ts";
@@ -61,6 +62,7 @@ export function createApi(env: Env, deps: Deps) {
   const jobs = createJobRoutes(db, deps.dispatchJob ?? null);
   const phase1 = createPhase1Routes(db);
   const pipelines = createPipelineRoutes(db);
+  const pipelineWrites = createPipelineWrites(db);
 
   async function route(req: Request, path: string): Promise<Response> {
     const m = req.method;
@@ -99,6 +101,11 @@ export function createApi(env: Env, deps: Deps) {
       return notes
         ? pipelines.meetingNotes(req, ctx, uid)
         : pipelines.rfp(req, ctx, uid);
+    }
+    if (path.startsWith("/pipelines/rfp/") && m === "PATCH") {
+      const uid = decodeURIComponent(path.slice("/pipelines/rfp/".length)).trim();
+      if (!uid) return json({ error: "No RFP selected." }, 400);
+      return pipelineWrites.patchRfp(req, ctx, uid);
     }
     if (path === "/opportunity" && m === "GET") {
       const uid = new URL(req.url).searchParams.get("uid")?.trim() ?? "";
