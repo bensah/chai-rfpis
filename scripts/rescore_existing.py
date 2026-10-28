@@ -136,6 +136,45 @@ def _write_with_retry(sb, uid: str, upd: dict, tries: int = 4) -> bool:
     return False
 
 
+# ── Public surface ───────────────────────────────────────────────────────────
+# The CLI below is no longer the only caller: the `rescore` web job runs the same
+# evaluation per tenant, on Actions, which is what "the server owns the score" means
+# (owner, 2026-10-28). Exposed under public names so the job does not reach into
+# underscored internals, and so there is ONE evaluation rather than a copy of it.
+
+evaluate = _evaluate
+write_with_retry = _write_with_retry
+
+
+def profile_signature(sb, tenant_id: str) -> tuple[dict, dict, list[dict], str]:
+    """The inputs a re-score needs, plus the signature it was computed under.
+
+    Returns (org_profile, org_settings, donors, signature). The signature is built the same
+    way `views/screened_rfp.py` builds it — sha1 over the org profile and settings — because
+    it has to mean the same thing in both places: a profile edit changes it, and a stored
+    score whose signature no longer matches is known-stale without recomputing it.
+
+    The caller must already be inside `set_tenant_override(tenant_id)`; `get_profile` and
+    `get_org` read the ambient tenant, and silently returning another tenant's profile
+    would score every row against the wrong organisation.
+    """
+    import hashlib
+    import json as _json
+
+    org = orgp.get_profile()
+    try:
+        from core import settings as _settings
+        org_set = _settings.get_org()
+    except Exception:
+        org_set = {}
+    donors = (sb.table("donor_intel").select("*").limit(5000).execute().data or [])
+    sig = hashlib.sha1(
+        (_json.dumps(org, sort_keys=True, default=str)
+         + _json.dumps(org_set, sort_keys=True, default=str)).encode("utf-8")
+    ).hexdigest()[:12]
+    return org, org_set, donors, sig
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)

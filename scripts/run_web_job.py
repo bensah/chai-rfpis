@@ -75,8 +75,67 @@ def _ping(job: JobRow, params: dict, runner: str) -> dict:
     return {"pong": True, "runner": runner}
 
 
+def _rescore(job: JobRow, params: dict, runner: str) -> dict:
+    """Recompute stored scores for one tenant — a row, or all of them.
+
+    This is what "the server owns the score" means in practice (owner, 2026-10-28). The
+    scoring itself does NOT move: `rescore_existing.evaluate` is the same Python the
+    Streamlit app and the scan run. It changes host, not language, so there is still one
+    implementation of the rule rather than two that agree until they don't.
+
+    params: {"tenant_id": required, "uid": optional}. With a uid, one row — what a save
+    queues. Without, the tenant's whole table — what a profile edit or a schedule queues.
+
+    Prints counts and nothing else: this log is public (the repository is).
+    """
+    from auth.tenant_context import reset_tenant_override, set_tenant_override
+    from scripts.rescore_existing import evaluate, profile_signature, write_with_retry
+
+    tenant_id = str(params.get("tenant_id") or (job.get() or {}).get("tenant_id") or "").strip()
+    if not tenant_id:
+        raise ValueError("rescore needs a tenant_id")
+    uid = str(params.get("uid") or "").strip()
+
+    # Everything below reads the AMBIENT tenant — get_client, get_profile, get_org. Without
+    # the override a job would score one tenant's rows against another's organisation,
+    # which is both wrong and invisible, so the whole body runs inside it.
+    token = set_tenant_override(tenant_id)
+    try:
+        from db.supabase_client import get_client
+        sb = get_client()
+        job.progress(5, "Loading")
+        q = sb.table("rfp_submissions").select("*")
+        if uid:
+            q = q.eq("uid", uid)
+        rows = q.execute().data or []
+        if not rows:
+            return {"rows": 0, "scored": 0, "changed": 0, "runner": runner}
+
+        org, org_set, donors, sig = profile_signature(sb, tenant_id)
+        scored = changed = 0
+        for i, row in enumerate(rows):
+            row_uid, upd, _label = evaluate(row, org, org_set, donors, True)
+            # Stamp every row, even one whose numbers did not move: "scored, unchanged" and
+            # "never scored" are different states and only the stamp tells them apart.
+            upd = dict(upd or {})
+            moved = bool(upd)
+            upd["scored_at"] = _now()
+            upd["score_profile_sig"] = sig
+            if write_with_retry(sb, row_uid, upd):
+                scored += 1
+                changed += 1 if moved else 0
+            if len(rows) > 20 and i % 25 == 0:
+                job.progress(5 + int(90 * i / len(rows)), f"Scored {i} of {len(rows)}")
+
+        job.progress(100, f"Scored {scored}")
+        return {"rows": len(rows), "scored": scored, "changed": changed, "runner": runner}
+    finally:
+        reset_tenant_override(token)
+
+
 KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "ping": _ping,
+    "rescore": _rescore,
 }
 
 

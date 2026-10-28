@@ -28,6 +28,22 @@ const KINDS: Record<string, JobKind> = {
   // A no-op that proves the loop end to end: queue → Actions → runner → row → browser.
   // Lives on Settings → Accounts → Deployment, which only a super_user sees.
   ping: { allowed: (u) => isSuperUser(u), group: (_c, id) => `web-job-${id}` },
+
+  /**
+   * Recompute this tenant's stored scores — one row after a save, or the whole table after
+   * a profile edit. The server owning the score (owner, 2026-10-28) is this job: the same
+   * Python the scan runs, on Actions, writing alignment_score and auto_recommendation
+   * back where every reader already looks.
+   *
+   * Anyone who can edit an RFP can cause a re-score of what they edited, so the gate is
+   * simply a signed-in member — the same reach the edit itself has. One group per tenant,
+   * so a save queued while a full re-score is running waits rather than racing it to the
+   * same rows.
+   */
+  rescore: {
+    allowed: () => true,
+    group: (ctx) => `rescore-${ctx.scope.viewTenantId ?? ctx.scope.tenantId ?? "none"}`,
+  },
 };
 
 const JOB_COLUMNS = "id,kind,status,progress,message,result,created_at,started_at,finished_at,run_url,created_by,tenant_id";
