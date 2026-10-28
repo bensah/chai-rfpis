@@ -445,6 +445,30 @@ Once it is off, only Cloudflare Pages and Actions read the repo. Two things to d
 - Watch Actions minutes for the first month — the free allowance drops from unlimited to
   2,000 a month. Trim `tests.yml` first if it gets close.
 
+## Open: the scan and the re-score disagree
+
+`web/scripts/parity/check-rescore.mjs` (2026-10-28) compares the two paths that can write a
+row's `alignment_score` and `auto_recommendation`:
+
+- `core.auto_scorer.auto_score` — the scan, and what every live screen recomputes;
+- `scripts.rescore_existing._evaluate` — what a re-score runs over stored rows, whose comment
+  promises "Parity with auto_score's post-rules so a re-score never diverges from a fresh scan".
+
+Over 98 live rows across 6 tenants, **with the criteria re-derived on both sides so only the
+code differs**: 10 rows get a different recommendation (6 Park→Decline, 3 Proceed→Park,
+1 Decline→Park) and 19 a different score, some by more than 20 points.
+
+This matters more now than it did. Once scoring runs as a server-side job the re-score path
+decides what a reader sees, so a row's recommendation would depend on which code last touched
+it. Diagnosis and fix belong with the scoring move, not here; `policies={}` in `_evaluate`'s
+`derive_criteria` call was the obvious suspect and has been **tested and ruled out** — it
+changes no criterion on the diverging rows.
+
+Separately and less urgently, the same check reports that stored criteria have aged: re-scored
+from the columns as stored, 31 of those 98 rows change recommendation and 92 change score.
+That is a data fact, cured by running the re-score, not a code fault — it is reported and never
+fails the check.
+
 ## Parity evidence, per phase
 
 - A comparison script per logic area under `web/scripts/parity/`. Each pulls live rows
