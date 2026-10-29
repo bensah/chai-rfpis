@@ -42,7 +42,7 @@ function fakeDb(tables) {
     if (v.startsWith("gt.")) return cell != null && String(cell) > v.slice(3);
     throw new Error(`fake: unsupported filter ${k}=${v}`);
   }
-  const RESERVED = new Set(["select", "order", "limit", "on_conflict", "or"]);
+  const RESERVED = new Set(["select", "order", "limit", "offset", "on_conflict", "or"]);
   // Column defaults the API relies on reading back, as the migrations declare them. Without
   // these an inserted row looks different here than in Postgres, and a filter on the default
   // value (status=eq.pending) matches nothing.
@@ -89,8 +89,15 @@ function fakeDb(tables) {
         out = [...out].sort((a, b) => (String(a[col]) < String(b[col]) ? -1 : 1) * (dir === "desc" ? -1 : 1));
       }
       const total = out.length;
+      // offset AND limit, both really applied. A fake that accepted `offset` and ignored
+      // it would be worse than one that throws: every page of a paging loop would return
+      // the whole set, the first page would look short enough to stop, and a broken
+      // getAll would pass. `limit` is also capped at 1000 the way PostgREST caps it, so a
+      // route that asks for more here gets what it would really get.
+      const offset = Number(u.searchParams.get("offset")) || 0;
+      if (offset) out = out.slice(offset);
       const limit = u.searchParams.get("limit");
-      if (limit) out = out.slice(0, Number(limit));
+      out = out.slice(0, Math.min(limit ? Number(limit) : 1000, 1000));
       return reply(out.map((r) => project(r, u.searchParams.get("select"))), { "content-range": `0-${out.length}/${total}` });
     }
     if (method === "POST") {
@@ -722,6 +729,29 @@ test("the date a decision counts under is the best one it has", async () => {
   assert.equal(year.body.undated, 1);
   assert.ok(!year.body.rows.some((r) => r.uid === "D-NONE"));
   assert.equal(year.body.total, 3);
+});
+
+test("a tenant with more than 1000 decisions is counted in full", async () => {
+  // PostgREST caps a response at 1000 rows and says nothing about the rest, so every read
+  // whose result is counted has to page. Measured 2026-10-29: scan_decisions holds 5250
+  // and extracted_solicitations 1546, both past the cap already; rfp_submissions is at 266
+  // and will get there. The symptom is not a short list — it is a total that is wrong and
+  // looks fine.
+  const { db, call, signIn } = setup();
+  for (let i = 0; i < 1500; i++) {
+    db.tables.rfp_submissions.push({
+      uid: `BULK-${String(i).padStart(5, "0")}`, tenant_id: T1,
+      decision: i % 3 === 0 ? "Proceed" : i % 3 === 1 ? "Park" : "Decline",
+      decision_date: `2026-06-${String((i % 28) + 1).padStart(2, "0")}`,
+    });
+  }
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const r = await call("GET", "/pipelines/reviewed?from=2026-06-01&to=2026-07-01", null, col.token);
+  assert.equal(r.body.total, 1500, "every decision, not the first page of them");
+  assert.equal(r.body.rows.length, 1500);
+  // Distinct uids, so a paging loop that re-read page one would be caught too.
+  assert.equal(new Set(r.body.rows.map((x) => x.uid)).size, 1500);
 });
 
 test("an empty window says where the decisions actually are", async () => {

@@ -289,8 +289,10 @@ export function createPipelineRoutes(db: Db) {
 
     // Counts only — this feeds the empty state's "most recent week with activity", so it
     // must never carry rows.
+    // getAll, not get: PostgREST caps a response at 1000 rows silently, and this COUNTS.
+    // A truncated read would not look short, it would look like a quieter week.
     const rows = await db.as(ctx.scope)
-      .get("rfp_submissions", "select=review_week");
+      .getAll("rfp_submissions", "select=review_week,uid", "uid");
     const counts = new Map<string, number>();
     for (const r of rows) {
       const w = str(r.review_week).trim();
@@ -325,9 +327,10 @@ export function createPipelineRoutes(db: Db) {
     const sb = db.as(ctx.scope);
 
     if (week) {
-      const rows = await sb.get(
+      const rows = await sb.getAll(
         "rfp_submissions",
         `select=${SCREEN_FIELDS}&review_week=eq.${q(week)}`,
+        "uid",
       );
       return gzipped(req, json({ week, rows: dropConcluded(rows) }));
     }
@@ -352,9 +355,10 @@ export function createPipelineRoutes(db: Db) {
     if (!labels.length) return gzipped(req, json({ from, to, weeks: [], rows: [] }));
 
     const list = labels.map((l) => `"${l.replace(/"/g, '""')}"`).join(",");
-    const rows = await sb.get(
+    const rows = await sb.getAll(
       "rfp_submissions",
       `select=${SCREEN_FIELDS}&review_week=in.(${encodeURI(list)})`,
+      "uid",
     );
     return gzipped(req, json({ from, to, weeks: labels, rows: dropConcluded(rows) }));
   }
@@ -388,9 +392,10 @@ export function createPipelineRoutes(db: Db) {
 
     // Half-open, so consecutive windows meet exactly and a row on the boundary is counted
     // once rather than in both.
-    const rows = await db.as(ctx.scope).get(
+    const rows = await db.as(ctx.scope).getAll(
       "rfp_submissions",
       `select=${SUMMARY_FIELDS}&submitted_at=gte.${q(from)}&submitted_at=lt.${q(to)}`,
+      "uid",
     );
     return gzipped(req, json({ from, to, rows }));
   }
@@ -434,9 +439,10 @@ export function createPipelineRoutes(db: Db) {
     }
     if (from && to <= from) return json({ error: "to must be after from" }, 400);
 
-    const all = await sb.get(
+    const all = await sb.getAll(
       "rfp_submissions",
       `select=${TRACK_FIELDS}&is_duplicate=is.false`,
+      "uid",
     );
 
     // A range replaces condition 3 only. The other five are unchanged, because they are
@@ -600,8 +606,10 @@ export function createPipelineRoutes(db: Db) {
     }
     if (to <= from) return json({ error: "to must be after from" }, 400);
 
-    const all = await db.as(ctx.scope).get(
-      "rfp_submissions", `select=${REVIEWED_FIELDS}&decision=not.is.null`);
+    // getAll: `total` and `undated` below are counts, and a silently truncated read would
+    // report them as facts about the whole history when they were facts about 1000 rows.
+    const all = await db.as(ctx.scope).getAll(
+      "rfp_submissions", `select=${REVIEWED_FIELDS}&decision=not.is.null`, "uid");
     const decided = all.filter((r) => str(r.decision).trim() !== "");
 
     const dated = decided

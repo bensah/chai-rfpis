@@ -71,7 +71,10 @@ export function createPhase1Routes(db: Db) {
         "select=id,name,slug,status,parent_tenant_id,share_for_consortium_scoring&status=neq.blacklisted")
         .catch(() => []),
       // The currencies this tenant's rows actually use — the only rates worth fetching.
-      sb.get("rfp_submissions", "select=currency&limit=2000").catch(() => []),
+      // getAll, because `limit=2000` was a lie: PostgREST caps a response at 1000 and says
+      // nothing. A currency only used by row 1001 would have had no rate, and every amount
+      // in it would have gone unconverted.
+      sb.getAll("rfp_submissions", "select=currency,uid", "uid").catch(() => []),
     ]);
     const row = (tenantRow[0] ?? {}) as Json;
     return gzipped(req, json({
@@ -87,9 +90,13 @@ export function createPhase1Routes(db: Db) {
     }, 200, { "Cache-Control": "private, max-age=60" }));
   }
 
-  /** app_pages/home.py::_kpis — the same counts, over the same columns. */
+  /** app_pages/home.py::_kpis — the same counts, over the same columns.
+   *
+   *  getAll: every number this returns is a count over the whole table, so a read capped
+   *  at 1000 would not make the home page look short — it would make it look wrong, with
+   *  no way for a reader to tell. */
   async function home(ctx: Ctx): Promise<Response> {
-    const rows = await db.as(ctx.scope).get("rfp_submissions", `select=${HOME_FIELDS}`);
+    const rows = await db.as(ctx.scope).getAll("rfp_submissions", `select=${HOME_FIELDS}`, "uid");
     const t = today();
     const soon = new Date(Date.parse(t) + 14 * 86400_000).toISOString().slice(0, 10);
 
@@ -120,9 +127,18 @@ export function createPhase1Routes(db: Db) {
         .catch(() => [] as Json[]),
       // Not tenant-scoped, by design: the shared catalogue is what makes a screening miss
       // recoverable. It holds no tenant data.
+      //
+      // 1000 and not 1200, because 1200 was never what happened: PostgREST caps a response
+      // at 1000 silently, and the table passed 1000 some time ago (1546 rows, measured
+      // 2026-10-29). This is a RANKING feed — the browser picks four cards from it — so the
+      // newest 1000 by scraped_at is a sound basis and paging the whole catalogue would
+      // grow this payload without end. The bound is now the real one, stated.
       db.service.get("extracted_solicitations",
-        `select=${CATALOG_FIELDS}&order=scraped_at.desc&limit=1200`).catch(() => [] as Json[]),
-      sb.get("rfp_submissions", "select=opportunity_link&limit=2000").catch(() => [] as Json[]),
+        `select=${CATALOG_FIELDS}&order=scraped_at.desc&limit=1000`).catch(() => [] as Json[]),
+      // getAll, unlike the catalogue above: this is the set of calls already in the
+      // pipeline, and the rail subtracts it to decide what is NEW. A short read here does
+      // not rank anything badly, it offers the user a call they have already screened.
+      sb.getAll("rfp_submissions", "select=opportunity_link,uid", "uid").catch(() => [] as Json[]),
     ]);
     return gzipped(req, json({
       pipeline, catalog,
