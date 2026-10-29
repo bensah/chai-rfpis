@@ -29,6 +29,7 @@ import { createJobRoutes, type Dispatch } from "./api/routes_jobs.ts";
 import { createPhase1Routes } from "./api/routes_phase1.ts";
 import { createPipelineWrites } from "./api/pipeline_writes.ts";
 import { createPipelineRoutes } from "./api/routes_pipelines.ts";
+import { createReportRoutes } from "./api/routes_report.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
 import { createSessions } from "./api/session.ts";
 import { createTenants } from "./api/tenants.ts";
@@ -63,6 +64,7 @@ export function createApi(env: Env, deps: Deps) {
   const phase1 = createPhase1Routes(db);
   const pipelines = createPipelineRoutes(db);
   const pipelineWrites = createPipelineWrites(db);
+  const report = createReportRoutes(db);
 
   async function route(req: Request, path: string): Promise<Response> {
     const m = req.method;
@@ -88,6 +90,8 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/home" && m === "GET") return phase1.home(ctx);
     if (path === "/feed" && m === "GET") return phase1.feed(req, ctx);
     // Phase 2. Same division: these serve rows, the page scores and decides.
+    if (path === "/report/periods" && m === "GET") return report.periods(req, ctx);
+
     if (path === "/pipelines/weeks" && m === "GET") return pipelines.weeks(req, ctx);
     if (path === "/pipelines/screen" && m === "GET") return pipelines.screen(req, ctx);
     if (path === "/pipelines/summary" && m === "GET") return pipelines.summary(req, ctx);
