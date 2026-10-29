@@ -247,5 +247,50 @@ for (const note of tieBands) console.log(`NOTE ${note}`);
   }
 }
 
+// ── A thing agreement cannot catch ───────────────────────────────────────────
+//
+// Everything above compares two implementations. A fault they SHARE passes silently, and
+// there is one: PostgREST caps a response at 1,000 rows whatever limit is asked for.
+// `_load_scan_logs` asks for 10,000 and so does loadSection1; both get 1,000, both agree,
+// and both compute the scan tiles over an arbitrary subset of the period's runs. No amount
+// of cross-checking finds that, because it is not a disagreement.
+//
+// So this asks the DATABASE how many rows the period really matches — a question neither
+// implementation is in a position to get wrong.
+{
+  const countScans = async (bounds) => {
+    const parts = ["select=id"];
+    if (bounds.start) parts.push(`scan_date=gte.${bounds.start}`);
+    if (bounds.end) {
+      const next = new Date(Date.parse(`${bounds.end}T00:00:00Z`) + 86400_000).toISOString().slice(0, 10);
+      parts.push(`scan_date=lte.${next}`);
+    }
+    const r = await fetch(`${env.SUPABASE_URL}/rest/v1/scan_logs?${parts.join("&")}`, {
+      headers: {
+        apikey: env.SUPABASE_KEY, Authorization: `Bearer ${env.SUPABASE_KEY}`,
+        Prefer: "count=exact", Range: "0-0",
+      },
+    });
+    return Number((r.headers.get("content-range") ?? "/0").split("/")[1]);
+  };
+  const truncated = [];
+  for (const period of P.PERIOD_OPTS) {
+    const sel = P.resolveSelection({ period, year: 2026, month: "June", view: "Monthly" }, today, 2026);
+    const real = await countScans(P.periodBounds(sel, today));
+    if (real > 1000) truncated.push(`${period}: the page sees 1000 of ${real} scan runs`);
+  }
+  checks++;
+  if (truncated.length) {
+    console.log("\nNOTE the scan tiles and the source table are computed over a TRUNCATED set of "
+      + "scan_logs rows, in views/report.py and in this port alike — PostgREST returns at most "
+      + "1000 rows per request and neither pages. No `order` is given either, so WHICH 1000 is "
+      + "arbitrary. Pre-existing; not introduced here, and not fixed here because fixing it "
+      + "changes numbers on the page.");
+    for (const t of truncated) console.log(`     ${t}`);
+  } else {
+    console.log("scan_logs fits in one page for every period — no truncation");
+  }
+}
+
 console.log(`\n${checks} comparisons, ${diffs} differing`);
 process.exit(diffs ? 1 : 0);
