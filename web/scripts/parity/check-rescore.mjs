@@ -7,10 +7,14 @@
 //
 // WHAT THIS CHECKS, and why it is not the two things it looks like:
 //
-//   * NOT the job's path against the screens' path. Both now call `core.assessment.assess_row`,
-//     so comparing them compares a function with itself — green by construction and worth
-//     nothing. `tests/test_rescore_job_matches_the_screens.py` pins that structurally, which
-//     is the right shape for it and enough.
+//   * NOT the job's path against the screens' path. The job calls `auto_scorer.auto_score`
+//     and the screens call `assessment.assess_row`, which is a wrapper AROUND auto_score —
+//     so comparing them compares a function with itself, green by construction and worth
+//     nothing. (The job deliberately does not go through the wrapper: assess_row swallows a
+//     scoring failure and returns the row's STORED score, which is right for a display and
+//     would make this job stamp rows as freshly scored while computing nothing.)
+//     `tests/test_rescore_job_matches_the_screens.py` pins that structurally, which is the
+//     right shape for it and enough.
 //
 //   * NOT "has the job run lately". A stored score older than the current profile is stale,
 //     not wrong, and the cure is running the job.
