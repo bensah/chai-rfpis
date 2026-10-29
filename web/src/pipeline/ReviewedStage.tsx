@@ -4,9 +4,11 @@
  * This is the one stage with an ACTION rather than a view, so three things it does are
  * deliberate:
  *
- *   * Membership is `decision_date`, not `decision`. The route only serves rows a human
- *     stamped (see routes_pipelines.ts::reviewed), so this stage never claims somebody
- *     decided something the engine recommended and nobody looked at.
+ *   * Membership is a non-empty `decision`, NOT `decision_date`. Requiring the date was
+ *     this stage's first rule and it hid 61 of 83 real decisions — the Excel migration
+ *     carried verdicts and rationales but no dates. routes_pipelines.ts::reviewed has the
+ *     measurement. Each row's `decided_on` is resolved there, so the period a decision
+ *     belongs to has one owner rather than two.
  *
  *   * Changing a verdict re-records it rather than editing a field. The decision carries
  *     consequences beyond the row — the scan's tombstone and the learning engine's label —
@@ -20,10 +22,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ExternalLink, RefreshCw } from "lucide-react";
 import {
   fetchReviewed, recordDecision, scoreIsBehind,
-  type ReviewedRow, type Warning,
+  type Reviewed, type ReviewedRow, type Warning,
 } from "../api";
-import { rangeOf, labelOf, type Period } from "./period";
-import { Badge, Card, EmptyState, Notice, Select, Spinner, fieldClass } from "../ui";
+import { atGrain, periodOf, rangeOf, labelOf, type Period } from "./period";
+import { Badge, Button, Card, EmptyState, Notice, Select, Spinner, fieldClass } from "../ui";
 
 /** config/dropdowns.yaml's `decisions`, which the API validates against. */
 const DECISIONS = ["Proceed", "Park", "Decline"] as const;
@@ -32,9 +34,11 @@ const lower = (v: unknown) => String(v ?? "").trim().toLowerCase();
 const toneOf = (d: string) =>
   d.startsWith("proceed") ? "good" : d === "park" ? "warn" : "neutral";
 
-export default function ReviewedStage({ period }: { period: Period }) {
+export default function ReviewedStage({ period, onPickPeriod }: {
+  period: Period; onPickPeriod: (p: Period) => void;
+}) {
   const { from, to } = rangeOf(period);
-  const [rows, setRows] = useState<ReviewedRow[] | null>(null);
+  const [data, setData] = useState<Reviewed | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState("");
@@ -45,13 +49,14 @@ export default function ReviewedStage({ period }: { period: Period }) {
     setLoading(true);
     setError(null);
     fetchReviewed(from, to)
-      .then((r) => setRows(r.rows))
+      .then(setData)
       .catch((e) => setError(e instanceof Error ? e.message : "Couldn't load this period."))
       .finally(() => setLoading(false));
   }, [from, to]);
 
   useEffect(load, [load]);
 
+  const rows = data?.rows ?? null;
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
     const all = rows ?? [];
@@ -80,7 +85,10 @@ export default function ReviewedStage({ period }: { period: Period }) {
       const res = await recordDecision(row.uid, decision);
       // Replace from the server's row rather than patching locally: it carries the new
       // decision_date and stamps, and a local guess at those would be a second opinion.
-      setRows((cur) => (cur ?? []).map((r) => (r.uid === row.uid ? { ...r, ...res.row } : r)));
+      setData((cur) => cur && {
+        ...cur,
+        rows: cur.rows.map((r) => (r.uid === row.uid ? { ...r, ...res.row } : r)),
+      });
       setNotices(res.warnings ?? []);
     } catch (e) {
       setNotices([{
@@ -96,11 +104,42 @@ export default function ReviewedStage({ period }: { period: Period }) {
   if (error) return <Notice tone="warn" role="alert">{error}</Notice>;
 
   if (!rows?.length) {
+    // The difference that matters: "nothing this week" and "nothing ever" look identical
+    // on screen and mean completely different things. `latest` tells them apart, and the
+    // button goes to where the decisions actually are instead of leaving the reader to
+    // guess which period to try.
+    const latest = data?.latest ?? null;
     return (
       <Card>
         <EmptyState title={`Nothing decided in ${labelOf(period)}`}>
-          A call appears here once somebody records a verdict on it. Decisions are filed by
-          the date they were taken, so widening the period above will reach older ones.
+          {latest ? (
+            <>
+              <p>
+                The most recent decision was on <strong>{latest}</strong>
+                {data && data.total > 0 && <> — {data.total} in all.</>}
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button onClick={() => onPickPeriod(periodOf("month", latest))}>
+                  Jump to {labelOf(periodOf("month", latest))}
+                </Button>
+                <Button variant="secondary"
+                  onClick={() => onPickPeriod(atGrain(periodOf("year", latest), "year"))}>
+                  Show the whole year
+                </Button>
+              </div>
+            </>
+          ) : (
+            <p>
+              Nothing has been decided yet. A call appears here once somebody records a
+              verdict on it, filed under the date the decision was taken.
+            </p>
+          )}
+          {!!data?.undated && (
+            <p className="mt-3 text-ink-500">
+              {data.undated} decision{data.undated === 1 ? " carries" : "s carry"} no date at
+              all, so {data.undated === 1 ? "it falls" : "they fall"} outside every period.
+            </p>
+          )}
         </EmptyState>
       </Card>
     );
@@ -173,7 +212,15 @@ export default function ReviewedStage({ period }: { period: Period }) {
                     </td>
                     <td className="px-4 py-3 text-ink-600">{r.funding_agency || "—"}</td>
                     <td className="px-4 py-3 text-ink-600">
-                      {r.decision_date?.slice(0, 10) || "—"}
+                      {r.decided_on}
+                      {/* A migrated decision has no decision_date of its own, so the date
+                          shown is inferred. Saying which is better than implying a
+                          precision the row does not have. */}
+                      {!r.decision_date && (
+                        <span className="ml-1 text-xs text-ink-400" title="No decision date recorded; filed under the row's own date">
+                          approx.
+                        </span>
+                      )}
                       {r.decision_overridden_by && (
                         <div className="text-xs text-ink-400">{r.decision_overridden_by}</div>
                       )}

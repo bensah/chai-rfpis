@@ -561,15 +561,30 @@ export function createPipelineRoutes(db: Db) {
   /**
    * Reviewed: the calls a PERSON has decided on, in a date window.
    *
-   * Keyed on `decision_date`, not `submitted_at` or `review_week`, because this stage is
-   * about the act of deciding: "what did we decide this month" is the question it answers,
-   * and a call found in March and decided in June belongs to June here.
+   * MEMBERSHIP IS A NON-EMPTY `decision`, and the first version of this route got that
+   * wrong. It required `decision_date`, reasoning from views/review_rfp.py:212, which only
+   * treats a stored decision as a human's when that column is stamped. The rule reads well
+   * and is wrong here: measured on the live table, 61 of the 83 decided rows have no
+   * `decision_date` at all, because the Excel migration carried the verdict and the written
+   * rationale but never a date. The stage showed 22 of 83 and looked broken.
    *
-   * `decision_date` is also the stage's membership test. A stored `decision` is NOT
-   * enough — views/review_rfp.py:212 only treats one as a human's when this column is
-   * stamped, and POST /pipelines/decision is the only thing that stamps it. Without that
-   * rule the stage would fill with rows carrying the engine's recommendation copied into
-   * `decision` by an import, and claim people had decided things they never saw.
+   * Those 61 are unmistakably human: 32 of them DISAGREE with `auto_recommendation`, so
+   * they cannot be the engine's own output copied into the column, and 59 carry a written
+   * rationale, which the engine never produces. The import worry the old rule defended
+   * against is not in this data, and defending against it cost three quarters of the real
+   * decisions. A stage that hides what people decided is worse than one that might someday
+   * show an imported recommendation.
+   *
+   * WHICH DATE A DECISION COUNTS UNDER, best evidence first:
+   *   decision_date            stamped by POST /pipelines/decision — the real thing
+   *   decision_overridden_at   stamped by any save; close enough to when it was decided
+   *   submitted_at            the row's own date, so a dated row is never lost entirely
+   * A row with none of the three has no position in time; it is counted in `undated`
+   * rather than dropped, because dropping is the bug this route just had.
+   *
+   * Windowed HERE rather than in PostgREST because that fallback is a coalesce across
+   * three columns, which query syntax expresses badly, and because a tenant's whole
+   * history is small — the same reasoning /pipelines/track already runs on.
    *
    * Duplicates are kept rather than dropped: deciding on a row is a thing that happened to
    * THAT row, and hiding it would make a decision disappear from the stage that exists to
@@ -585,15 +600,44 @@ export function createPipelineRoutes(db: Db) {
     }
     if (to <= from) return json({ error: "to must be after from" }, 400);
 
-    // Half-open, matching the period model in web/src/pipeline/period.ts, so consecutive
-    // windows tile exactly and a decision on a boundary date is counted once.
-    const rows = await db.as(ctx.scope).get(
-      "rfp_submissions",
-      `select=${REVIEWED_FIELDS}&decision_date=gte.${q(from)}&decision_date=lt.${q(to)}` +
-      "&order=decision_date.desc",
-    );
-    return gzipped(req, json({ from, to, rows }));
+    const all = await db.as(ctx.scope).get(
+      "rfp_submissions", `select=${REVIEWED_FIELDS}&decision=not.is.null`);
+    const decided = all.filter((r) => str(r.decision).trim() !== "");
+
+    const dated = decided
+      .map((r) => ({ ...r, decided_on: decidedOn(r) }))
+      .filter((r) => r.decided_on);
+    // Half-open, matching web/src/pipeline/period.ts, so consecutive windows tile exactly
+    // and a decision on a boundary date is counted once rather than in both.
+    const rows = dated
+      .filter((r) => r.decided_on! >= from && r.decided_on! < to)
+      .sort((a, b) => (a.decided_on! < b.decided_on! ? 1 : -1));
+
+    // So an empty window can say "nothing here, but there are decisions in September"
+    // instead of looking like the stage is broken — which is how this route's first
+    // version presented itself.
+    const latest = dated.reduce<string | null>(
+      (best, r) => (!best || r.decided_on! > best ? r.decided_on! : best), null);
+
+    return gzipped(req, json({
+      from, to, rows, latest,
+      total: decided.length,
+      undated: decided.length - dated.length,
+    }));
   }
 
   return { weeks, screen, summary, track, reviewed, rfp, meetingNotes };
+}
+
+/**
+ * The date a decision counts under. Exported for the tests, because the fallback order is
+ * the rule — a row whose only date is `submitted_at` still has to land in a period, and
+ * getting the order wrong files decisions under the wrong month silently.
+ */
+export function decidedOn(r: Json): string | null {
+  for (const k of ["decision_date", "decision_overridden_at", "submitted_at"]) {
+    const v = str(r[k]).trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  }
+  return null;
 }

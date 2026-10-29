@@ -242,19 +242,47 @@ browser, over the stored scores the `rescore` job writes.
 ### `GET /pipelines/reviewed?from=<iso>&to=<iso>` — built
 
 ```
-{ rows: RfpSubmission[], from: string, to: string }
+{ rows: (RfpSubmission & { decided_on: string })[],
+  from: string, to: string,
+  latest: string | null,     // most recent decision anywhere
+  total: number,             // decisions in all
+  undated: number }          // decisions carrying no usable date
 ```
 
 What a PERSON has decided, in a half-open window, newest first. Defaults to the
 current calendar year.
 
-**Windowed on `decision_date`**, not `submitted_at` or `review_week`, because
-the stage is about the act of deciding: a call found in March and decided in
-June belongs to June here. That also makes `decision_date` the membership test —
-a stored `decision` is NOT enough, since only `POST /pipelines/decision` stamps
-the date, and without that rule the stage would fill with rows whose `decision`
-an import copied from the engine's recommendation and claim people had decided
-things they never saw.
+**Membership is a non-empty `decision`, and the first version of this got it
+wrong.** It required `decision_date`, reasoning from `views/review_rfp.py:212`,
+which only treats a stored decision as a human's when that column is stamped.
+The rule reads well and is wrong against this data: of 83 decided rows, **61
+have no `decision_date` at all** — the Excel migration carried the verdict and
+the rationale but never a date — so the stage showed 22 of 83 and looked broken.
+
+Those 61 are unmistakably human: **32 disagree with `auto_recommendation`**, so
+they cannot be the engine's own output copied into the column, and **59 carry a
+written rationale**, which the engine never produces. The import the old rule
+defended against is not in this data, and defending against it cost three
+quarters of the real decisions.
+
+**Which date a decision counts under**, best evidence first:
+
+| column | written by |
+|---|---|
+| `decision_date` | `POST /pipelines/decision` — the real thing |
+| `decision_overridden_at` | any save; close enough to when it was decided |
+| `submitted_at` | the row's own date, so a dated row is never lost |
+
+Resolved server-side into `decided_on` so the page does not own a second opinion
+about which period a decision belongs to. A row with none of the three is
+counted in `undated` rather than dropped — dropping decisions is the bug this
+route just had. The window is applied in TypeScript rather than PostgREST
+because that fallback is a coalesce across three columns, and because a tenant's
+whole history is small; `/pipelines/track` already filters on the same grounds.
+
+`latest` exists so an empty window can say *where* the decisions are. "Nothing
+this week" and "nothing ever" look identical on screen and mean entirely
+different things.
 
 Carries prose — `opportunity_title`, `decision_note` — where `/pipelines/summary`
 deliberately does not, because this stage is read a row at a time rather than
@@ -461,10 +489,13 @@ reintroduce it as a compatibility shim.
 
 ### `decision_date` is the "reviewed" flag — still carried
 
-Encoded and commented, never quietly corrected. Now load-bearing in two more
-places: `POST /pipelines/decision` is the only writer of it (it is deliberately
-absent from the editor's editable set), and `GET /pipelines/reviewed` uses it as
-both the window and the membership test for the Reviewed stage.
+Encoded and commented, never quietly corrected. `POST /pipelines/decision` is
+now its only writer — it is deliberately absent from the editor's editable set.
+
+But note what it is NOT, learned the hard way on the Reviewed stage: it is not a
+reliable test of whether a human decided, because 61 of the 83 decided rows
+predate it. It is the best evidence when present and absent far more often than
+it is there. Read it as "we know exactly when", never as "a person decided".
 
 ### Track versus Screened — carried, and not a trap to fix
 

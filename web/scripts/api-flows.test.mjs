@@ -31,6 +31,7 @@ function fakeDb(tables) {
     const cell = row[k];
     if (v.startsWith("eq.")) return String(cell) === decodeURIComponent(v.slice(3)) || (cell === true && v === "eq.true");
     if (v === "is.null") return cell == null;
+    if (v === "not.is.null") return cell != null;
     if (v.startsWith("in.(")) return v.slice(4, -1).split(",").includes(String(cell));
     // gte/lte alongside gt/lt because the period routes window half-open — `gte.from` and
     // `lt.to` — so consecutive periods tile exactly. A fake that only knew `gt.` would
@@ -676,6 +677,66 @@ test("Reviewed holds what a person decided, keyed on when they decided it", asyn
   // decision was taken, which is the question "what did we decide this period" asks.
   const earlier = await call("GET", `/pipelines/reviewed?from=2020-01-01&to=2020-02-01`, null, col.token);
   assert.deepEqual(earlier.body.rows, []);
+});
+
+test("a migrated decision with no decision_date is still a decision", async () => {
+  // The bug this route shipped with. 61 of the 83 decided rows on the live table have no
+  // `decision_date` — the Excel migration carried the verdict and the rationale but never
+  // a date — so requiring it showed 22 of 83 and looked broken. They are unmistakably
+  // human: 32 disagree with the engine and 59 carry a written rationale.
+  const { db, call, signIn } = setup();
+  db.tables.rfp_submissions.push({
+    uid: "OLD-1", tenant_id: T1, opportunity_title: "Migrated call", source: "migration",
+    decision: "Proceed", decision_note: "Strong country fit — agreed in the May meeting",
+    auto_recommendation: "Park", submitted_at: "2026-05-04T09:00:00+00:00",
+    decision_date: null, decision_overridden_at: null,
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const r = await call("GET", "/pipelines/reviewed?from=2026-05-01&to=2026-06-01", null, col.token);
+  assert.deepEqual(r.body.rows.map((x) => x.uid), ["OLD-1"]);
+  // Filed under submitted_at, because that is the only date it has.
+  assert.equal(r.body.rows[0].decided_on, "2026-05-04");
+  assert.equal(r.body.undated, 0);
+});
+
+test("the date a decision counts under is the best one it has", async () => {
+  const { db, call, signIn } = setup();
+  // decision_date wins over both; decision_overridden_at wins over submitted_at.
+  db.tables.rfp_submissions.push(
+    { uid: "D-ALL", tenant_id: T1, decision: "Park", decision_date: "2026-03-02",
+      decision_overridden_at: "2026-07-07T00:00:00+00:00", submitted_at: "2026-09-09T00:00:00+00:00" },
+    { uid: "D-OVR", tenant_id: T1, decision: "Park", decision_date: null,
+      decision_overridden_at: "2026-07-07T00:00:00+00:00", submitted_at: "2026-09-09T00:00:00+00:00" },
+    { uid: "D-NONE", tenant_id: T1, decision: "Park", decision_date: null,
+      decision_overridden_at: null, submitted_at: null },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const year = await call("GET", "/pipelines/reviewed?from=2026-01-01&to=2027-01-01", null, col.token);
+  const on = Object.fromEntries(year.body.rows.map((r) => [r.uid, r.decided_on]));
+  assert.equal(on["D-ALL"], "2026-03-02", "decision_date wins");
+  assert.equal(on["D-OVR"], "2026-07-07", "then the override stamp");
+
+  // A row with no date at all is COUNTED, not dropped — dropping decisions is the bug.
+  assert.equal(year.body.undated, 1);
+  assert.ok(!year.body.rows.some((r) => r.uid === "D-NONE"));
+  assert.equal(year.body.total, 3);
+});
+
+test("an empty window says where the decisions actually are", async () => {
+  // Otherwise a stage whose data stops in September looks broken in late October, which is
+  // exactly how this route's first version presented itself.
+  const { db, call, signIn } = setup();
+  db.tables.rfp_submissions.push({
+    uid: "SEP-1", tenant_id: T1, decision: "Decline", decision_date: "2026-09-18",
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const empty = await call("GET", "/pipelines/reviewed?from=2026-10-26&to=2026-11-02", null, col.token);
+  assert.deepEqual(empty.body.rows, []);
+  assert.equal(empty.body.latest, "2026-09-18", "the page can offer to jump there");
+  assert.equal(empty.body.total, 1);
 });
 
 test("the Reviewed window is half-open, so periods tile", async () => {

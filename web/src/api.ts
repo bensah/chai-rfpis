@@ -203,12 +203,27 @@ export type ReviewedRow = ScreenRow & {
   decision_date: string | null;
   decision_overridden_by?: string | null;
   decision_overridden_at?: string | null;
+  /** The date this decision counts under: `decision_date`, else the override stamp, else
+   *  `submitted_at`. Resolved by the API so the page does not own a second opinion about
+   *  which period a decision belongs to. */
+  decided_on: string;
 };
 
-/** Reviewed is keyed on `decision_date` — the window is when the decision was TAKEN, not
- *  when the call was found, so a March call decided in June belongs to June. */
+export type Reviewed = {
+  from: string; to: string;
+  rows: ReviewedRow[];
+  /** The most recent decision ANYWHERE, so an empty window can point at it rather than
+   *  looking like the stage is broken. Null when nothing has been decided at all. */
+  latest: string | null;
+  /** Decisions in total, and those carrying no usable date — counted rather than dropped. */
+  total: number;
+  undated: number;
+};
+
+/** The window is when the decision was TAKEN, not when the call was found, so a March
+ *  call decided in June belongs to June. */
 export const fetchReviewed = (from: string, to: string) =>
-  call<{ from: string; to: string; rows: ReviewedRow[] }>(
+  call<Reviewed>(
     `/pipelines/reviewed?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
 
 /** What a write route says about the work it could not finish inline. */
