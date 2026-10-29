@@ -31,7 +31,13 @@ function fakeDb(tables) {
     const cell = row[k];
     if (v.startsWith("eq.")) return String(cell) === decodeURIComponent(v.slice(3)) || (cell === true && v === "eq.true");
     if (v === "is.null") return cell == null;
+    if (v === "not.is.null") return cell != null;
     if (v.startsWith("in.(")) return v.slice(4, -1).split(",").includes(String(cell));
+    // gte/lte alongside gt/lt because the period routes window half-open — `gte.from` and
+    // `lt.to` — so consecutive periods tile exactly. A fake that only knew `gt.` would
+    // silently drop every row sitting on a window's first day.
+    if (v.startsWith("gte.")) return cell != null && String(cell) >= v.slice(4);
+    if (v.startsWith("lte.")) return cell != null && String(cell) <= v.slice(4);
     if (v.startsWith("lt.")) return cell != null && String(cell) < v.slice(3);
     if (v.startsWith("gt.")) return cell != null && String(cell) > v.slice(3);
     throw new Error(`fake: unsupported filter ${k}=${v}`);
@@ -581,6 +587,176 @@ test("jobs: gated like the control that starts them; visible to the right people
   assert.equal((await call("GET", `/jobs/${r.body.job.id}`, null, sup.token)).status, 200);
   const col = await signIn("col@x.org", "col pass 1");
   assert.equal((await call("GET", `/jobs/${r.body.job.id}`, null, col.token)).status, 404);
+});
+
+test("recording a decision stamps it and queues what the scan needs", async () => {
+  const { call, signIn, db, dispatched } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const r = await call("POST", "/pipelines/decision",
+    { uid: "R1", decision: "Decline", note: "Out of scope for us" }, col.token);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.row.decision, "Decline");
+  assert.equal(r.body.row.decision_note, "Out of scope for us");
+  assert.equal(r.body.row.decision_overridden_by, "col@x.org");
+  // The flag the rest of the app reads as "a human has reviewed this". Date, not datetime.
+  assert.match(r.body.row.decision_date, /^\d{4}-\d{2}-\d{2}$/);
+  assert.deepEqual(r.body.warnings, []);
+
+  const jobs = db.tables.web_jobs.filter((j) => j.kind === "record_decision");
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].status, "dispatched");
+  assert.deepEqual(jobs[0].params,
+    { tenant_id: T1, uid: "R1", decision: "Decline", by: "col@x.org" });
+  // Its own group, so a decision does not wait behind a whole-tenant re-score.
+  assert.deepEqual(dispatched.map((d) => d.group), [`decision-${T1}`]);
+});
+
+test("a decision the app does not offer is refused, and named", async () => {
+  const { call, signIn, db } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  for (const decision of ["Maybe", "proceed", "", "Proceed as sub"]) {
+    const r = await call("POST", "/pipelines/decision", { uid: "R1", decision }, col.token);
+    assert.equal(r.status, 400, `${JSON.stringify(decision)} should be refused`);
+    assert.deepEqual(r.body.allowed, ["Proceed", "Park", "Decline"]);
+  }
+  // Nothing was written and nothing was queued on the way to being refused.
+  assert.equal(db.tables.web_jobs.length, 0);
+  const unknown = await call("POST", "/pipelines/decision",
+    { uid: "nope", decision: "Park" }, col.token);
+  assert.equal(unknown.status, 404);
+});
+
+test("a decision on another tenant's row is a 404, not a 403", async () => {
+  // Same rule the editor's save follows: a row that is missing and a row this tenant
+  // cannot see answer alike, so the route cannot be used to discover that a uid exists.
+  const { call, signIn, db } = setup();
+  const adm = await signIn("admin@x.org", "correct horse 1");   // signs in to T2
+  const r = await call("POST", "/pipelines/decision",
+    { uid: "R1", decision: "Park" }, adm.token);                // R1 is T1's
+  assert.equal(r.status, 404);
+  assert.equal(db.tables.web_jobs.length, 0);
+});
+
+test("changing a verdict without a word does not keep the old rationale", async () => {
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  await call("POST", "/pipelines/decision",
+    { uid: "R2", decision: "Proceed", note: "Strong fit" }, col.token);
+
+  // Omitted: the reviewer is not touching the note.
+  const kept = await call("POST", "/pipelines/decision",
+    { uid: "R2", decision: "Park" }, col.token);
+  assert.equal(kept.body.row.decision_note, "Strong fit");
+
+  // Explicitly empty: they are clearing it, and a rationale for an abandoned verdict
+  // must not be left standing under the new one.
+  const cleared = await call("POST", "/pipelines/decision",
+    { uid: "R2", decision: "Decline", note: "" }, col.token);
+  assert.equal(cleared.body.row.decision_note, null);
+});
+
+test("Reviewed holds what a person decided, keyed on when they decided it", async () => {
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const today = new Date().toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+
+  // Nothing is reviewed until somebody decides, even though both rows exist and are scored.
+  const before = await call("GET", `/pipelines/reviewed?from=${today}&to=${tomorrow}`, null, col.token);
+  assert.equal(before.status, 200);
+  assert.deepEqual(before.body.rows, []);
+
+  await call("POST", "/pipelines/decision", { uid: "R1", decision: "Park" }, col.token);
+  const after = await call("GET", `/pipelines/reviewed?from=${today}&to=${tomorrow}`, null, col.token);
+  assert.deepEqual(after.body.rows.map((r) => r.uid), ["R1"]);
+  assert.equal(after.body.rows[0].decision, "Park");
+  assert.equal(after.body.rows[0].decision_date, today);
+
+  // A window that ends before today excludes it: the stage files a call by the date the
+  // decision was taken, which is the question "what did we decide this period" asks.
+  const earlier = await call("GET", `/pipelines/reviewed?from=2020-01-01&to=2020-02-01`, null, col.token);
+  assert.deepEqual(earlier.body.rows, []);
+});
+
+test("a migrated decision with no decision_date is still a decision", async () => {
+  // The bug this route shipped with. 61 of the 83 decided rows on the live table have no
+  // `decision_date` — the Excel migration carried the verdict and the rationale but never
+  // a date — so requiring it showed 22 of 83 and looked broken. They are unmistakably
+  // human: 32 disagree with the engine and 59 carry a written rationale.
+  const { db, call, signIn } = setup();
+  db.tables.rfp_submissions.push({
+    uid: "OLD-1", tenant_id: T1, opportunity_title: "Migrated call", source: "migration",
+    decision: "Proceed", decision_note: "Strong country fit — agreed in the May meeting",
+    auto_recommendation: "Park", submitted_at: "2026-05-04T09:00:00+00:00",
+    decision_date: null, decision_overridden_at: null,
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const r = await call("GET", "/pipelines/reviewed?from=2026-05-01&to=2026-06-01", null, col.token);
+  assert.deepEqual(r.body.rows.map((x) => x.uid), ["OLD-1"]);
+  // Filed under submitted_at, because that is the only date it has.
+  assert.equal(r.body.rows[0].decided_on, "2026-05-04");
+  assert.equal(r.body.undated, 0);
+});
+
+test("the date a decision counts under is the best one it has", async () => {
+  const { db, call, signIn } = setup();
+  // decision_date wins over both; decision_overridden_at wins over submitted_at.
+  db.tables.rfp_submissions.push(
+    { uid: "D-ALL", tenant_id: T1, decision: "Park", decision_date: "2026-03-02",
+      decision_overridden_at: "2026-07-07T00:00:00+00:00", submitted_at: "2026-09-09T00:00:00+00:00" },
+    { uid: "D-OVR", tenant_id: T1, decision: "Park", decision_date: null,
+      decision_overridden_at: "2026-07-07T00:00:00+00:00", submitted_at: "2026-09-09T00:00:00+00:00" },
+    { uid: "D-NONE", tenant_id: T1, decision: "Park", decision_date: null,
+      decision_overridden_at: null, submitted_at: null },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const year = await call("GET", "/pipelines/reviewed?from=2026-01-01&to=2027-01-01", null, col.token);
+  const on = Object.fromEntries(year.body.rows.map((r) => [r.uid, r.decided_on]));
+  assert.equal(on["D-ALL"], "2026-03-02", "decision_date wins");
+  assert.equal(on["D-OVR"], "2026-07-07", "then the override stamp");
+
+  // A row with no date at all is COUNTED, not dropped — dropping decisions is the bug.
+  assert.equal(year.body.undated, 1);
+  assert.ok(!year.body.rows.some((r) => r.uid === "D-NONE"));
+  assert.equal(year.body.total, 3);
+});
+
+test("an empty window says where the decisions actually are", async () => {
+  // Otherwise a stage whose data stops in September looks broken in late October, which is
+  // exactly how this route's first version presented itself.
+  const { db, call, signIn } = setup();
+  db.tables.rfp_submissions.push({
+    uid: "SEP-1", tenant_id: T1, decision: "Decline", decision_date: "2026-09-18",
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const empty = await call("GET", "/pipelines/reviewed?from=2026-10-26&to=2026-11-02", null, col.token);
+  assert.deepEqual(empty.body.rows, []);
+  assert.equal(empty.body.latest, "2026-09-18", "the page can offer to jump there");
+  assert.equal(empty.body.total, 1);
+});
+
+test("the Reviewed window is half-open, so periods tile", async () => {
+  // `to` is exclusive: a decision taken on the 1st belongs to the month starting the 1st
+  // and not to the one ending there. Without this a decision on a boundary date is counted
+  // in two periods, and the stage's numbers stop adding up to the year's.
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const today = new Date().toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+  await call("POST", "/pipelines/decision", { uid: "R1", decision: "Proceed" }, col.token);
+
+  const endingToday = await call("GET", `/pipelines/reviewed?from=2020-01-01&to=${today}`, null, col.token);
+  assert.deepEqual(endingToday.body.rows, [], "`to` is exclusive");
+  const startingToday = await call("GET", `/pipelines/reviewed?from=${today}&to=${tomorrow}`, null, col.token);
+  assert.deepEqual(startingToday.body.rows.map((r) => r.uid), ["R1"], "`from` is inclusive");
+
+  for (const bad of [`from=${today}&to=${today}`, "from=nope&to=2026-01-01", `from=${tomorrow}&to=${today}`]) {
+    assert.equal((await call("GET", `/pipelines/reviewed?${bad}`, null, col.token)).status, 400);
+  }
 });
 
 test("saving an RFP queues the re-score that owns its score", async () => {

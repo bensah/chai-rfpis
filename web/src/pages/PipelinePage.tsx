@@ -14,6 +14,7 @@ import { ChevronRight, ClipboardCheck, Layers, Search, Send, Trophy } from "luci
 import { fetchWeeks, type User, type Weeks } from "../api";
 import { periodOf, type Period } from "../pipeline/period";
 import PeriodPicker from "../pipeline/PeriodPicker";
+import ReviewedStage from "../pipeline/ReviewedStage";
 import ScreenedStage from "../pipeline/ScreenedStage";
 import { Card, EmptyState, PageHeader, Select } from "../ui";
 
@@ -36,9 +37,9 @@ const STAGES: {
   { key: "screened", label: "Screened", icon: Search, built: true,
     hint: "Found and scored, nobody has decided yet",
     rule: "no decision recorded — the recommendation shown is the engine's" },
-  { key: "reviewed", label: "Reviewed", icon: ClipboardCheck, built: false,
+  { key: "reviewed", label: "Reviewed", icon: ClipboardCheck, built: true,
     hint: "A person has decided: proceed, park or decline",
-    rule: "decision set; parked and declined calls rest here" },
+    rule: "a decision is recorded — the engine's recommendation alone does not count" },
   { key: "bidding", label: "Bidding", icon: Layers, built: false,
     hint: "Decided to bid, application under way",
     rule: "proceeding, not yet submitted, not completed or discontinued" },
@@ -89,7 +90,8 @@ export default function PipelinePage({ user }: { user: User }) {
 
       <div className="mt-6">
         {stage === "screened" && <ScreenedStage week={week} weeks={weeks} onPickWeek={setWeek} />}
-        {stage !== "screened" && <StageNotBuilt stage={stage} />}
+        {stage === "reviewed" && <ReviewedStage period={period} onPickPeriod={setPeriod} />}
+        {stage !== "screened" && stage !== "reviewed" && <StageNotBuilt stage={stage} />}
       </div>
     </section>
   );

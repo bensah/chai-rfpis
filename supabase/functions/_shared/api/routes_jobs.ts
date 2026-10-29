@@ -44,6 +44,21 @@ const KINDS: Record<string, JobKind> = {
     allowed: () => true,
     group: (ctx) => `rescore-${ctx.scope.viewTenantId ?? ctx.scope.tenantId ?? "none"}`,
   },
+
+  /**
+   * The two consequences of a human decision that live in Python: the ML training label
+   * (`core/decision_log.py`) and the scan's tombstone (`core/seen_ledger.py`, whose
+   * column map is probed from the live table and so cannot be guessed at from here).
+   *
+   * Queued by POST /pipelines/decision, with the same gate as the decision itself.
+   * Its own group rather than the re-score's: these are an append-only log and an upsert
+   * keyed by uid, so they race nothing, and sharing a group would have a decision wait
+   * behind a whole-tenant re-score for no reason.
+   */
+  record_decision: {
+    allowed: () => true,
+    group: (ctx) => `decision-${ctx.scope.viewTenantId ?? ctx.scope.tenantId ?? "none"}`,
+  },
 };
 
 const JOB_COLUMNS = "id,kind,status,progress,message,result,created_at,started_at,finished_at,run_url,created_by,tenant_id";

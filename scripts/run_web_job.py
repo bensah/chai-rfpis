@@ -182,9 +182,68 @@ def _rescore(job: JobRow, params: dict, runner: str) -> dict:
         reset_tenant_override(token)
 
 
+def _record_decision(job: JobRow, params: dict, runner: str) -> dict:
+    """The two consequences of a human decision that the API cannot carry out itself.
+
+    `decision_log.log_decision` writes the ML training LABEL to scan_decisions, which
+    nothing reads at gate time. `seen_ledger.record_decision` writes the operational
+    tombstone to rfp_seen, which the SCAN does read. The modules' own docstrings are
+    emphatic that neither substitutes for the other, and the second one exists because a
+    reviewer's Decline used to be forgotten and the call came back on the next run.
+
+    WHY THIS IS A JOB AND NOT TYPESCRIPT IN THE ROUTE: seen_ledger.column_map() probes the
+    live rfp_seen table to learn whether it carries the modern or the legacy column
+    spelling, and falls back to identity-only columns when neither answers. Re-deriving
+    that in the API would be guessing at a schema, and a wrong guess writes no tombstone
+    while reporting success — the exact failure the ledger was built to end.
+
+    params: {"tenant_id": required, "uid": required, "decision": required, "by": optional}
+
+    Prints counts and nothing else: this log is public (the repository is).
+    """
+    from auth.tenant_context import reset_tenant_override, set_tenant_override
+
+    tenant_id = str(params.get("tenant_id") or (job.get() or {}).get("tenant_id") or "").strip()
+    uid = str(params.get("uid") or "").strip()
+    decision = str(params.get("decision") or "").strip()
+    if not tenant_id:
+        raise ValueError("record_decision needs a tenant_id")
+    if not uid or not decision:
+        raise ValueError("record_decision needs a uid and a decision")
+
+    # Both modules read the AMBIENT tenant through get_client, so the whole body runs
+    # inside the override — a tombstone written against the wrong tenant would suppress
+    # someone else's opportunity, which is worse than not writing one.
+    token = set_tenant_override(tenant_id)
+    try:
+        from core import decision_log, seen_ledger
+        from db.supabase_client import get_client
+        sb = get_client()
+        job.progress(10, "Loading")
+        rows = sb.table("rfp_submissions").select("*").eq("uid", uid).execute().data or []
+        if not rows:
+            # The row is read back rather than passed in: it is the truth, and a decision
+            # whose row has since gone is nothing to record.
+            return {"found": False, "logged": False, "tombstoned": False, "runner": runner}
+        row = dict(rows[0])
+
+        job.progress(50, "Recording")
+        logged = decision_log.log_decision(row, decision, by=params.get("by") or None)
+        # Returns False for a decision that is not a closing one — Park and Proceed are
+        # live work and must NOT be tombstoned. That is the module's call, not this job's.
+        tombstoned = seen_ledger.record_decision(row, decision)
+
+        job.progress(100, "Recorded")
+        return {"found": True, "logged": bool(logged), "tombstoned": bool(tombstoned),
+                "runner": runner}
+    finally:
+        reset_tenant_override(token)
+
+
 KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "ping": _ping,
     "rescore": _rescore,
+    "record_decision": _record_decision,
 }
 
 

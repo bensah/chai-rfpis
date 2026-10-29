@@ -18,6 +18,21 @@ stub and assign it, which broke in two ways once the whole suite ran in one proc
 stub, every later caller gets that SAME object back. Clearing its session_state therefore
 clears the dict the app code is really reading, whatever the import order was.
 
+That last promise only held while NO test module imported an app module before the first
+`install()`. `tests/test_cron_multitenant.py` did exactly that (`from core import
+scan_pipeline`, `import auth.tenant_context`), and it sorts before every module that
+installs the stub, so under the full suite `auth.tenant_context.st` was bound to the REAL
+Streamlit for the rest of the process. Bare Streamlit's session_state is a no-op that logs
+"Session state does not function when running a script without `streamlit run`" and
+silently drops every write, so test_session_identity_isolation and test_workbook_isolation
+wrote their fixtures into the stub and the code under test read an entirely different,
+permanently empty mapping. Sixteen tests failed in bulk and passed alone.
+
+`_rebind_app_modules()` closes that hole: installing the stub also repoints the
+module-level `st` of every ALREADY-IMPORTED project module at it. The order-independence
+above is then a property of this fixture rather than of a convention each new test module
+has to remember.
+
 Restoring the real Streamlit instead is not an option here: `sc` and `tc` resolve
 `streamlit` lazily in places, so putting the real module back mid-run breaks these tests.
 A test that genuinely needs the real Streamlit must reinstall it around its own runs; see
@@ -25,10 +40,14 @@ tests/test_criteria_editor_widget.py.
 """
 from __future__ import annotations
 
+import os
 import sys
 import types
 
 _MARKER = "_is_shared_test_fake"
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_HERE)
 
 
 class QueryParams(dict):
@@ -64,14 +83,53 @@ class _CacheDecorator:
         return None
 
 
+def _is_project_module(mod: types.ModuleType) -> bool:
+    """True for a module that lives in this repo but outside tests/."""
+    path = getattr(mod, "__file__", None)
+    if not path:
+        return False
+    try:
+        path = os.path.abspath(path)
+    except (TypeError, ValueError):
+        return False
+    return path.startswith(_PROJECT_ROOT + os.sep) and not path.startswith(_HERE + os.sep)
+
+
+def _rebind_app_modules(fake: types.ModuleType) -> list[str]:
+    """Point already-imported app modules' module-level `st` at `fake`.
+
+    An app module that did `import streamlit as st` before the stub existed holds the real
+    module forever — `sys.modules` is only consulted at import. Repointing the name is the
+    same thing a later import would have done, and it is what makes `install()` order-
+    independent. Modules that resolve `streamlit` lazily (core.excel_sync, parts of
+    db.supabase_client) have no `st` global and need nothing here.
+
+    Returns the module names that were repointed, for diagnosis.
+    """
+    rebound = []
+    for name, mod in list(sys.modules.items()):
+        if not isinstance(mod, types.ModuleType) or mod is fake:
+            continue
+        bound = getattr(mod, "st", None)
+        if not isinstance(bound, types.ModuleType) or bound.__name__ != "streamlit":
+            continue
+        if bound is fake or not _is_project_module(mod):
+            continue
+        mod.st = fake
+        rebound.append(name)
+    return rebound
+
+
 def install() -> types.ModuleType:
     """Install (or return) the one shared fake `streamlit`.
 
     Call this at module level, before importing any app module. Returns the stub so the
-    caller can read/clear `session_state` and hang extra attributes on it.
+    caller can read/clear `session_state` and hang extra attributes on it. An app module
+    that was imported earlier (and so bound the real Streamlit) is repointed at the stub.
     """
     existing = sys.modules.get("streamlit")
     if isinstance(existing, types.ModuleType) and getattr(existing, _MARKER, False):
+        _rebind_app_modules(existing)
         return existing
 
     fake = types.ModuleType("streamlit")
@@ -84,4 +142,5 @@ def install() -> types.ModuleType:
     for _name in ("warning", "markdown", "error", "info", "success", "caption", "write"):
         setattr(fake, _name, _noop)
     sys.modules["streamlit"] = fake
+    _rebind_app_modules(fake)
     return fake

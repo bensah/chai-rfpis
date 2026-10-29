@@ -63,6 +63,16 @@ const SUMMARY_FIELDS = "uid,funding_agency,call_award_value,currency," +
   "scored_at,score_profile_sig,decision," +
   "decision_date,donor_decision,progress_status,is_duplicate,duplicate_of_uid";
 
+/** What the Reviewed stage draws: the call, the verdict, and who reached it when. Carries
+ *  prose (title, note) where Summary does not, because this stage is read one row at a
+ *  time rather than counted. */
+const REVIEWED_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,currency," +
+  "call_submission_deadline,call_geographic_scope,focus_theme,opportunity_link," +
+  "submitted_at,review_week,alignment_score,auto_recommendation,scored_at," +
+  "score_profile_sig,decision,decision_note,decision_date,decision_overridden_by," +
+  "decision_overridden_at,donor_decision,progress_status,applicant_role," +
+  "is_duplicate,duplicate_of_uid";
+
 /** views/tracking_rfp.py draws these, plus proposal_lead for the duplicate-group leads. */
 const TRACK_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,currency," +
   "call_submission_deadline,call_geographic_scope,focus_theme,opportunity_link," +
@@ -70,6 +80,14 @@ const TRACK_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,curr
   "decision,donor_decision," +
   "progress_status,proposal_lead,is_duplicate,duplicate_of_uid";
 
+/**
+ * Wider than the decision vocabulary on purpose, and not a drifted copy of it.
+ * "Proceed as sub" was retired on 2026-06-06 — the sub signal moved to `applicant_role`
+ * (Prime / Sub / Technical) and the decision stays "Proceed" — so nothing writes it any
+ * more and `POST /pipelines/decision` refuses it. Rows decided before that date still
+ * carry it, and they are still live work, so the READ stays wide enough to include them.
+ * Mirrors views/tracking_rfp.py and views/meetings.py, which filter the same pair.
+ */
 const TRACK_DECISIONS = new Set(["Proceed", "Proceed as sub"]);
 
 const norm = (v: unknown) => str(v).trim().toLowerCase();
@@ -540,5 +558,86 @@ export function createPipelineRoutes(db: Db) {
     return gzipped(req, json({ year, notes, weeks, defaultWeek }));
   }
 
-  return { weeks, screen, summary, track, rfp, meetingNotes };
+  /**
+   * Reviewed: the calls a PERSON has decided on, in a date window.
+   *
+   * MEMBERSHIP IS A NON-EMPTY `decision`, and the first version of this route got that
+   * wrong. It required `decision_date`, reasoning from views/review_rfp.py:212, which only
+   * treats a stored decision as a human's when that column is stamped. The rule reads well
+   * and is wrong here: measured on the live table, 61 of the 83 decided rows have no
+   * `decision_date` at all, because the Excel migration carried the verdict and the written
+   * rationale but never a date. The stage showed 22 of 83 and looked broken.
+   *
+   * Those 61 are unmistakably human: 32 of them DISAGREE with `auto_recommendation`, so
+   * they cannot be the engine's own output copied into the column, and 59 carry a written
+   * rationale, which the engine never produces. The import worry the old rule defended
+   * against is not in this data, and defending against it cost three quarters of the real
+   * decisions. A stage that hides what people decided is worse than one that might someday
+   * show an imported recommendation.
+   *
+   * WHICH DATE A DECISION COUNTS UNDER, best evidence first:
+   *   decision_date            stamped by POST /pipelines/decision — the real thing
+   *   decision_overridden_at   stamped by any save; close enough to when it was decided
+   *   submitted_at            the row's own date, so a dated row is never lost entirely
+   * A row with none of the three has no position in time; it is counted in `undated`
+   * rather than dropped, because dropping is the bug this route just had.
+   *
+   * Windowed HERE rather than in PostgREST because that fallback is a coalesce across
+   * three columns, which query syntax expresses badly, and because a tenant's whole
+   * history is small — the same reasoning /pipelines/track already runs on.
+   *
+   * Duplicates are kept rather than dropped: deciding on a row is a thing that happened to
+   * THAT row, and hiding it would make a decision disappear from the stage that exists to
+   * show decisions. The page groups them.
+   */
+  async function reviewed(req: Request, ctx: Ctx): Promise<Response> {
+    const url = new URL(req.url);
+    const year = new Date().getUTCFullYear();
+    const from = str(url.searchParams.get("from")).trim() || `${year}-01-01`;
+    const to = str(url.searchParams.get("to")).trim() || `${year + 1}-01-01`;
+    if (!/^\d{4}-\d{2}-\d{2}/.test(from) || !/^\d{4}-\d{2}-\d{2}/.test(to)) {
+      return json({ error: "from and to must be ISO dates" }, 400);
+    }
+    if (to <= from) return json({ error: "to must be after from" }, 400);
+
+    const all = await db.as(ctx.scope).get(
+      "rfp_submissions", `select=${REVIEWED_FIELDS}&decision=not.is.null`);
+    const decided = all.filter((r) => str(r.decision).trim() !== "");
+
+    const dated = decided
+      .map((r) => ({ ...r, decided_on: decidedOn(r) }))
+      .filter((r) => r.decided_on);
+    // Half-open, matching web/src/pipeline/period.ts, so consecutive windows tile exactly
+    // and a decision on a boundary date is counted once rather than in both.
+    const rows = dated
+      .filter((r) => r.decided_on! >= from && r.decided_on! < to)
+      .sort((a, b) => (a.decided_on! < b.decided_on! ? 1 : -1));
+
+    // So an empty window can say "nothing here, but there are decisions in September"
+    // instead of looking like the stage is broken — which is how this route's first
+    // version presented itself.
+    const latest = dated.reduce<string | null>(
+      (best, r) => (!best || r.decided_on! > best ? r.decided_on! : best), null);
+
+    return gzipped(req, json({
+      from, to, rows, latest,
+      total: decided.length,
+      undated: decided.length - dated.length,
+    }));
+  }
+
+  return { weeks, screen, summary, track, reviewed, rfp, meetingNotes };
+}
+
+/**
+ * The date a decision counts under. Exported for the tests, because the fallback order is
+ * the rule — a row whose only date is `submitted_at` still has to land in a period, and
+ * getting the order wrong files decisions under the wrong month silently.
+ */
+export function decidedOn(r: Json): string | null {
+  for (const k of ["decision_date", "decision_overridden_at", "submitted_at"]) {
+    const v = str(r[k]).trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  }
+  return null;
 }
