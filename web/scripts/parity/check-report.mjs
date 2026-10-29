@@ -162,50 +162,32 @@ const TS_PROBES = [
 
 // ── 3b. An unparseable or NULL date among them ─────────────────────────────
 //
-// Four of the five views pass a bad date through as NaT, which groups nowhere and is
-// dropped. SEMESTRIAL RAISES. `s.dt.year` on a series holding a NaT is float64, so
-// `.astype(str)` yields "2026.0" and the concatenation builds "2026.0-01-01", which
-// `pd.to_datetime` cannot parse.
+// A bad date is NaT: it groups nowhere and is dropped. All five views, compared strictly.
 //
-// That is a live crash in views/report.py, not a difference introduced by the port: the
-// one call site that does not `.dropna()` first (line ~1805, Section 1's discovery chart
-// stacked by submitter) is reached by exactly the rows most likely to have no search_date
-// — Excel-migrated ones, which survive the period filter on `submitted_at` instead.
+// This block was an EXEMPTION until 2026-10-29. views/report.py::_bucket_start raised for
+// Semestrial whenever the series held a NaT — it was the only mode building its date from
+// strings, and `s.dt.year` goes float64 the moment one value is missing, so the year rendered
+// as "2026.0" and "2026.0-01-01" would not parse. Report crashed outright, not wrongly, at
+// View by = Semestrial wherever a row without a search_date was in scope; the Excel-migrated
+// rows are exactly those. The check carried the divergence by name, failed if any OTHER view
+// started raising, and said when the note could go. report.py was then fixed (Int64 + coerce,
+// so Semestrial carries NaT like the other four), the note fired, and this is it going.
 //
-// The TypeScript returns null for all five, matching what the other four already do and
-// what the Semestrial branch plainly intends. This is NOT one of the traps to preserve: a
-// trap is behaviour a reader depends on, and nobody depends on a page that will not load.
-//
-// The exemption expires by itself. If report.py stops raising, the comparison below runs
-// strictly and this block says the note can go.
-const BAD_PROBES = ["2026-03-01", "not a date", "2026-09-01"];
+// Kept as a comment rather than deleted outright: the fault was Semestrial being the one mode
+// that did not go through .dt.to_period, and that is the shape to recognise if it recurs.
+const BAD_PROBES = ["2026-03-01", "not a date", "2026-09-01", "2026-06-30", "2026-07-01"];
 {
   const cases = P.VIEW_OPTS.map((view) => ({ view, dates: BAD_PROBES }));
   const want = py("bucket_start", cases);
-  let exempted = 0;
   for (const [i, c] of cases.entries()) {
-    const ts = BAD_PROBES.map((d) => P.bucketStart(d, c.view));
     if (want[i].error) {
-      exempted++;
-      checks++;
-      if (c.view !== "Semestrial") {
-        diffs++;
-        console.log(`DIFF bucketStart ${c.view} raised in Python, which was not expected: ${want[i].error}`);
-      } else if (J(ts) !== J([ts[0], null, ts[2]])) {
-        diffs++;
-        console.log(`DIFF bucketStart Semestrial: the bad date should be null, got ${J(ts)}`);
-      } else {
-        console.log(`NOTE bucketStart Semestrial raises in views/report.py on a NULL/unparseable `
-          + `date (${want[i].error}); the API returns null, as the other four views already do.`);
-      }
+      diffs++; checks++;
+      console.log(`DIFF bucketStart ${c.view} RAISED in views/report.py: ${want[i].error}`);
       continue;
     }
-    same(`bucketStart ${c.view} with a bad date`, ts, want[i].buckets);
+    same(`bucketStart ${c.view} with a bad date`, BAD_PROBES.map((d) => P.bucketStart(d, c.view)), want[i].buckets);
   }
-  if (!exempted) {
-    console.log("NOTE views/report.py no longer raises on a bad date in a Semestrial bucket — "
-      + "the exemption in this check can be deleted.");
-  }
+  console.log(`bad-date snapping checked over ${BAD_PROBES.length} values × ${P.VIEW_OPTS.length} views`);
 }
 
 // ── 4. In-period, NULL included ──────────────────────────────────────────────
