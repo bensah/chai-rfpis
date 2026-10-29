@@ -39,10 +39,26 @@ class TestTheJobScoresLikeTheScreens(unittest.TestCase):
         from scripts.run_web_job import KINDS
         self.assertIn("rescore", KINDS)
 
-    def test_the_job_scores_through_assess_row(self):
+    def test_the_job_scores_through_auto_score(self):
         body = _rescore_source()
-        self.assertIn("assess_row", body,
-                      "the job must score through core.assessment.assess_row")
+        self.assertIn("auto_score", body,
+                      "the job must score through core.auto_scorer.auto_score — the call "
+                      "assess_row makes, so the job and the screens compute the same thing")
+
+    def test_the_job_does_not_inherit_assess_rows_swallow(self):
+        """assess_row returns the STORED score when auto_score raises.
+
+        Right for a display, which must not crash. Wrong for a job: it would write back
+        the number it just read, stamp scored_at and the current signature, and the row
+        would claim to be freshly scored while nothing was computed — invisible to a
+        checker comparing stored against fresh, because both would be that same value.
+        """
+        body = _rescore_source()
+        self.assertNotIn("assess_row(", body,
+                         "the job must not route through assess_row's fallback")
+        self.assertIn("continue", body,
+                      "a row that could not be scored must be skipped, not stamped")
+        self.assertIn("failed", body, "and the skips must be counted")
 
     def test_the_job_does_not_use_the_other_derivation(self):
         body = _rescore_source()

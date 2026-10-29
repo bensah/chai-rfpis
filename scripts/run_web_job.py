@@ -79,9 +79,18 @@ def _rescore(job: JobRow, params: dict, runner: str) -> dict:
     """Recompute stored scores for one tenant — a row, or all of them.
 
     This is what "the server owns the score" means in practice (owner, 2026-10-28). The
-    scoring itself does NOT move: `rescore_existing.evaluate` is the same Python the
-    Streamlit app and the scan run. It changes host, not language, so there is still one
-    implementation of the rule rather than two that agree until they don't.
+    scoring itself does NOT move: this runs the same `auto_score` the scan and every live
+    screen run. It changes host, not language, so there is still one implementation of the
+    rule rather than two that agree until they don't.
+
+    WHY auto_score DIRECTLY AND NOT assess_row, which is what the screens call: assess_row
+    wraps it in a bare `except` that returns the row's STORED score, so a display never
+    crashes on a scoring hiccup. That is right for a display and wrong here. If it fired
+    inside this job, the job would write back the number it just read, stamp `scored_at`
+    and the current signature, and the row would claim to be freshly scored while nothing
+    was computed — and a checker comparing stored against fresh could not see it, because
+    both would be the same stored value. A job must know when scoring failed. So the call
+    is the one assess_row makes, and the swallow is not.
 
     params: {"tenant_id": required, "uid": optional}. With a uid, one row — what a save
     queues. Without, the tenant's whole table — what a profile edit or a schedule queues.
@@ -89,7 +98,8 @@ def _rescore(job: JobRow, params: dict, runner: str) -> dict:
     Prints counts and nothing else: this log is public (the repository is).
     """
     from auth.tenant_context import reset_tenant_override, set_tenant_override
-    from core.assessment import assess_row
+    from core.auto_scorer import auto_score
+    from core.policies import get_policies
     from scripts.rescore_existing import profile_signature, write_with_retry
 
     tenant_id = str(params.get("tenant_id") or (job.get() or {}).get("tenant_id") or "").strip()
@@ -113,21 +123,34 @@ def _rescore(job: JobRow, params: dict, runner: str) -> dict:
             return {"rows": 0, "scored": 0, "changed": 0, "runner": runner}
 
         _org, _org_set, _donors, sig = profile_signature(sb, tenant_id)
-        scored = changed = 0
+        policies = get_policies()
+        scored = changed = failed = 0
         for i, row in enumerate(rows):
-            # assess_row, NOT rescore_existing.evaluate. Both reach composite_match, but
+            # auto_score, NOT rescore_existing.evaluate. Both reach composite_match, but
             # auto_score additionally runs _apply_criteria_keywords over the candidate text
             # and evaluate does not, so the two derive different criteria from the same row:
             # measured on live data, AS-260801-0001393 comes out Park/77 one way and
-            # Decline/54.5 the other, and 10-17% of rows change recommendation between them.
+            # Decline/54.5 the other, and 30 of 266 rows change recommendation between them.
             #
-            # assess_row is the path every live screen already uses and calls itself the
-            # single source of truth for these numbers. Using it here means a server-written
-            # score is identical BY CONSTRUCTION to what the screens compute, rather than
-            # agreeing only while two derivations are kept in step by hand.
-            res = assess_row(dict(row))
+            # This is the call assess_row makes, so a server-written score is identical BY
+            # CONSTRUCTION to what the screens compute — see the docstring for why the
+            # swallow around it is deliberately not copied.
+            try:
+                res = auto_score(dict(row), policies)
+            except Exception as exc:
+                # A row that could not be scored is LEFT ALONE. Stamping it would mark it
+                # freshly scored under the current profile while holding whatever it held
+                # before, which is a worse state than an obviously old one: nothing
+                # downstream could tell the difference.
+                failed += 1
+                print(f"  row {i}: scoring failed ({type(exc).__name__}) — left unstamped")
+                continue
             new_score = res.get("alignment_score")
             new_rec = res.get("auto_recommendation")
+            if new_score is None and not new_rec:
+                failed += 1
+                print(f"  row {i}: scoring returned nothing — left unstamped")
+                continue
 
             # The SCORE is what the server owns. The nine criteria stay the scan's to write:
             # re-deriving them here would rewrite columns the editor shows as the system's
@@ -141,16 +164,20 @@ def _rescore(job: JobRow, params: dict, runner: str) -> dict:
                 upd["auto_recommendation"] = new_rec
                 moved = True
 
-            # Stamp every row, even one whose numbers did not move: "scored, unchanged" and
-            # "never scored" are different states and only the stamp tells them apart.
+            # Stamp every row it DID score, even one whose numbers did not move: "scored,
+            # unchanged" and "never scored" are different states and only the stamp tells
+            # them apart.
             if write_with_retry(sb, str(row.get("uid")), upd):
                 scored += 1
                 changed += 1 if moved else 0
             if len(rows) > 20 and i % 25 == 0:
                 job.progress(5 + int(90 * i / len(rows)), f"Scored {i} of {len(rows)}")
 
-        job.progress(100, f"Scored {scored}")
-        return {"rows": len(rows), "scored": scored, "changed": changed, "runner": runner}
+        # `failed` is reported rather than swallowed: a run that scored most of a tenant
+        # and quietly skipped the rest should not look like a clean run.
+        job.progress(100, f"Scored {scored}" + (f", {failed} failed" if failed else ""))
+        return {"rows": len(rows), "scored": scored, "changed": changed,
+                "failed": failed, "runner": runner}
     finally:
         reset_tenant_override(token)
 
