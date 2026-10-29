@@ -190,6 +190,24 @@ test("no workflow-only column is a scoring input", () => {
   }
 });
 
+// ── The decision vocabulary ──────────────────────────────────────────────────
+
+test("the decision vocabulary matches config/dropdowns.yaml", () => {
+  // The API copies the list because it also runs as a Deno Edge Function with no
+  // filesystem to read the YAML from. This is what keeps the copy honest: `decision`
+  // decides who appears in Track and whether the scan tombstones the row, so a value the
+  // app offers but the API refuses would be a save that fails for no visible reason.
+  const yaml = readFileSync(path.join(root, "config/dropdowns.yaml"), "utf8");
+  const inline = yaml.match(/^decisions:\s*\[([^\]]*)\]/m);
+  const block = yaml.match(/^decisions:\s*\n((?:\s*-\s*.+\n)+)/m);
+  assert.ok(inline || block, "config/dropdowns.yaml no longer declares `decisions`");
+  const want = inline
+    ? inline[1].split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean)
+    : block[1].split("\n").map((l) => l.replace(/^\s*-\s*/, "").trim()
+      .replace(/^["']|["']$/g, "")).filter(Boolean);
+  assert.deepEqual([...W.DECISIONS], want);
+});
+
 test("an existing grant is updated even when the tab is emptied", () => {
   // Clearing the reporting fields on a linked grant is a real edit, so it must write —
   // unlike the no-grant case, where the same emptiness means "do not create one".

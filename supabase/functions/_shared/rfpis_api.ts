@@ -97,6 +97,7 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/pipelines/weeks" && m === "GET") return pipelines.weeks(req, ctx);
     if (path === "/pipelines/screen" && m === "GET") return pipelines.screen(req, ctx);
     if (path === "/pipelines/summary" && m === "GET") return pipelines.summary(req, ctx);
+    if (path === "/pipelines/reviewed" && m === "GET") return pipelines.reviewed(req, ctx);
     if (path === "/pipelines/track" && m === "GET") return pipelines.track(req, ctx);
     if (path.startsWith("/pipelines/rfp/") && m === "GET") {
       const rest = path.slice("/pipelines/rfp/".length);
@@ -108,6 +109,7 @@ export function createApi(env: Env, deps: Deps) {
         ? pipelines.meetingNotes(req, ctx, uid)
         : pipelines.rfp(req, ctx, uid);
     }
+    if (path === "/pipelines/decision" && m === "POST") return pipelineWrites.decide(req, ctx);
     if (path.startsWith("/pipelines/rfp/") && m === "PATCH") {
       const uid = decodeURIComponent(path.slice("/pipelines/rfp/".length)).trim();
       if (!uid) return json({ error: "No RFP selected." }, 400);

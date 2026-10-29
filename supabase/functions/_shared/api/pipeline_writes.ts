@@ -13,6 +13,15 @@
  * So the score a save leaves behind is not final: the job lands a minute or so later. The
  * response says when one was queued precisely so the caller can show that, rather than
  * presenting a stale number as settled.
+ *
+ * AND IT DOES NOT TOMBSTONE. Recording a decision has two consequences beyond the row —
+ * the ML training label (`core/decision_log.py`) and the scan's tombstone
+ * (`core/seen_ledger.py`) — and both are queued to Python for the same reason the score
+ * is. The tombstone in particular reaches `seen_ledger.column_map()`, which PROBES the
+ * live `rfp_seen` table to find out whether it uses the modern or the legacy column
+ * spelling. A TypeScript guess at that is a guess at a schema, and when it guesses wrong
+ * the tombstone is silently not written — which is precisely the reported bug that
+ * function exists to fix: "we keep declining this and it keeps coming back".
  */
 import { q, type Db } from "./db.ts";
 import { body, json, str } from "./http.ts";
@@ -54,6 +63,24 @@ const EDITABLE = new Set<string>([
 
 /** The editor stamps these itself; a client sending them would be overwriting the audit. */
 const STAMPED = new Set(["decision_overridden_by", "decision_overridden_at"]);
+
+/**
+ * `config/dropdowns.yaml`'s `decisions`, which is what the Review page's selectbox offers
+ * (`views/review_rfp.py`, via `core/dropdowns.py`). Copied rather than read, because that
+ * YAML is a repo file and this module also runs as a Deno Edge Function with no filesystem
+ * to read it from — so the test "the decision vocabulary matches config/dropdowns.yaml"
+ * re-reads the YAML and fails if the two drift.
+ *
+ * Validated rather than accepted free-form: `decision` drives who appears in Track
+ * (`views/tracking_rfp.py` filters `in.(Proceed, Proceed as sub)`) and whether the scan
+ * tombstones the row, so a typo here is not a cosmetic one.
+ *
+ * The Python ALSO prepends a row's existing decision when it is not in the list, so a
+ * value an older vocabulary allowed stays selectable. That is a display rule and this is
+ * a write route: it refuses what the vocabulary does not contain, rather than letting a
+ * retired value back in through the API.
+ */
+export const DECISIONS = ["Proceed", "Park", "Decline"] as const;
 
 /**
  * Columns a save may change WITHOUT the score moving — what the team records about its own
@@ -291,5 +318,81 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
     return warnings;
   }
 
-  return { patchRfp };
+  /**
+   * POST /pipelines/decision — the Review stage's one action.
+   *
+   * Body: `{ uid, decision, note? }`. Deliberately NOT the editor's save with a decision
+   * attached: deciding is the act the Pipeline is built around, it is the one thing a
+   * reviewer does in a meeting, and it carries consequences a field edit does not.
+   *
+   * `decision_date` is the flag the rest of the app reads as "a human has reviewed this"
+   * (views/review_rfp.py:212 — the stored decision is only honoured as a human's when this
+   * is stamped), so it is stamped here and nowhere else in this file. UTC, matching the
+   * deployment the Python runs in, so a decision taken near midnight lands in the same
+   * reporting bucket either way.
+   */
+  async function decide(req: Request, ctx: Ctx): Promise<Response> {
+    const b = await body(req);
+    const uid = str(b.uid).trim();
+    const decision = str(b.decision).trim();
+    if (!uid) return json({ error: "No RFP selected." }, 400);
+    if (!(DECISIONS as readonly string[]).includes(decision)) {
+      return json({
+        error: "That is not a decision this app records.",
+        problems: [decision], allowed: DECISIONS,
+      }, 400);
+    }
+
+    const sb = db.as(ctx.scope);
+    const before = await sb.get("rfp_submissions", `select=*&uid=eq.${q(uid)}&limit=1`);
+    if (!before.length) return json({ error: "No such opportunity." }, 404);
+
+    const note = str(b.note).trim();
+    const saved = await sb.update("rfp_submissions", `uid=eq.${q(uid)}`, {
+      decision,
+      // An omitted note leaves the old one; an explicitly empty one clears it. A reviewer
+      // who changes their verdict and says nothing should not keep the rationale for the
+      // verdict they just abandoned, so the client sends "" to clear it deliberately.
+      ...(b.note === undefined ? {} : { decision_note: note || null }),
+      decision_date: new Date().toISOString().slice(0, 10),
+      decision_overridden_by: ctx.session.email,
+      decision_overridden_at: nowIso(),
+    });
+    if (!saved.length) return json({ error: "The decision was not saved." }, 409);
+    const row = saved[0];
+
+    // The two consequences that are Python's — see the file header. Non-fatal for the same
+    // reason the re-score is: the decision IS saved, and failing the request would tell the
+    // reviewer their verdict was lost when only its bookkeeping is behind.
+    const warnings: { code: string; detail: string }[] = [];
+    let recorded: { job_id: string } | null = null;
+    const tenantId = str(row.tenant_id).trim() || db.scopeTid(ctx.scope);
+    if (!enqueue || /^0{8}-/.test(tenantId)) {
+      warnings.push(NOT_RECORDED);
+    } else {
+      try {
+        const jobId = await enqueue("record_decision",
+          { tenant_id: tenantId, uid, decision, by: ctx.session.email }, ctx);
+        if (jobId) recorded = { job_id: jobId };
+        else warnings.push(NOT_RECORDED);
+      } catch (e) {
+        console.error("record_decision enqueue failed", uid, e);
+        warnings.push(NOT_RECORDED);
+      }
+    }
+    return json({ row, warnings, recorded });
+  }
+
+  return { patchRfp, decide };
 }
+
+/**
+ * Said in full because of what it means. The tombstone is what stops a declined call
+ * coming back on the next scan, so a reviewer whose Decline was not recorded needs to know
+ * the call may reappear — otherwise they find out when it does.
+ */
+const NOT_RECORDED = {
+  code: "decision_not_recorded",
+  detail: "The decision is saved, but recording it for the scan and the learning engine " +
+    "could not be queued. A declined opportunity may be found again by the next scan.",
+};

@@ -161,7 +161,31 @@ export type ScreenRow = {
   applicant_role?: string | null;
   key_risks?: string | null;
   feasibility?: string | null;
+  /** When the stored score was last computed, and under which profile (migration 101).
+   *  A row saved moments ago may still be carrying the score it had BEFORE the edit,
+   *  for the minute or so the re-score job takes — see `scoreIsBehind`. */
+  scored_at?: string | null;
+  score_profile_sig?: string | null;
+  /** The flag the app reads as "a human has reviewed this", stamped only by
+   *  POST /pipelines/decision. A `decision` without it is the engine's, not a person's. */
+  decision_date?: string | null;
+  decision_note?: string | null;
+  progress_status?: string | null;
+  donor_decision?: string | null;
 };
+
+/**
+ * Is this row's stored score older than the edit that should have changed it?
+ *
+ * Deliberately NOT "is the score stale against the current profile" — only the job knows
+ * the current profile signature, and guessing at it here would put a second opinion about
+ * freshness next to the authoritative one. This answers the narrower question a page can
+ * actually act on: the row was saved after it was last scored, so a re-score is in flight.
+ */
+export const scoreIsBehind = (r: {
+  scored_at?: string | null; decision_overridden_at?: string | null;
+}) => Boolean(r.scored_at && r.decision_overridden_at
+  && Date.parse(r.decision_overridden_at) > Date.parse(r.scored_at));
 
 export type Weeks = {
   year: number;
@@ -173,6 +197,36 @@ export type Weeks = {
 export const fetchWeeks = () => call<Weeks>("/pipelines/weeks");
 export const fetchScreen = (week: string) =>
   call<{ rows: ScreenRow[] }>(`/pipelines/screen?week=${encodeURIComponent(week)}`);
+
+/** A reviewed row. Everything ScreenRow carries, plus who decided and when. */
+export type ReviewedRow = ScreenRow & {
+  decision_date: string | null;
+  decision_overridden_by?: string | null;
+  decision_overridden_at?: string | null;
+};
+
+/** Reviewed is keyed on `decision_date` — the window is when the decision was TAKEN, not
+ *  when the call was found, so a March call decided in June belongs to June. */
+export const fetchReviewed = (from: string, to: string) =>
+  call<{ from: string; to: string; rows: ReviewedRow[] }>(
+    `/pipelines/reviewed?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+
+/** What a write route says about the work it could not finish inline. */
+export type Warning = { code: string; detail: string };
+
+/**
+ * Record a human decision. `note` omitted leaves the previous rationale in place; `""`
+ * clears it, which is how a reviewer changing their verdict drops the reasoning for the
+ * one they abandoned.
+ *
+ * `recorded` is the queued job that writes the scan's tombstone and the training label.
+ * When it comes back null there is a warning saying so, and it matters: a Decline whose
+ * tombstone was never written can be found again by the next scan.
+ */
+export const recordDecision = (uid: string, decision: string, note?: string) =>
+  post<{ row: ScreenRow; warnings: Warning[]; recorded: { job_id: string } | null }>(
+    "/pipelines/decision", note === undefined
+      ? { uid, decision } : { uid, decision, note });
 
 // ── App shell ────────────────────────────────────────────────────────────────
 export type FeedItem = { ts: number; icon: string; title: string; detail: string; nav: string; uid: string | null };

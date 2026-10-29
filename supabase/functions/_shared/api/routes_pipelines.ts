@@ -63,6 +63,16 @@ const SUMMARY_FIELDS = "uid,funding_agency,call_award_value,currency," +
   "scored_at,score_profile_sig,decision," +
   "decision_date,donor_decision,progress_status,is_duplicate,duplicate_of_uid";
 
+/** What the Reviewed stage draws: the call, the verdict, and who reached it when. Carries
+ *  prose (title, note) where Summary does not, because this stage is read one row at a
+ *  time rather than counted. */
+const REVIEWED_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,currency," +
+  "call_submission_deadline,call_geographic_scope,focus_theme,opportunity_link," +
+  "submitted_at,review_week,alignment_score,auto_recommendation,scored_at," +
+  "score_profile_sig,decision,decision_note,decision_date,decision_overridden_by," +
+  "decision_overridden_at,donor_decision,progress_status,applicant_role," +
+  "is_duplicate,duplicate_of_uid";
+
 /** views/tracking_rfp.py draws these, plus proposal_lead for the duplicate-group leads. */
 const TRACK_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,currency," +
   "call_submission_deadline,call_geographic_scope,focus_theme,opportunity_link," +
@@ -70,6 +80,14 @@ const TRACK_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,curr
   "decision,donor_decision," +
   "progress_status,proposal_lead,is_duplicate,duplicate_of_uid";
 
+/**
+ * Wider than the decision vocabulary on purpose, and not a drifted copy of it.
+ * "Proceed as sub" was retired on 2026-06-06 — the sub signal moved to `applicant_role`
+ * (Prime / Sub / Technical) and the decision stays "Proceed" — so nothing writes it any
+ * more and `POST /pipelines/decision` refuses it. Rows decided before that date still
+ * carry it, and they are still live work, so the READ stays wide enough to include them.
+ * Mirrors views/tracking_rfp.py and views/meetings.py, which filter the same pair.
+ */
 const TRACK_DECISIONS = new Set(["Proceed", "Proceed as sub"]);
 
 const norm = (v: unknown) => str(v).trim().toLowerCase();
@@ -540,5 +558,42 @@ export function createPipelineRoutes(db: Db) {
     return gzipped(req, json({ year, notes, weeks, defaultWeek }));
   }
 
-  return { weeks, screen, summary, track, rfp, meetingNotes };
+  /**
+   * Reviewed: the calls a PERSON has decided on, in a date window.
+   *
+   * Keyed on `decision_date`, not `submitted_at` or `review_week`, because this stage is
+   * about the act of deciding: "what did we decide this month" is the question it answers,
+   * and a call found in March and decided in June belongs to June here.
+   *
+   * `decision_date` is also the stage's membership test. A stored `decision` is NOT
+   * enough — views/review_rfp.py:212 only treats one as a human's when this column is
+   * stamped, and POST /pipelines/decision is the only thing that stamps it. Without that
+   * rule the stage would fill with rows carrying the engine's recommendation copied into
+   * `decision` by an import, and claim people had decided things they never saw.
+   *
+   * Duplicates are kept rather than dropped: deciding on a row is a thing that happened to
+   * THAT row, and hiding it would make a decision disappear from the stage that exists to
+   * show decisions. The page groups them.
+   */
+  async function reviewed(req: Request, ctx: Ctx): Promise<Response> {
+    const url = new URL(req.url);
+    const year = new Date().getUTCFullYear();
+    const from = str(url.searchParams.get("from")).trim() || `${year}-01-01`;
+    const to = str(url.searchParams.get("to")).trim() || `${year + 1}-01-01`;
+    if (!/^\d{4}-\d{2}-\d{2}/.test(from) || !/^\d{4}-\d{2}-\d{2}/.test(to)) {
+      return json({ error: "from and to must be ISO dates" }, 400);
+    }
+    if (to <= from) return json({ error: "to must be after from" }, 400);
+
+    // Half-open, matching the period model in web/src/pipeline/period.ts, so consecutive
+    // windows tile exactly and a decision on a boundary date is counted once.
+    const rows = await db.as(ctx.scope).get(
+      "rfp_submissions",
+      `select=${REVIEWED_FIELDS}&decision_date=gte.${q(from)}&decision_date=lt.${q(to)}` +
+      "&order=decision_date.desc",
+    );
+    return gzipped(req, json({ from, to, rows }));
+  }
+
+  return { weeks, screen, summary, track, reviewed, rfp, meetingNotes };
 }

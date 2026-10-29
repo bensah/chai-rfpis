@@ -237,7 +237,32 @@ one.
 Rows whose `submitted_at` falls in the half-open window, projected to the
 columns sections A to E aggregate over. The window defaults to the current
 calendar year when the page sends neither bound. Aggregation happens in the
-browser, over freshly computed scores, like every other page.
+browser, over the stored scores the `rescore` job writes.
+
+### `GET /pipelines/reviewed?from=<iso>&to=<iso>` — built
+
+```
+{ rows: RfpSubmission[], from: string, to: string }
+```
+
+What a PERSON has decided, in a half-open window, newest first. Defaults to the
+current calendar year.
+
+**Windowed on `decision_date`**, not `submitted_at` or `review_week`, because
+the stage is about the act of deciding: a call found in March and decided in
+June belongs to June here. That also makes `decision_date` the membership test —
+a stored `decision` is NOT enough, since only `POST /pipelines/decision` stamps
+the date, and without that rule the stage would fill with rows whose `decision`
+an import copied from the engine's recommendation and claim people had decided
+things they never saw.
+
+Carries prose — `opportunity_title`, `decision_note` — where `/pipelines/summary`
+deliberately does not, because this stage is read a row at a time rather than
+counted.
+
+**Duplicates are NOT dropped.** Deciding on a row is something that happened to
+that row, and hiding it would make a decision vanish from the stage whose whole
+job is to show decisions. The page groups them instead.
 
 ### `GET /pipelines/rfp/:uid?reporting=1` — agreed
 
@@ -329,14 +354,55 @@ form cannot produce because its payload is built from the widgets themselves.
 Schema drift, if it ever reaches this route, still fails the same way it fails
 in the editor today.
 
-### `POST /pipelines/decision` — proposed
+### `POST /pipelines/decision` — built
 
 ```
-{ uid: string, decision: "Proceed" | "Park" | "Decline", note?: string }
+request   { uid: string, decision: "Proceed" | "Park" | "Decline", note?: string }
+response  { row: RfpSubmission,
+            warnings: [{ code: "decision_not_recorded", detail: string }],
+            recorded: { job_id: string } | null }
 ```
 
-Writes `decision`, `decision_date`, `scan_decisions` and `rfp_seen`. Returns
-the updated row so the page does not re-fetch.
+Writes `decision`, `decision_date` and the two override stamps, and queues the
+`record_decision` job for `scan_decisions` and `rfp_seen`. Returns the updated
+row so the page does not re-fetch.
+
+**`decision_date` is stamped here and only here.** It is the flag the rest of
+the app reads as "a human has reviewed this" — `views/review_rfp.py:212` only
+honours a stored decision as a human's when this is set. UTC, matching the
+deployment the Python runs in.
+
+**`decision` is validated against `config/dropdowns.yaml`'s `decisions`**, not
+accepted free-form, because it decides who appears in Track
+(`views/tracking_rfp.py` filters `in.(Proceed, Proceed as sub)`) and whether the
+scan tombstones the row. The API carries a copy of that list, since it also runs
+as a Deno Edge Function with no filesystem; a test re-reads the YAML and fails
+if the two drift. The Python additionally PREPENDS a row's existing decision
+when the vocabulary no longer contains it, so an old value stays selectable —
+that is a display rule, and this write route does not honour it.
+
+So `Proceed as sub` is refused, and that is right rather than a gap. It was
+dropped on 2026-06-06 (`core/auto_scorer.py`, above `_detect_applicant_role`):
+the sub signal moved to `applicant_role` — Prime / Sub / Technical — and the
+decision stays `Proceed`. `views/tracking_rfp.py`, `views/meetings.py` and
+`TRACK_FIELDS`' reader all still filter `in.(Proceed, Proceed as sub)`, which is
+a READ staying wide enough for rows decided before that date. A write route
+must not put the retired value back into circulation.
+
+**`note` omitted leaves the previous rationale; `note: ""` clears it.** A
+reviewer who changes their verdict and says nothing should not be left with the
+rationale for the verdict they abandoned, so clearing is a thing the client can
+say rather than a thing the route guesses.
+
+**The two Python consequences are queued, not ported.** `decision_log` writes
+the ML training label to `scan_decisions`, which nothing reads at gate time;
+`seen_ledger` writes the operational tombstone to `rfp_seen`, which the scan
+does read. Neither substitutes for the other, and `seen_ledger.column_map()`
+PROBES the live table for the modern-versus-legacy column spelling — a guess at
+that from TypeScript writes no tombstone while reporting success, which is
+exactly the reported bug it exists to fix ("we keep declining this and it keeps
+coming back"). Queueing is non-fatal and the warning says what the reviewer
+loses: a declined opportunity may be found again by the next scan.
 
 ## The open question: how Summary is scoped
 
@@ -395,7 +461,10 @@ reintroduce it as a compatibility shim.
 
 ### `decision_date` is the "reviewed" flag — still carried
 
-Encoded and commented, never quietly corrected.
+Encoded and commented, never quietly corrected. Now load-bearing in two more
+places: `POST /pipelines/decision` is the only writer of it (it is deliberately
+absent from the editor's editable set), and `GET /pipelines/reviewed` uses it as
+both the window and the membership test for the Reviewed stage.
 
 ### Track versus Screened — carried, and not a trap to fix
 
