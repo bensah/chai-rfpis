@@ -6,6 +6,7 @@
 // saves nothing, an empty grant row created on every save, and a completed row with no
 // funder decision that nobody is told about.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -50,9 +51,10 @@ test("the nine criteria are writable — the editor spreads them in with **vals"
   assert.deepEqual(W.checkFields(fields).unknown, []);
 });
 
-test("the score columns are writable, because the browser computes them", () => {
-  // Scoring stays in one implementation: core/scorer.py, run in the browser through
-  // Pyodide. The API stores what it is given rather than keeping a second scorer.
+test("the score columns are writable, though the server now owns the answer", () => {
+  // rfp_editor.py writes them, so refusing them here would break the save. What they are
+  // NOT any more is the last word: a save that touches them queues a re-score, and the
+  // job's number replaces whatever arrived. See the rescore tests below.
   assert.deepEqual(W.checkFields({ alignment_score: 82, auto_recommendation: "Park" }).unknown, []);
 });
 
@@ -121,6 +123,71 @@ test("the first real value creates the grant; afterwards it is updated", () => {
   assert.equal(again.fundingId, "G-RFP-1");
   assert.equal(again.payload.status, "Submitted");
   assert.equal(again.payload.owner, null, "a field left out is cleared, not kept");
+});
+
+// ── Which saves have to re-score ─────────────────────────────────────────────
+// The expensive mistake here is NOT queueing when the score moved: the row then shows a
+// number computed from the opportunity as it used to be, with nothing on screen to say so.
+// Queueing when it did not move costs one redundant Actions run.
+
+test("editing what the call says re-scores", () => {
+  for (const f of [
+    { brief_description: "new text" },      // _full_text, and criteria_derive's notes blob
+    { opportunity_title: "new title" },     // _full_text
+    { funding_agency: "Wellcome" },         // _full_text, and the donor match
+    { call_submission_deadline: "2027-01-01" },
+    { call_award_ceiling: 500000 },
+    { call_geographic_scope: ["Kenya"] },
+    { notes: "a note" },                    // criteria_derive reads notes twice
+    { strategic_fit: "Strongly aligns" },
+  ]) {
+    assert.equal(W.needsRescore(f), true, `${Object.keys(f)[0]} should re-score`);
+  }
+});
+
+test("recording what the team is doing about a bid does not re-score", () => {
+  assert.equal(W.needsRescore({ assigned_to: "Ama", next_action: "Draft budget" }), false);
+  assert.equal(W.needsRescore({ amount_secured: 120000, date_of_approval: "2026-11-02" }), false);
+  assert.equal(W.needsRescore({}), false, "a reporting-only save changes no column here");
+});
+
+test("one scoring field among workflow fields is enough", () => {
+  // The whole save is one write, so the question is whether ANY of it could move the score.
+  assert.equal(W.needsRescore({ assigned_to: "Ama", brief_description: "new" }), true);
+});
+
+test("marking a bid submitted re-scores — it is not workflow state", () => {
+  // The trap this guards: all three read like project tracking, and criteria_derive's
+  // _is_completed reads all three to decide the deadline runway is moot. Score moves.
+  assert.equal(W.needsRescore({ progress_status: "Completed" }), true);
+  assert.equal(W.needsRescore({ donor_decision: "Under Review" }), true);
+  assert.equal(W.needsRescore({ date_completed: "2026-10-02" }), true);
+});
+
+test("a client's own score is replaced rather than trusted", () => {
+  // The migration finishing: a page still computing in Pyodide may send a number, and the
+  // queued job overwrites it with the server's. Not a conflict — one owner, arriving late.
+  assert.equal(W.needsRescore({ alignment_score: 91, auto_recommendation: "Proceed" }), true);
+});
+
+test("no workflow-only column is a scoring input", () => {
+  // Re-derives the claim the denylist makes, from the Python itself, so the day somebody
+  // feeds `remarks` to the scorer this fails instead of the score quietly going stale.
+  // Matches a READ of the row (.get("col") or ["col"]), not a dict key the scorer returns
+  // — matching.py builds an output called "decision", which is not a read of the column.
+  const sources = [
+    "core/criteria_derive.py", "core/auto_scorer.py", "core/matching.py",
+    "core/scorer.py", "core/assessment.py",
+  ].map((p) => [p, readFileSync(path.join(root, p), "utf8")]);
+
+  for (const col of W.workflowOnlyColumns()) {
+    const read = new RegExp(String.raw`(\.get\(|\[)\s*["']${col}["']`);
+    for (const [file, src] of sources) {
+      assert.equal(read.test(src), false,
+        `${file} reads "${col}", so a save touching it changes the score — ` +
+        "take it out of WORKFLOW_ONLY in pipeline_writes.ts");
+    }
+  }
 });
 
 test("an existing grant is updated even when the tab is emptied", () => {

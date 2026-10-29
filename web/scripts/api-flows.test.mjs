@@ -582,3 +582,36 @@ test("jobs: gated like the control that starts them; visible to the right people
   const col = await signIn("col@x.org", "col pass 1");
   assert.equal((await call("GET", `/jobs/${r.body.job.id}`, null, col.token)).status, 404);
 });
+
+test("saving an RFP queues the re-score that owns its score", async () => {
+  // The wiring, not the rule: pipeline-writes.test.mjs decides WHICH saves re-score, and
+  // this proves a save actually reaches the runner — through the same enqueue POST /jobs
+  // uses, scoped to the right tenant.
+  const { call, signIn, db, dispatched } = setup();
+  // A collaborator, deliberately: anyone who can edit an RFP can cause a re-score of what
+  // they edited, which is the same reach the edit itself has.
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const r = await call("PATCH", "/pipelines/rfp/R1",
+    { fields: { brief_description: "Now also covers drug resistance" } }, col.token);
+  assert.equal(r.status, 200);
+  assert.ok(r.body.rescore?.job_id, "the save tells the caller its score is being recomputed");
+  assert.deepEqual(r.body.warnings, []);
+
+  const jobs = db.tables.web_jobs.filter((j) => j.kind === "rescore");
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].status, "dispatched");
+  assert.equal(jobs[0].params.uid, "R1", "one row, not the whole tenant");
+  // Passed explicitly: the runner refuses a re-score it cannot scope, and scoring one
+  // tenant's rows against another's profile is wrong in a way nothing downstream can see.
+  assert.equal(jobs[0].params.tenant_id, T1);
+  assert.deepEqual(dispatched.map((d) => d.group), [`rescore-${T1}`],
+    "one group per tenant, so a save queued mid-run waits rather than racing it");
+
+  // And a save that only records what the team is doing costs no run at all.
+  const w = await call("PATCH", "/pipelines/rfp/R1",
+    { fields: { assigned_to: "Ada", next_action: "Draft budget" } }, col.token);
+  assert.equal(w.status, 200);
+  assert.equal(w.body.rescore, null);
+  assert.equal(db.tables.web_jobs.filter((j) => j.kind === "rescore").length, 1);
+});

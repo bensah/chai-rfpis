@@ -49,14 +49,18 @@ const KINDS: Record<string, JobKind> = {
 const JOB_COLUMNS = "id,kind,status,progress,message,result,created_at,started_at,finished_at,run_url,created_by,tenant_id";
 
 export function createJobRoutes(db: Db, dispatch: Dispatch | null) {
-  async function create(req: Request, ctx: Ctx): Promise<Response> {
-    const b = await body(req);
-    const kind = str(b.kind);
+  /**
+   * Write the row and ask Actions to run it. Shared by the public route below and by any
+   * route that queues work as a SIDE EFFECT of something else — the editor's save queues a
+   * rescore — so there is one place that knows how a job reaches the runner.
+   *
+   * Never throws. A job that could not be dispatched is recorded as failed rather than
+   * lost, and the caller decides whether that matters: it is fatal to `POST /jobs`, whose
+   * whole purpose was to start it, and not to a save, which succeeded.
+   */
+  async function enqueue(kind: string, params: Json, ctx: Ctx): Promise<string | null> {
     const spec = KINDS[kind];
-    if (!spec) return json({ error: `Unknown job kind '${kind}'.` }, 400);
-    const u = ctx.user as PermUser;
-    if (!(await spec.allowed(u, ctx))) return json({ error: "You don't have access to this action." }, 403);
-    const params = b.params && typeof b.params === "object" && !Array.isArray(b.params) ? b.params : {};
+    if (!spec) return null;
     const tenantId = db.scopeTid(ctx.scope);
     const [row] = await db.service.insert("web_jobs", {
       kind, params, status: "queued", created_by: ctx.session.sub,
@@ -68,18 +72,31 @@ export function createJobRoutes(db: Db, dispatch: Dispatch | null) {
         status: "failed", message: "Background jobs are not configured on this server.",
         finished_at: new Date().toISOString(),
       });
-    } else {
-      try {
-        await dispatch(id, spec.group(ctx, id));
-        await db.service.update("web_jobs", `id=eq.${q(id)}&status=eq.queued`, { status: "dispatched" });
-      } catch (e) {
-        console.error("job dispatch failed", id, e);
-        await db.service.update("web_jobs", `id=eq.${q(id)}`, {
-          status: "failed", message: "Could not start the background job. Try again.",
-          finished_at: new Date().toISOString(),
-        });
-      }
+      return id;
     }
+    try {
+      await dispatch(id, spec.group(ctx, id));
+      await db.service.update("web_jobs", `id=eq.${q(id)}&status=eq.queued`, { status: "dispatched" });
+    } catch (e) {
+      console.error("job dispatch failed", id, e);
+      await db.service.update("web_jobs", `id=eq.${q(id)}`, {
+        status: "failed", message: "Could not start the background job. Try again.",
+        finished_at: new Date().toISOString(),
+      });
+    }
+    return id;
+  }
+
+  async function create(req: Request, ctx: Ctx): Promise<Response> {
+    const b = await body(req);
+    const kind = str(b.kind);
+    const spec = KINDS[kind];
+    if (!spec) return json({ error: `Unknown job kind '${kind}'.` }, 400);
+    const u = ctx.user as PermUser;
+    if (!(await spec.allowed(u, ctx))) return json({ error: "You don't have access to this action." }, 403);
+    const params = b.params && typeof b.params === "object" && !Array.isArray(b.params) ? b.params : {};
+    const id = await enqueue(kind, params as Json, ctx);
+    if (!id) return json({ error: `Unknown job kind '${kind}'.` }, 400);
     return json({ job: await read(id) }, 202);
   }
 
@@ -99,7 +116,7 @@ export function createJobRoutes(db: Db, dispatch: Dispatch | null) {
     return json({ job });
   }
 
-  return { create, get };
+  return { create, get, enqueue };
 }
 
 /** Dispatch through the GitHub REST API (production). */

@@ -4,17 +4,23 @@
  * Kept apart from routes_pipelines.ts, which only reads. A route that changes stored data
  * deserves to be read on its own, and the rules below are the ones a reader has to trust.
  *
- * WHAT THIS FILE DOES NOT DO: score. `alignment_score` and `auto_recommendation` arrive in
- * the payload because the browser computed them, running `core/scorer.py` itself through
- * the Pyodide seam — the same module the weekly scan uses. Porting `score_submission` here
- * would be a SECOND implementation of the scoring, which is exactly the drift that put
- * 70/45 and 90/70 on the same number for months. One implementation, called from two
- * places, beats two implementations that agree today.
+ * WHAT THIS FILE DOES NOT DO: score. Porting `score_submission` here would be a SECOND
+ * implementation of the rule, which is exactly the drift that put 70/45 and 90/70 on the
+ * same number for months. Instead a save that could have changed the answer QUEUES the
+ * `rescore` job (routes_jobs.ts), which runs the one `core.auto_scorer.auto_score` the scan
+ * runs and writes the number back. One implementation, called from two places.
+ *
+ * So the score a save leaves behind is not final: the job lands a minute or so later. The
+ * response says when one was queued precisely so the caller can show that, rather than
+ * presenting a stale number as settled.
  */
 import { q, type Db } from "./db.ts";
 import { body, json, str } from "./http.ts";
 import type { Json } from "./jwt.ts";
 import type { Ctx } from "./session.ts";
+
+/** Queue work for the Actions runner. `routes_jobs.ts::enqueue`, narrowed to what is used. */
+export type Enqueue = (kind: string, params: Json, ctx: Ctx) => Promise<string | null>;
 
 /** core/scorer.py's CRITERIA — the nine weighted criteria from scoring_weights.yaml. */
 const CRITERIA = [
@@ -48,6 +54,45 @@ const EDITABLE = new Set<string>([
 
 /** The editor stamps these itself; a client sending them would be overwriting the audit. */
 const STAMPED = new Set(["decision_overridden_by", "decision_overridden_at"]);
+
+/**
+ * Columns a save may change WITHOUT the score moving — what the team records about its own
+ * work on a bid, after the system has judged the call.
+ *
+ * It is a DENYLIST rather than a list of scoring inputs, and that direction is the whole
+ * point. Scoring lives in Python and will grow new inputs; a list of them kept here would
+ * fall behind silently, and the symptom would be a row whose score never updates — a wrong
+ * number presented as current, which is the failure this whole exercise exists to end. Miss
+ * a name from the list below instead and the cost is a redundant job: visible, cheap, right.
+ *
+ * Every name was checked against core/{criteria_derive,auto_scorer,matching,scorer,
+ * assessment}.py and appears in none of them, and the test "no workflow-only column is a
+ * scoring input" re-checks that against those files on every run, so the day one of them
+ * starts feeding the score this list fails rather than quietly stops queueing.
+ *
+ * WHAT IS DELIBERATELY NOT HERE, though it looks like workflow state:
+ *   progress_status, donor_decision, date_completed — criteria_derive._is_completed reads
+ *   all three. Marking a bid submitted tells the scorer the deadline runway is moot, so it
+ *   genuinely changes the answer. They are scoring inputs wearing workflow clothes.
+ */
+const WORKFLOW_ONLY = new Set<string>([
+  "decision", "decision_note", "stage", "assigned_to", "action_deadline", "last_update",
+  "next_action", "remarks", "proposal_lead", "contributors", "reviewers", "support_roles",
+  "date_of_approval", "amount_secured", "currency_secured", "donor_program_officer",
+  "kickoff_date", "next_step", "submissions",
+]);
+
+/**
+ * Could this save have changed the score? Anything outside WORKFLOW_ONLY counts, including
+ * `alignment_score` itself: a client that still computes its own number gets it replaced by
+ * the server's, which is the migration finishing rather than a conflict.
+ */
+export function needsRescore(fields: Record<string, unknown>): boolean {
+  return Object.keys(fields).some((k) => !WORKFLOW_ONLY.has(k));
+}
+
+/** For the test that re-checks the list against the Python. */
+export const workflowOnlyColumns = (): string[] => [...WORKFLOW_ONLY];
 
 /** The reporting fields that live on the linked applied_funding row. */
 const REPORTING = ["status", "report_type", "report_due_date", "owner", "remarks"] as const;
@@ -113,8 +158,37 @@ export function reportingAction(
   return hasValue ? { kind: "insert", payload } : { kind: "none" };
 }
 
-export function createPipelineWrites(db: Db) {
+export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
   const nowIso = () => new Date().toISOString();
+
+  /**
+   * Queue the re-score for the row just saved. NON-FATAL: the save already succeeded, and
+   * failing it here would make the person's edit look lost when in fact only the score is
+   * behind. The warning is how they find out — silence would leave a stale number on screen
+   * with nothing to say it was never recomputed.
+   *
+   * tenant_id is passed explicitly from the saved row rather than left to the job row,
+   * because `enqueue` stores no tenant for the placeholder scope and the runner refuses a
+   * re-score it cannot scope — it would score one tenant's rows against another's profile.
+   */
+  async function queueRescore(
+    ctx: Ctx, row: Json, uid: string,
+  ): Promise<{ jobId: string | null; warning: { code: string; detail: string } | null }> {
+    const tenantId = str(row.tenant_id).trim() || db.scopeTid(ctx.scope);
+    const stale = {
+      code: "rescore_not_queued",
+      detail: "Saved, but the score could not be queued for recalculation, so it still " +
+        "reflects the opportunity as it was before this edit.",
+    };
+    if (!enqueue || /^0{8}-/.test(tenantId)) return { jobId: null, warning: stale };
+    try {
+      const jobId = await enqueue("rescore", { tenant_id: tenantId, uid }, ctx);
+      return jobId ? { jobId, warning: null } : { jobId: null, warning: stale };
+    } catch (e) {
+      console.error("rescore enqueue failed", uid, e);
+      return { jobId: null, warning: stale };
+    }
+  }
 
   /**
    * PATCH /pipelines/rfp/:uid — the editor's save.
@@ -166,7 +240,16 @@ export function createPipelineWrites(db: Db) {
     const row = saved[0];
 
     const warnings = await writeReporting(sb, b.reporting as Json, row, uid);
-    return json({ row, warnings });
+
+    // The score is the server's to recompute, and this save may have moved it. Queued
+    // after the write, so the job reads the saved row rather than racing it.
+    let rescore: { job_id: string } | null = null;
+    if (needsRescore(fields)) {
+      const { jobId, warning } = await queueRescore(ctx, row, uid);
+      if (jobId) rescore = { job_id: jobId };
+      if (warning) warnings.push(warning);
+    }
+    return json({ row, warnings, rescore });
   }
 
   /**

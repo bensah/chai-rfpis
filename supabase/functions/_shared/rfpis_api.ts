@@ -63,7 +63,9 @@ export function createApi(env: Env, deps: Deps) {
   const jobs = createJobRoutes(db, deps.dispatchJob ?? null);
   const phase1 = createPhase1Routes(db);
   const pipelines = createPipelineRoutes(db);
-  const pipelineWrites = createPipelineWrites(db);
+  // The editor's save queues a re-score through the same path POST /jobs uses, so there is
+  // one way a job reaches the runner rather than a second one owned by the write route.
+  const pipelineWrites = createPipelineWrites(db, jobs.enqueue);
   const report = createReportRoutes(db);
 
   async function route(req: Request, path: string): Promise<Response> {
