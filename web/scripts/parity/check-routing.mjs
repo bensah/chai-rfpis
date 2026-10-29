@@ -11,6 +11,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadEnv, requireEnv } from "./_env.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
@@ -42,19 +43,7 @@ same("service-write vs migration 098", D.SERVICE_WRITE_TABLES, s.mig_read_only);
 console.log("routing sets checked");
 
 // 2. Tenants, for every user
-function loadEnv() {
-  const env = {};
-  for (const dir of [process.cwd(), root]) {
-    const f = path.join(dir, ".env");
-    if (!existsSync(f)) continue;
-    for (const line of readFileSync(f, "utf8").split(/\r?\n/)) {
-      const m = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-      if (m && !(m[1] in env)) env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, "$2");
-    }
-  }
-  return env;
-}
-const env = loadEnv();
+const env = loadEnv(root);
 const db = D.createDb({ supabaseUrl: env.SUPABASE_URL, supabaseKey: env.SUPABASE_KEY, jwtSecret: env.SUPABASE_JWT_SECRET });
 const tenants = T.createTenants(db);
 const want = py("tenants");

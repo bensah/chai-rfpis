@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadEnv, requireEnv } from "./_env.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
@@ -13,19 +14,11 @@ const mod = (p) => import(pathToFileURL(path.join(root, p)).href);
 const D = await mod("supabase/functions/_shared/api/db.ts");
 const S = await mod("supabase/functions/_shared/api/routes_shell.ts");
 
-const env = {};
-for (const dir of [process.cwd(), root]) {
-  const f = path.join(dir, ".env");
-  if (!existsSync(f)) continue;
-  for (const line of readFileSync(f, "utf8").split(/\r?\n/)) {
-    const m = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m && !(m[1] in env)) env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, "$2");
-  }
-}
 const venv = path.join(root, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
 const python = process.env.RFPIS_PYTHON || (existsSync(venv) ? venv : "python");
 const want = JSON.parse(execFileSync(python, [path.join(here, "shell_py.py")], { encoding: "utf8", maxBuffer: 1 << 26 }));
 
+const env = requireEnv(root, "check-shell");
 const db = D.createDb({ supabaseUrl: env.SUPABASE_URL, supabaseKey: env.SUPABASE_KEY, jwtSecret: env.SUPABASE_JWT_SECRET });
 const shell = S.createShellRoutes(db);
 let diffs = 0;

@@ -23,6 +23,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadEnv, requireEnv } from "./_env.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
@@ -128,19 +129,7 @@ const same = (label, ts, pyv) => {
 };
 
 // ── Rows, read once ──────────────────────────────────────────────────────────
-function loadEnv() {
-  const env = {};
-  for (const dir of [process.cwd(), root, "D:/Apps/chai-rfpis"]) {
-    const f = path.join(dir, ".env");
-    if (!existsSync(f)) continue;
-    for (const line of readFileSync(f, "utf8").split(/\r?\n/)) {
-      const m = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-      if (m && !(m[1] in env)) env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, "$2");
-    }
-  }
-  return env;
-}
-const env = loadEnv();
+const env = loadEnv(root);
 if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
   console.log("No SUPABASE_URL / SUPABASE_KEY in .env — cannot run against live rows.");
   process.exit(2);
@@ -152,8 +141,11 @@ const db = D.createDb({
 // Service role, unscoped: the check is about the AGGREGATION, and routing/scoping is
 // check-routing.mjs's job. Scoping here too would narrow the rows and weaken this check
 // without testing anything check-routing does not already cover.
-const allRfps = await db.service.get("rfp_submissions", `select=${S.RFP_COLUMNS}&limit=50000`);
-const allScans = await db.service.get("scan_logs", "select=*&limit=10000");
+// getAll, the same way loadSection1 reads them. A check that fetched with a plain `get`
+// would compare two implementations over the first 1000 rows and never notice that the page
+// itself sees only 1000.
+const allRfps = await db.service.getAll("rfp_submissions", `select=${S.RFP_COLUMNS}`, "uid");
+const allScans = await db.service.getAll("scan_logs", "select=*", "id");
 console.log(`${allRfps.length} submissions, ${allScans.length} scan rows`);
 
 const nameConfig = await N.loadNameConfig(db, null);
@@ -249,14 +241,15 @@ for (const note of tieBands) console.log(`NOTE ${note}`);
 
 // ── A thing agreement cannot catch ───────────────────────────────────────────
 //
-// Everything above compares two implementations. A fault they SHARE passes silently, and
-// there is one: PostgREST caps a response at 1,000 rows whatever limit is asked for.
-// `_load_scan_logs` asks for 10,000 and so does loadSection1; both get 1,000, both agree,
-// and both compute the scan tiles over an arbitrary subset of the period's runs. No amount
-// of cross-checking finds that, because it is not a disagreement.
+// Everything above compares two implementations. A fault they SHARE passes in silence, and
+// there was one: PostgREST caps a response at 1,000 rows whatever limit is asked for, so
+// `_load_scan_logs` asked for 10,000, received 1,000, and agreed perfectly with a port doing
+// the same. "RFPs found" read 7,559 where the real figure is 51,071 — 15% of it, presented
+// as a total. No amount of cross-checking finds that, because it is not a disagreement.
 //
-// So this asks the DATABASE how many rows the period really matches — a question neither
-// implementation is in a position to get wrong.
+// Both sides now page (db.supabase_client.fetch_all, db.ts getAll). This asserts it STAYS
+// fixed, by asking the DATABASE how many rows exist — a question neither implementation is
+// in a position to get wrong — and comparing that with how many were actually read.
 {
   const countScans = async (bounds) => {
     const parts = ["select=id"];
@@ -273,22 +266,42 @@ for (const note of tieBands) console.log(`NOTE ${note}`);
     });
     return Number((r.headers.get("content-range") ?? "/0").split("/")[1]);
   };
-  const truncated = [];
+  const short = [];
   for (const period of P.PERIOD_OPTS) {
     const sel = P.resolveSelection({ period, year: 2026, month: "June", view: "Monthly" }, today, 2026);
-    const real = await countScans(P.periodBounds(sel, today));
-    if (real > 1000) truncated.push(`${period}: the page sees 1000 of ${real} scan runs`);
+    const bounds = P.periodBounds(sel, today);
+    const real = await countScans(bounds);
+    // What loadSection1 would actually hand the aggregation for this period.
+    const got = allScans.filter((r) => {
+      const d = String(r.scan_date ?? "").slice(0, 10);
+      if (!d) return false;
+      if (bounds.start && d < bounds.start) return false;
+      if (bounds.end) {
+        const next = new Date(Date.parse(`${bounds.end}T00:00:00Z`) + 86400_000).toISOString().slice(0, 10);
+        if (d > next) return false;
+      }
+      return true;
+    }).length;
+    checks++;
+    if (got !== real) {
+      diffs++;
+      short.push(`${period}: read ${got} of ${real} scan runs`);
+    }
   }
+  // Paging can also DOUBLE-count: without a unique order a row may land on two pages, and
+  // the totals then come out too high rather than too low. Distinct ids must equal the rows.
   checks++;
-  if (truncated.length) {
-    console.log("\nNOTE the scan tiles and the source table are computed over a TRUNCATED set of "
-      + "scan_logs rows, in views/report.py and in this port alike — PostgREST returns at most "
-      + "1000 rows per request and neither pages. No `order` is given either, so WHICH 1000 is "
-      + "arbitrary. Pre-existing; not introduced here, and not fixed here because fixing it "
-      + "changes numbers on the page.");
-    for (const t of truncated) console.log(`     ${t}`);
+  const ids = new Set(allScans.map((r) => r.id));
+  if (ids.size !== allScans.length) {
+    diffs++;
+    console.log(`DIFF paging returned ${allScans.length} rows but only ${ids.size} distinct ids — `
+      + "pages are overlapping, so the totals are inflated.");
+  }
+  if (short.length) {
+    console.log("\nDIFF scan_logs is being truncated again:");
+    for (const t of short) console.log(`     ${t}`);
   } else {
-    console.log("scan_logs fits in one page for every period — no truncation");
+    console.log(`every scan run is read: ${allScans.length} rows, ${ids.size} distinct, no truncation`);
   }
 }
 

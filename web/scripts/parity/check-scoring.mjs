@@ -17,6 +17,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadEnv, requireEnv } from "./_env.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
@@ -24,15 +25,6 @@ const web = path.resolve(root, "web");
 const art = path.join(web, ".parity");
 mkdirSync(art, { recursive: true });
 
-const env = {};
-for (const dir of [process.cwd(), root]) {
-  const f = path.join(dir, ".env");
-  if (!existsSync(f)) continue;
-  for (const line of readFileSync(f, "utf8").split(/\r?\n/)) {
-    const m = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m && !(m[1] in env)) env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, "$2");
-  }
-}
 const venv = path.join(root, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
 const python = process.env.RFPIS_PYTHON || (existsSync(venv) ? venv : "python");
 const py = (args, opts = {}) => execFileSync(python, args, { encoding: "utf8", maxBuffer: 1 << 28, ...opts });
@@ -41,6 +33,7 @@ const mod = (p) => import(pathToFileURL(path.join(root, p)).href);
 const { createDb } = await mod("supabase/functions/_shared/api/db.ts");
 const { createPhase1Routes } = await mod("supabase/functions/_shared/api/routes_phase1.ts");
 
+const env = requireEnv(root, "check-scoring");
 const db = createDb({ supabaseUrl: env.SUPABASE_URL, supabaseKey: env.SUPABASE_KEY, jwtSecret: env.SUPABASE_JWT_SECRET });
 const routes = createPhase1Routes(db);
 

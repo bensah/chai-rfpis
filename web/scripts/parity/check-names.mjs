@@ -17,6 +17,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadEnv, requireEnv } from "./_env.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
@@ -70,19 +71,7 @@ const sameEach = (label, tsArr, pyArr, inputs) => {
 };
 
 // ── The live rows ────────────────────────────────────────────────────────────
-function loadEnv() {
-  const env = {};
-  for (const dir of [process.cwd(), root, "D:/Apps/chai-rfpis"]) {
-    const f = path.join(dir, ".env");
-    if (!existsSync(f)) continue;
-    for (const line of readFileSync(f, "utf8").split(/\r?\n/)) {
-      const m = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-      if (m && !(m[1] in env)) env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, "$2");
-    }
-  }
-  return env;
-}
-const env = loadEnv();
+const env = loadEnv(root);
 if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
   console.log("No SUPABASE_URL / SUPABASE_KEY in .env — cannot run against live rows.");
   process.exit(2);
