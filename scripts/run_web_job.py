@@ -89,7 +89,8 @@ def _rescore(job: JobRow, params: dict, runner: str) -> dict:
     Prints counts and nothing else: this log is public (the repository is).
     """
     from auth.tenant_context import reset_tenant_override, set_tenant_override
-    from scripts.rescore_existing import evaluate, profile_signature, write_with_retry
+    from core.assessment import assess_row
+    from scripts.rescore_existing import profile_signature, write_with_retry
 
     tenant_id = str(params.get("tenant_id") or (job.get() or {}).get("tenant_id") or "").strip()
     if not tenant_id:
@@ -111,17 +112,38 @@ def _rescore(job: JobRow, params: dict, runner: str) -> dict:
         if not rows:
             return {"rows": 0, "scored": 0, "changed": 0, "runner": runner}
 
-        org, org_set, donors, sig = profile_signature(sb, tenant_id)
+        _org, _org_set, _donors, sig = profile_signature(sb, tenant_id)
         scored = changed = 0
         for i, row in enumerate(rows):
-            row_uid, upd, _label = evaluate(row, org, org_set, donors, True)
+            # assess_row, NOT rescore_existing.evaluate. Both reach composite_match, but
+            # auto_score additionally runs _apply_criteria_keywords over the candidate text
+            # and evaluate does not, so the two derive different criteria from the same row:
+            # measured on live data, AS-260801-0001393 comes out Park/77 one way and
+            # Decline/54.5 the other, and 10-17% of rows change recommendation between them.
+            #
+            # assess_row is the path every live screen already uses and calls itself the
+            # single source of truth for these numbers. Using it here means a server-written
+            # score is identical BY CONSTRUCTION to what the screens compute, rather than
+            # agreeing only while two derivations are kept in step by hand.
+            res = assess_row(dict(row))
+            new_score = res.get("alignment_score")
+            new_rec = res.get("auto_recommendation")
+
+            # The SCORE is what the server owns. The nine criteria stay the scan's to write:
+            # re-deriving them here would rewrite columns the editor shows as the system's
+            # assessment, which is a bigger claim than "keep the score current".
+            upd: dict = {"scored_at": _now(), "score_profile_sig": sig}
+            moved = False
+            if new_score is not None and new_score != row.get("alignment_score"):
+                upd["alignment_score"] = new_score
+                moved = True
+            if new_rec and new_rec != row.get("auto_recommendation"):
+                upd["auto_recommendation"] = new_rec
+                moved = True
+
             # Stamp every row, even one whose numbers did not move: "scored, unchanged" and
             # "never scored" are different states and only the stamp tells them apart.
-            upd = dict(upd or {})
-            moved = bool(upd)
-            upd["scored_at"] = _now()
-            upd["score_profile_sig"] = sig
-            if write_with_retry(sb, row_uid, upd):
+            if write_with_retry(sb, str(row.get("uid")), upd):
                 scored += 1
                 changed += 1 if moved else 0
             if len(rows) > 20 and i % 25 == 0:
