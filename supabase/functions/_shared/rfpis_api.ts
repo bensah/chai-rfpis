@@ -93,6 +93,7 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/feed" && m === "GET") return phase1.feed(req, ctx);
     // Phase 2. Same division: these serve rows, the page scores and decides.
     if (path === "/report/periods" && m === "GET") return report.periods(req, ctx);
+    if (path === "/report/section1" && m === "GET") return report.section1(req, ctx);
 
     if (path === "/pipelines/weeks" && m === "GET") return pipelines.weeks(req, ctx);
     if (path === "/pipelines/screen" && m === "GET") return pipelines.screen(req, ctx);
