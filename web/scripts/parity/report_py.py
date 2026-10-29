@@ -27,13 +27,29 @@ import pandas as pd
 REPO_ROOT = Path(__file__).resolve().parents[3]
 REPORT_PY = REPO_ROOT / "views" / "report.py"
 
+# BOTH ENDS, EXPLICITLY. On Windows the default codec for stdin and stdout is cp1252, and
+# the two errors cancelled: the harness read UTF-8 JSON as cp1252 (so "Française" became
+# "FranÃ§aise" INSIDE the Python), then wrote it back as cp1252 bytes that Node decoded as
+# UTF-8, landing on "Française" again. The check passed while the Python side had been
+# computing on mojibake throughout — and any rule that reads a non-ASCII character, which is
+# every rule in this file, was being compared on the wrong input.
+#
+# Fixing only the output end is worse than fixing neither: it breaks the cancellation and
+# turns a silent wrong-input bug into a loud wrong-output one. Both, or the test is a lie.
+if hasattr(sys.stdin, "reconfigure"):
+    sys.stdin.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 # The helpers under test, and the module-level lists they read.
 WANT_FUNCS = [
     "_last_day_of_month", "_period_bounds", "_period_label", "_period_slug",
     "_period_phrase", "_bucket_start", "_bucket_range", "_bucket_label",
     "_cadence_word", "_in_period", "_opt_index", "_slug",
+    # The focus-area cloud's own helpers, lifted for check-names.mjs.
+    "_canonical_area", "_programme_area_freq",
 ]
-WANT_ASSIGNS = ["_PERIOD_OPTS", "_VIEW_OPTS", "_MONTH_NAMES"]
+WANT_ASSIGNS = ["_PERIOD_OPTS", "_VIEW_OPTS", "_MONTH_NAMES", "_AREA_NON_VALUES"]
 
 
 def _lift() -> tuple[dict, dict]:
@@ -47,7 +63,7 @@ def _lift() -> tuple[dict, dict]:
     src = REPORT_PY.read_text(encoding="utf-8")
     tree = ast.parse(src)
     ns: dict = {
-        "pd": pd, "np": np, "re": re, "date": date, "timedelta": timedelta,
+        "pd": pd, "np": np, "re": re, "json": json, "date": date, "timedelta": timedelta,
         "__builtins__": __builtins__,
     }
     picked: list[ast.stmt] = []

@@ -49,7 +49,7 @@ const moved = (a, b) => a !== null && b !== null && Math.abs(a - b) >= EPSILON;
 let failures = 0;
 
 // ── 1. The stored score, against what the screens would compute ──────────────
-let current = 0, stale = 0, untagged = 0, wrong = 0, missing = 0;
+let current = 0, stale = 0, untagged = 0, unstamped = 0, wrong = 0, missing = 0;
 const wrongRows = [];
 for (const [tenant, items] of Object.entries(report)) {
   const sig = sigs[tenant];
@@ -60,8 +60,17 @@ for (const [tenant, items] of Object.entries(report)) {
       missing++;
       continue;
     }
-    if (s.profile_sig === undefined || s.profile_sig === null) {
+    if (s.has_stamp === false) {
+      // The COLUMN is not there: migration 101 is unapplied and this section has nothing
+      // to read.
       untagged++;
+      continue;
+    }
+    if (s.profile_sig === undefined || s.profile_sig === null) {
+      // The column is there and empty: the job has not reached this row. That is UNVERIFIED,
+      // not stale and not wrong — the row predates server-owned scoring, and calling it
+      // stale would report every row as a problem the morning 101 lands.
+      unstamped++;
       continue;
     }
     if (sig && s.profile_sig !== sig) {
@@ -79,11 +88,17 @@ for (const [tenant, items] of Object.entries(report)) {
 }
 console.log("Stored score against what the screens would compute");
 if (untagged) {
-  console.log(`  cannot run yet: ${untagged} rows carry no score_profile_sig — migration 101 ` +
-    "is written but not applied, so there is no way to tell a current score from a stale one.");
+  console.log(`  cannot run yet: ${untagged} rows have no score_profile_sig COLUMN — migration 101 ` +
+    "is not applied, so there is no way to tell a current score from a stale one.");
 } else {
   console.log(`  ${current} rows claim to be current, ${stale} are stale (the job has not caught up), ` +
+    `${unstamped} are unverified (never stamped: the job has not run on them), ` +
     `${missing} have never been scored`);
+  if (current === 0 && unstamped) {
+    console.log("  nothing to verify yet: migration 101 is applied but no row has been stamped, " +
+      "so no stored score YET CLAIMS to be current. This section starts reporting the moment " +
+      "the rescore job writes its first row.");
+  }
   console.log(`  current-but-wrong: ${wrong}`);
   if (wrongRows.length) console.log(wrongRows.join("\n"));
   failures += wrong;

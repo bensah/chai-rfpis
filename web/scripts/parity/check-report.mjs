@@ -44,7 +44,12 @@ ${e.stderr || e.message}`);
 
 let diffs = 0;
 let checks = 0;
-const J = (v) => JSON.stringify(v);
+// Key order is not a difference: Python dicts and JS objects both preserve insertion order,
+// and the two sides insert in whatever order they happen to iterate. Arrays stay ordered.
+const canon = (v) => (v === null || typeof v !== "object" ? v
+  : Array.isArray(v) ? v.map(canon)
+  : Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])));
+const J = (v) => JSON.stringify(canon(v));
 const same = (label, ts, pyv) => {
   checks++;
   if (J(ts) !== J(pyv)) {
