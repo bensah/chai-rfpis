@@ -473,9 +473,15 @@ export async function loadSection1(db: Db, scope: Parameters<Db["as"]>[0], bound
     const next = new Date(Date.parse(`${bounds.end}T00:00:00Z`) + 86400_000).toISOString().slice(0, 10);
     scanQuery += `&scan_date=lte.${q(next)}`;
   }
+  // getAll, not get: PostgREST returns at most 1000 rows per request however large a limit
+  // is asked for. `scan_logs` passed a thousand long ago — 3,082 rows on 2026-10-29, of
+  // which the page saw 1,000 — so every scan tile was a partial sum presented as a total.
+  // `rfp_submissions` still fits, which is exactly why it had to change too: at 1,001 rows
+  // every figure in this section would have started under-counting silently, and nobody
+  // would have connected the two events.
   const [rfps, scansRaw] = await Promise.all([
-    db.as(scope).get("rfp_submissions", `select=${RFP_COLUMNS}&limit=50000`),
-    db.as(scope).get("scan_logs", `${scanQuery}&limit=10000`),
+    db.as(scope).getAll("rfp_submissions", `select=${RFP_COLUMNS}`, "uid"),
+    db.as(scope).getAll("scan_logs", scanQuery, "id"),
   ]);
   const tid = db.scopeTid(scope);
   const mine = scope.isSuper || /^0{8}-/.test(tid)

@@ -99,9 +99,44 @@ export function createDb(env: Env) {
     return { rows: text ? (JSON.parse(text) as Rows) : [], total };
   }
 
+  /**
+   * Read EVERY matching row, in pages.
+   *
+   * POSTGREST CAPS A RESPONSE AT 1000 ROWS and does so silently: `limit=50000` returns 1000
+   * and nothing in the response says the rest exist. A caller that sums the result then
+   * reports a partial total as a complete one, and the failure only begins once a table
+   * crosses a thousand rows, long after the code was written and reviewed.
+   *
+   * `core/analytics.py::system_discovery_stats` already hit this and documents the same
+   * diagnosis; this is the same fix in the one place every API read can use it.
+   *
+   * `orderBy` is REQUIRED and must be unique. Paging without a total order is not merely
+   * untidy: PostgreSQL may return rows in a different sequence per query, so a row can
+   * appear on two pages or on none, and the totals come out wrong in a way that changes
+   * between runs. The primary key is the right answer.
+   */
+  async function pageAll(bearer: string, table: string, query: string, orderBy: string,
+    page = 1000, cap = 200_000): Promise<Rows> {
+    const out: Rows = [];
+    const sep = query ? "&" : "";
+    for (let offset = 0; offset < cap; offset += page) {
+      const q = `${query}${sep}order=${encodeURIComponent(orderBy)}.asc&limit=${page}&offset=${offset}`;
+      const { rows } = await send(bearer, "GET", table, q);
+      out.push(...rows);
+      if (rows.length < page) return out;
+    }
+    // Hitting the cap means the table outgrew what a request should load at all; say so
+    // rather than returning a truncated set that looks complete.
+    console.warn(`pageAll(${table}) stopped at the ${cap}-row cap — the result is incomplete.`);
+    return out;
+  }
+
   /** Service role, no scoping — identity lookups and the Python service_client() calls. */
   const service = {
     get: (table: string, query: string) => send(env.supabaseKey, "GET", table, query).then((r) => r.rows),
+    /** `get`, but every matching row rather than the first 1000. See `pageAll`. */
+    getAll: (table: string, query: string, orderBy = "id") =>
+      pageAll(env.supabaseKey, table, query, orderBy),
     count: (table: string, query: string) =>
       send(env.supabaseKey, "GET", table, query + (query ? "&" : "") + "limit=1", undefined, "count=exact")
         .then((r) => r.total ?? 0),
@@ -157,8 +192,26 @@ export function createDb(env: Env) {
       }
       return send(bearer, method, table, query, payload, prefer);
     }
+    /**
+     * `get`, but every matching row. Pages THROUGH `route`, so each page carries the same
+     * tenant scoping and bearer the single-page read would — a paging loop that bypassed
+     * the routing would quietly read as the service role.
+     */
+    async function getAll(table: string, query: string, orderBy = "id", page = 1000, cap = 200_000) {
+      const out: Rows = [];
+      const sep = query ? "&" : "";
+      for (let offset = 0; offset < cap; offset += page) {
+        const q = `${query}${sep}order=${encodeURIComponent(orderBy)}.asc&limit=${page}&offset=${offset}`;
+        const { rows } = await route("GET", table, q);
+        out.push(...rows);
+        if (rows.length < page) return out;
+      }
+      console.warn(`getAll(${table}) stopped at the ${cap}-row cap — the result is incomplete.`);
+      return out;
+    }
     return {
       get: (table: string, query: string) => route("GET", table, query).then((r) => r.rows),
+      getAll,
       page: (table: string, query: string) => route("GET", table, query, undefined, "count=exact"),
       insert: (table: string, rows: unknown) =>
         route("POST", table, "", rows, "return=representation").then((r) => r.rows),

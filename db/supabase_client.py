@@ -585,3 +585,45 @@ def safe_execute(query, *, retries: int = 3):
                 raise
             _time.sleep(0.4 * (attempt + 1))
     raise last_exc if last_exc else RuntimeError("safe_execute: no attempts ran")
+
+
+def fetch_all(make_query, *, order: str = "id", page: int = 1000,
+              cap: int = 200_000) -> list[dict]:
+    """Every matching row, in pages — for reads that must be COMPLETE, not merely large.
+
+    POSTGREST CAPS A RESPONSE AT 1000 ROWS, silently. `.limit(50000)` returns 1000 and
+    nothing in the response says the rest exist, so a caller that sums the result reports a
+    partial total as a complete one. The failure starts the day a table crosses a thousand
+    rows, long after the code was written and reviewed, and looks like nothing at all.
+
+    It had already happened here: `core.analytics.system_discovery_stats` carries the same
+    diagnosis and its own private paging loop. The Report loaders did not, and on
+    2026-10-29 `scan_logs` held 3,082 rows of which the page saw 1,000 — so "RFPs found"
+    was roughly a third of the real figure, presented as the total.
+
+    Pass a FACTORY, not a query: each page needs its own builder, because `.range()` is
+    applied to the builder and cannot be re-applied to a used one.
+
+        rows = fetch_all(lambda: sb.table("scan_logs").select("*").gte("scan_date", s))
+
+    `order` must be a column with a UNIQUE value per row, and defaults to the primary key.
+    Paging without a total order is not merely untidy: PostgreSQL is free to return rows in
+    a different sequence per query, so a row can land on two pages or on none, and the
+    totals then vary between runs of the same report.
+    """
+    rows: list[dict] = []
+    start = 0
+    while start < cap:
+        chunk = safe_execute(
+            make_query().order(order, desc=False).range(start, start + page - 1)
+        ).data or []
+        rows.extend(chunk)
+        if len(chunk) < page:
+            return rows
+        start += page
+    # Hitting the cap means the table has outgrown what a page should load at all. Say so
+    # rather than handing back a truncated set that looks complete.
+    import logging
+    logging.getLogger(__name__).warning(
+        "fetch_all stopped at the %d-row cap - the result is incomplete.", cap)
+    return rows

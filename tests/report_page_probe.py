@@ -184,6 +184,7 @@ class _Query:
 
     def __init__(self, table: str):
         self._table = table
+        self._range: tuple[int, int] | None = None
 
     def select(self, *a, **k): return self
     def eq(self, *a, **k): return self
@@ -194,10 +195,28 @@ class _Query:
     def order(self, *a, **k): return self
     def limit(self, *a, **k): return self
 
+    def range(self, start: int, end: int):
+        """PostgREST's inclusive row window, and it REALLY SLICES.
+
+        The loaders read through `db.supabase_client.fetch_all`, which pages with `.range()`
+        because PostgREST caps a response at 1000 rows. A stub that accepted range and
+        ignored it would let a broken paging loop pass: every page would return the whole
+        set, the first page would look short enough to stop, and the test would be green
+        over a fake that cannot express the thing being tested.
+
+        Slicing for real means fetch_all's own loop — the offsets, the short-page stop — is
+        exercised here on every report test.
+        """
+        self._range = (start, end)
+        return self
+
     def execute(self):
         if self._table in _FORCE_EMPTY:
             return mock.Mock(data=[])
         rows = _TABLES.get(self._table, lambda: [])()
+        if self._range is not None:
+            start, end = self._range
+            rows = rows[start:end + 1]          # inclusive, as PostgREST's Range is
         return mock.Mock(data=rows)
 
 
