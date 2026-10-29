@@ -23,6 +23,8 @@ is best-effort and fails OPEN — a detector error never blocks a scan.
 """
 from __future__ import annotations
 
+import re
+
 from core.source_registry import confirmed_class, normalize_host
 
 # Known PRIMARY portals that aggregate by MANDATE (the donor's own publishing
@@ -199,6 +201,51 @@ def meta(url: str | None) -> dict:
     return {"source_class": _CLASS_DEFAULT.get(kind, ""),
             "access_model": "Unknown", "ingestion_method": "page crawl",
             "has_api": False}
+
+
+def _brand_stems() -> tuple[str, ...]:
+    """Every known non-primary operator as a bare brand stem ('globalscholardesk').
+
+    Built from the SAME two lists `classify` uses, so a host added there is known as a
+    name too, without anyone remembering to add it twice.
+    """
+    out = []
+    for n in _KNOWN_AGGREGATORS + _BLOG_PLATFORMS:
+        stem = (n or "").lower().rsplit(".", 1)[0] if "." in (n or "") else (n or "").lower()
+        stem = re.sub(r"[^a-z0-9]+", "", stem)
+        if stem:
+            out.append(stem)
+    return tuple(out)
+
+
+def is_aggregator_name(name: str | None) -> bool:
+    """True when a FUNDER STRING is really an aggregator's own brand.
+
+    WHY A NAME CHECK EXISTS AT ALL. A search hit carries no funder, so the discovery
+    channel fills one in from the domain ('globalscholardesk.com' -> 'Globalscholardesk').
+    That guess is a plain word with no dot in it, so the bare-host test cannot see it, and
+    on the opportunity page it reads exactly like a donor. One such row recorded a $244M
+    Pandemic Fund call as funded by the SEO site that had republished it.
+
+    The brand stems come from `_KNOWN_AGGREGATORS` / `_BLOG_PLATFORMS` rather than from a
+    second hand-written list. That second list is how this leaked: the funder gate in
+    `source_resolver` knew eleven brands while `classify` knew forty, so a host could be
+    correctly identified as an aggregator and its NAME still pass as a donor.
+
+    Matching mirrors `_host_hits`: exact on the squashed form, and a long stem may appear
+    ANYWHERE in it, which is what catches both the sibling brand ('Fundsforngospremium')
+    and the decorated label the scraper writes ('DevelopmentAid Grants Aggregator'). Short
+    stems are exact-only, so 'Candid' cannot swallow a real funder that merely contains it.
+    """
+    squashed = re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+    if not squashed:
+        return False
+    for stem in _brand_stems():
+        if squashed == stem:
+            return True
+        if len(stem) >= _STEM_MIN and stem in squashed:
+            return True
+    return False
 
 
 def is_non_primary(url: str | None, title: str | None = None) -> tuple[bool, str]:

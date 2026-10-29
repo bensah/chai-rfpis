@@ -79,10 +79,22 @@ def _provisional_funder(url: str) -> str | None:
     has to be non-empty and honest about where it came from. Deliberately NOT a
     registry lookup: inventing a confident funder name from a domain is how an aggregator
     ends up recorded as a donor, which `scan_pipeline`'s funder gate exists to stop.
+
+    NOT GUESSED AT ALL FOR A NON-PRIMARY HOST. On a republisher's domain the guess is not
+    merely unconfirmed, it is known to be wrong, and it does not read as a guess: a store
+    row recorded a $244M Pandemic Fund call as funded by "Globalscholardesk", the SEO site
+    that had copied it. Such a hit is a search booster whose funder can only come from the
+    resolved primary page, so leave the field empty and let resolution fill it.
     """
     host = urlsplit(url or "").netloc.lower().removeprefix("www.")
     if not host:
         return None
+    try:
+        from core import aggregators
+        if aggregators.is_non_primary(url)[0]:
+            return None
+    except Exception:
+        pass
     label = host.split(".")[0]
     return label.replace("-", " ").title() or None
 

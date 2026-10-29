@@ -193,9 +193,14 @@ def _registry_bonus(url: str) -> float:
 # into the store: 20 catalogue rows and 7 pipeline rows read "DevelopmentAid Aggregator",
 # "FundsForNGOs", or even a bare host as the funder. On the page and in the opportunity rail
 # that is exactly what a reviewer sees as the donor.
-_AGG_FUNDER_RE = re.compile(
-    r"(developmentaid|fundsforngos?|fundsforngo|devex|grantwatch|grantstation|"
-    r"grantforward|instrumentl|opengrants|grantbite|grantgopher|aggregator)", re.I)
+#
+# The brand list this used to carry has MOVED to `core.aggregators.is_aggregator_name`,
+# which builds it from the same hosts `classify` already knows. Keeping a second list here
+# is what let the next one through: this gate knew eleven brands while `classify` knew
+# forty, so `globalscholardesk.com` was correctly identified as an aggregator host and the
+# word "Globalscholardesk" still passed as a donor — onto a $244M Pandemic Fund row. The
+# word carries no dot, so `_HOSTLIKE_RE` could not see it either.
+_AGG_WORD_RE = re.compile(r"aggregator", re.I)
 # "www2.fundsforngos.org" as a funder name — the scraper falling back to the host.
 _HOSTLIKE_RE = re.compile(r"^(https?://)?(www\d?\.)?[a-z0-9-]+(\.[a-z0-9-]+){1,}/?$", re.I)
 
@@ -206,7 +211,13 @@ def is_aggregator_funder(name: str | None) -> bool:
     s = str(name or "").strip()
     if not s:
         return False
-    return bool(_AGG_FUNDER_RE.search(s) or _HOSTLIKE_RE.match(s))
+    if _AGG_WORD_RE.search(s) or _HOSTLIKE_RE.match(s):
+        return True
+    try:
+        from core import aggregators
+        return aggregators.is_aggregator_name(s)
+    except Exception:
+        return False        # fail OPEN, as every detector in this area does
 
 
 # A page title's tail is USUALLY the site name, and sometimes it is the rest of the headline.
