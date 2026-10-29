@@ -10,7 +10,9 @@
  * first, and the one a parity check can pin without any data in play.
  */
 import { q, type Db } from "./db.ts";
-import { json } from "./http.ts";
+import { gzipped, json } from "./http.ts";
+import { loadNameConfig } from "./report_names.ts";
+import { buildSection1, loadSection1 } from "./report_section1.ts";
 import {
   bucketLabel, bucketRange, cadenceWord, MONTH_NAMES, PERIOD_OPTS, periodBounds,
   periodLabel, periodPhrase, periodSlug, resolveSelection, VIEW_OPTS, YEAR_MAX, YEAR_MIN,
@@ -87,5 +89,34 @@ export function createReportRoutes(db: Db) {
     });
   }
 
-  return { periods };
+  /**
+   * Section 1 — Scan activity. Same query params as `/report/periods`.
+   *
+   * The rows are read and reduced here; the browser gets the numbers. Report reads up to
+   * 50,000 submissions and 10,000 scan rows, and shipping those to draw a dozen tiles would
+   * cost tens of megabytes per period change.
+   *
+   * The response carries the resolved period alongside the blocks so the page cannot label a
+   * chart with one period while showing another's numbers.
+   */
+  async function section1(req: Request, ctx: Ctx): Promise<Response> {
+    const p = new URL(req.url).searchParams;
+    const t = today();
+    const sel = resolveSelection(
+      { period: p.get("period"), year: p.get("year"), month: p.get("month"), view: p.get("view") },
+      t, await activeYear(db),
+    );
+    const bounds = periodBounds(sel, t);
+    const [{ rfps, scans }, nameConfig] = await Promise.all([
+      loadSection1(db, ctx.scope, bounds),
+      loadNameConfig(db, db.scopeTid(ctx.scope).startsWith("00000000-") ? null : db.scopeTid(ctx.scope)),
+    ]);
+    const blocks = buildSection1({ rfps, scans, view: sel.view, bounds, nameConfig });
+    return gzipped(req, json({
+      selection: sel, bounds, label: periodLabel(sel), bucketLabel: bucketLabel(sel.view),
+      ...blocks,
+    }, 200, { "Cache-Control": "private, max-age=30" }));
+  }
+
+  return { periods, section1 };
 }
