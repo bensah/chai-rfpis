@@ -64,7 +64,11 @@ def both_paths(row: dict, org: dict, org_set: dict, donors: list[dict]) -> dict:
             "rec": row.get("auto_recommendation"),
             "score": None if row.get("alignment_score") is None
             else round(float(row["alignment_score"]), 1),
-            # Present only once migration 101 is applied.
+            # Present only once migration 101 is applied. `has_stamp` separates the two
+            # cases a bare None cannot: the COLUMN is absent (101 unapplied, the check
+            # cannot run) versus the column exists and is null (101 applied, the job has
+            # simply not reached this row yet, which is unverified rather than stale).
+            "has_stamp": "score_profile_sig" in row,
             "scored_at": row.get("scored_at"),
             "profile_sig": row.get("score_profile_sig"),
         },
