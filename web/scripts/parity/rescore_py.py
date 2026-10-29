@@ -56,10 +56,23 @@ def both_paths(row: dict, org: dict, org_set: dict, donors: list[dict]) -> dict:
 
     Reporting only the second would have raised a false alarm about drift.
     """
-    out: dict = {"uid": str(row.get("uid") or "")}
+    out: dict = {
+        "uid": str(row.get("uid") or ""),
+        # What the database holds — after the scoring move this is what a reader sees,
+        # because nothing recomputes at read time any more.
+        "stored": {
+            "rec": row.get("auto_recommendation"),
+            "score": None if row.get("alignment_score") is None
+            else round(float(row["alignment_score"]), 1),
+            # Present only once migration 101 is applied.
+            "scored_at": row.get("scored_at"),
+            "profile_sig": row.get("score_profile_sig"),
+        },
+    }
 
-    # The scan / live-screen path. assess_row is how every screen reaches auto_score, so
-    # this is the number a reader sees today.
+    # The scan / live-screen path. assess_row is how every screen reaches auto_score, and
+    # as of 2026-10-28 it is also the path the scoring job runs, so this is the answer the
+    # server is supposed to be storing.
     try:
         a = assess_row(dict(row), get_policies())
         out["scan"] = {"rec": a.get("auto_recommendation"),
@@ -88,12 +101,21 @@ def main() -> None:
     tenants = (sb.table("tenants").select("id,slug").eq("status", "active")
                .execute().data or [])
     report: dict = {}
+    report_sig: dict = {}
     for t in tenants:
         tid = str(t["id"])
         tok = tc.set_tenant_override(tid)
         try:
             rows = (sb.table("rfp_submissions").select("*")
                     .eq("tenant_id", tid).limit(LIMIT).execute().data or [])
+            # The signature the current profile would produce. A stored score tagged with
+            # this one claims to be current; if it then disagrees with a fresh computation,
+            # that is a fault rather than staleness. Absent until migration 101 is applied.
+            try:
+                from core.live_scoring import profile_signature  # type: ignore[attr-defined]
+                report_sig[t.get("slug") or tid] = profile_signature()
+            except Exception:
+                report_sig[t.get("slug") or tid] = None
             org = orgp.get_profile()
             try:
                 org_set = _settings.get_org()
@@ -102,7 +124,8 @@ def main() -> None:
             report[t.get("slug") or tid] = [both_paths(r, org, org_set, donors) for r in rows]
         finally:
             tc.reset_tenant_override(tok)
-    sys.stdout.write(json.dumps(report, default=str))
+    sys.stdout.write(json.dumps({"rows": report, "current_profile_sig": report_sig},
+                                default=str))
 
 
 if __name__ == "__main__":
