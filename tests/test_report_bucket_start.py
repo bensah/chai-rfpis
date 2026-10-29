@@ -12,11 +12,41 @@ the fault was being the odd one out.
 """
 from __future__ import annotations
 
+import ast
 import unittest
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
-from views.report import _bucket_start
+# `views/report.py` is a Streamlit PAGE SCRIPT, not a library: `render_view` exec's it on
+# every rerun and its body queries the database at the top level. `from views.report import
+# _bucket_start` therefore ran the whole page at import. Alone that reached the real
+# Supabase and (slowly) succeeded; under the full suite an earlier module had already done
+# `os.environ.setdefault("SUPABASE_URL", "https://dummy.supabase.co")`, so dotenv's
+# non-overriding load left the dummy host in place and the import died on a DNS failure,
+# taking all six tests with it as a loader error.
+#
+# So lift the function out of the file instead of importing it, exactly as
+# web/scripts/parity/report_py.py already does for the same reason. This still exercises
+# the REAL source text — a copy retyped here would agree with itself forever while
+# report.py drifted underneath it — and it needs no network, no Streamlit and no change to
+# a page another session is actively porting.
+_REPORT_PY = Path(__file__).resolve().parents[1] / "views" / "report.py"
+
+
+def _lift(name: str):
+    """Exec just `name`'s def out of views/report.py and return the function."""
+    tree = ast.parse(_REPORT_PY.read_text(encoding="utf-8"))
+    picked = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
+    if not picked:
+        raise AssertionError(f"views/report.py no longer defines {name}()")
+    ns: dict = {"pd": pd, "np": np}
+    exec(compile(ast.Module(body=picked, type_ignores=[]), str(_REPORT_PY), "exec"), ns)
+    return ns[name]
+
+
+_bucket_start = _lift("_bucket_start")
 
 MODES = ("Weekly", "Monthly", "Quarterly", "Semestrial", "Annually")
 
