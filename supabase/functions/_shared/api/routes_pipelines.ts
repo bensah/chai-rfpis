@@ -1,12 +1,19 @@
 /**
  * Pipeline: the week picker, Screened, and Summary.
  *
- * These routes FETCH and SCOPE. They do not score and they do not decide. Live scoring
- * runs in the browser on the Pyodide seam, so `alignment_score` and `auto_recommendation`
- * are computed there over the rows served here; duplicate partitioning, the effective
- * decision, KPI buckets, filters and ordering all belong to the page. The contract is
- * docs/PHASE2_API_CONTRACT.md and the split is the owner's (2026-10-26): web/src to the
- * frontend session, these routes here.
+ * These routes FETCH and SCOPE. They do not score and they do not decide. Duplicate
+ * partitioning, the effective decision, KPI buckets, filters and ordering all belong to
+ * the page. The contract is docs/PHASE2_API_CONTRACT.md and the split is the owner's
+ * (2026-10-26): web/src to the frontend session, these routes here.
+ *
+ * `alignment_score` and `auto_recommendation` are now STORED values, written by the
+ * `rescore` job (owner, 2026-10-28) — they used to be computed per view in the browser on
+ * the Pyodide seam. So a row can be carrying a score from before its last edit, for the
+ * minute or so the job takes. Every list below therefore also serves `scored_at` and
+ * `score_profile_sig`, which is what lets a page say so instead of presenting an old
+ * number as settled. They cost almost nothing on the wire despite the signature being 40
+ * characters: it is the SAME 40 characters on every row of a tenant, and these responses
+ * are gzipped.
  *
  * Two things measured on the live table decide the shape of this file. The table is 99
  * columns and a row is 4.8 KB raw, so a route that selects `*` ships a fifth of its weight
@@ -43,7 +50,8 @@ const SCREEN_FIELDS = "uid,opportunity_title,funding_agency,brief_description," 
   "call_award_value,currency,call_submission_deadline,call_geographic_scope," +
   "call_domain_areas,instrument_type,focus_theme,opportunity_link,date_posted," +
   "search_date,submitted_at,created_at,review_week,alignment_score," +
-  "auto_recommendation,decision,decision_date,donor_decision,progress_status," +
+  "auto_recommendation,scored_at,score_profile_sig," +
+  "decision,decision_date,donor_decision,progress_status," +
   "applicant_role,key_risks,feasibility,is_duplicate,duplicate_of_uid";
 
 /** Sections A to E aggregate over these. No prose: Summary counts and sums, it does not
@@ -51,13 +59,15 @@ const SCREEN_FIELDS = "uid,opportunity_title,funding_agency,brief_description," 
  * off a payload that is already the widest one here. */
 const SUMMARY_FIELDS = "uid,funding_agency,call_award_value,currency," +
   "call_submission_deadline,call_geographic_scope,call_domain_areas,focus_theme," +
-  "submitted_at,review_week,alignment_score,auto_recommendation,decision," +
+  "submitted_at,review_week,alignment_score,auto_recommendation," +
+  "scored_at,score_profile_sig,decision," +
   "decision_date,donor_decision,progress_status,is_duplicate,duplicate_of_uid";
 
 /** views/tracking_rfp.py draws these, plus proposal_lead for the duplicate-group leads. */
 const TRACK_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,currency," +
   "call_submission_deadline,call_geographic_scope,focus_theme,opportunity_link," +
-  "submitted_at,review_week,alignment_score,decision,donor_decision," +
+  "submitted_at,review_week,alignment_score,scored_at,score_profile_sig," +
+  "decision,donor_decision," +
   "progress_status,proposal_lead,is_duplicate,duplicate_of_uid";
 
 const TRACK_DECISIONS = new Set(["Proceed", "Proceed as sub"]);
@@ -333,13 +343,18 @@ export function createPipelineRoutes(db: Db) {
 
   /** Summary: rows for a date window, aggregated in the browser.
    *
-   * Windowed rather than aggregated here (owner, 2026-10-27). Aggregating server-side from
-   * the STORED alignment_score would be cheap and bounded, but that value is what
-   * score_submission wrote under the 70/45 rule while every other page displays the
-   * composite 90/70 rule over a freshly computed score — so Summary would visibly disagree
-   * with the rest of the app. Shipping rows keeps one scoring implementation, and the
-   * window keeps the payload a function of what is being looked at rather than of how long
-   * the deployment has been running.
+   * Windowed rather than aggregated here (owner, 2026-10-27). The ORIGINAL reason has
+   * since been removed: the stored score was written under the 70/45 rule while every
+   * other page displayed 90/70 over a freshly computed one, so a server-side total would
+   * have visibly disagreed with the rest of the app. The thresholds were reconciled to
+   * 90/70 (config/scoring_weights.yaml) and the score is now the job's to write, so the
+   * stored value and the displayed one are the same number.
+   *
+   * It still ships rows, for the reason that outlived the bug: the counts are a function
+   * of filters and groupings the page owns, and the window keeps the payload a function of
+   * what is being looked at rather than of how long the deployment has been running.
+   * Aggregating here is now a real option rather than a broken one — worth taking if this
+   * payload becomes the slow part, and not before.
    *
    * Concluded rows are NOT dropped here: Summary reports on the whole year including what
    * was won and closed, which is the opposite of what the active lists want. */

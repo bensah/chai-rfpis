@@ -52,10 +52,24 @@ what its page draws. This is the single biggest lever and it is free.
 
 Settled, so neither side builds it twice:
 
-Live scoring stays in the browser, on the Pyodide seam Phase 1 built.
-`core.live_scoring.scores_for` produces `alignment_score` and
-`auto_recommendation` per row in the worker, over the rows these routes serve
-plus the existing `/scoring/snapshot`. The Confidence column likewise:
+**Scoring moved to the server** (owner, 2026-10-28), superseding what this
+section said when it was written. `alignment_score` and `auto_recommendation`
+are STORED columns, written by the `rescore` background job, which runs the one
+`core.auto_scorer.auto_score` the weekly scan runs. The browser no longer
+computes them per view; it reads what the database holds. Neither this API nor
+the page re-implements the rule — the job changes the HOST of the scoring, not
+the language, so there is still one implementation.
+
+What that costs, and what the contract owes a page because of it: a save can
+change the answer, and the job lands a minute or so later. Every row-serving
+route below therefore also returns `scored_at` and `score_profile_sig`
+(migration 101), and `PATCH /pipelines/rfp/:uid` returns the job it queued. A
+page that shows a score while a re-score is in flight must say so rather than
+presenting the old number as settled. On the wire this is almost free despite
+the signature being 40 characters: it is the same 40 characters on every row of
+a tenant, and the responses are gzipped.
+
+The Confidence column is unaffected and stays in the browser:
 `data_quality.donor_completeness`, `call_completeness` and
 `donor_intel.match_donor` are pure Python over data the browser already holds.
 
@@ -255,8 +269,22 @@ Body is a sparse object of changed columns only. The route validates column
 names against the editable set and rejects unknown keys rather than ignoring
 them, so a typo in a field name fails loudly instead of silently not saving.
 
-Applies `score_submission` on save, and stamps `decision_overridden_by` and
-`decision_overridden_at` from the caller.
+Stamps `decision_overridden_by` and `decision_overridden_at` from the caller.
+
+**Does NOT apply `score_submission` on save** — that is what the Python editor
+did, and it is where the 70/45 banding entered the database. The route queues
+the `rescore` job for the saved row instead, and the job writes the score.
+
+Only when the save could have moved it. A denylist of 19 columns the team uses
+to record its own work on a bid (`assigned_to`, `next_action`, `amount_secured`
+and the like) queues nothing. A denylist and not a list of scoring inputs, so
+that a new input added in Python costs a redundant job rather than a score that
+silently never updates. `progress_status`, `donor_decision` and `date_completed`
+look like workflow state and are NOT on it: `criteria_derive._is_completed`
+reads all three, so marking a bid submitted genuinely moves its score.
+
+Queueing is non-fatal — the save succeeded — and a failure to queue comes back
+as a warning saying the score still reflects the opportunity as it was.
 
 **The `applied_funding` write is conditional, not a plain upsert.** It happens
 only when the Reporting tab was shown. With a linked row it updates by
@@ -269,7 +297,9 @@ merely save:
 
 ```
 { row: RfpSubmission,
-  warnings: [{ code: "completed_without_donor_decision" }] }
+  warnings: [{ code: "completed_without_donor_decision" | "rescore_not_queued",
+               detail: string }],
+  rescore: { job_id: string } | null }
 ```
 
 This is a feature and not a side effect, and it is the one thing in this phase
