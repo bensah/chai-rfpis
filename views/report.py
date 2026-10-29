@@ -411,10 +411,21 @@ def _bucket_start(series: pd.Series, mode: str) -> pd.Series:
     if mode == "Quarterly":
         return s.dt.to_period("Q").dt.start_time
     if mode == "Semestrial":
+        # The only branch that builds a date from STRINGS, and the only one that used to
+        # raise on a missing date. `s.dt.year` is float64 as soon as one value is NaT, so
+        # 2026 becomes "2026.0" and the concatenation produces "2026.0-01-01", which
+        # pd.to_datetime cannot parse — and it raised rather than coercing. Report with
+        # "View by = Semestrial" crashed whenever a row without a search_date was in
+        # scope, which is the Excel-migrated ones.
+        #
+        # Int64 keeps the year integral and carries missing values as <NA>; errors="coerce"
+        # then lets a missing date stay missing, which is what every other mode here does
+        # (they go through .dt.to_period, which is NaT-safe already).
         month = s.dt.month
         return pd.to_datetime(
-            s.dt.year.astype(str) + "-"
-            + np.where(month <= 6, "01", "07") + "-01"
+            s.dt.year.astype("Int64").astype(str) + "-"
+            + np.where(month <= 6, "01", "07") + "-01",
+            errors="coerce",
         )
     if mode == "Annually":
         return s.dt.to_period("Y").dt.start_time
