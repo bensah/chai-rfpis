@@ -61,7 +61,7 @@ destroys whatever another session has in that file right now.
 
 This is the sharpest difference from the other projects. There is no local
 throwaway Postgres: `db/supabase_client.py` talks to a hosted Supabase
-instance holding real CHAI data, and every session and every environment
+instance holding real client data, and every session and every environment
 reaches the same one. A migration applied here is applied for everybody,
 immediately, including whatever the user has open.
 
