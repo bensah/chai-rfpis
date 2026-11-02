@@ -69,12 +69,19 @@ from db.supabase_client import fetch_all, service_client   # noqa: E402
 # Hand-verified primary sources, keyed by normalised title. Only consulted when
 # the redirect's destination and the resolver have both failed, so a wrong entry
 # here cannot quietly override a real resolution.
-VERIFIED: dict[str, str] = {
-    "call for proposals advanced hiv disease ahd": (
-        "https://www.who.int/news-room/articles-detail/"
-        "call-for-proposals--development--implementation-and-monitoring-of-"
-        "norms-and-standards-for-advanced-hiv-disease"
-    ),
+#
+# `funder` is here because the page cannot always say who it belongs to: who.int
+# serves no `og:site_name`, its <title> is the headline with no site-name tail,
+# and WHO is not in `source_registry`, so `_funder_from_page` returns None and the
+# poisoned "Google" would have survived the repair. It is read off the verified
+# page by a human, which is the same standard as the URL beside it.
+VERIFIED: dict[str, dict[str, str]] = {
+    "call for proposals advanced hiv disease ahd": {
+        "url": "https://www.who.int/news-room/articles-detail/"
+               "call-for-proposals--development--implementation-and-monitoring-of-"
+               "norms-and-standards-for-advanced-hiv-disease",
+        "funder": "World Health Organization",
+    },
 }
 
 # Column <- candidate key, filled from the resolved page only where the row is
@@ -126,25 +133,25 @@ def destination(url: str) -> str | None:
         return None
 
 
-def pick_source(row: dict) -> tuple[str | None, str]:
-    """(url, how we got it) for one broken row."""
+def pick_source(row: dict) -> tuple[str | None, str | None, str]:
+    """(url, hand-verified funder or None, how we got it) for one broken row."""
     link = row.get("opportunity_link") or ""
     dest = destination(link)
     if dest:
         print(f"    redirect  -> {dest}")
         if source_resolver._ok_primary(dest):
-            return dest, "redirect destination"
+            return dest, None, "redirect destination"
         print("    destination is an aggregator / social page, not a source")
     title = re.sub(r"^[^\w(\"']+", "", (row.get("opportunity_title") or "").strip())
     title = re.sub(r"[\s.…]+$", "", title)
     found = source_resolver.resolve(title, None)
     if found:
         print(f"    resolver  -> {found}")
-        return found, "resolver"
+        return found, None, "resolver"
     verified = VERIFIED.get(title_key(title))
     if verified:
-        return verified, "hand-verified"
-    return None, "unresolved"
+        return verified["url"], verified.get("funder"), "hand-verified"
+    return None, None, "unresolved"
 
 
 def main(commit: bool) -> int:
@@ -158,7 +165,7 @@ def main(commit: bool) -> int:
         uid = row.get("uid")
         print(f"{uid}  (tenant {row.get('tenant_id')})")
         print(f"    funder NOW  {row.get('funding_agency')!r}")
-        src, how = pick_source(row)
+        src, verified_funder, how = pick_source(row)
         if not src:
             print("    NO SOURCE FOUND — left exactly as it is\n")
             stuck += 1
@@ -175,9 +182,24 @@ def main(commit: bool) -> int:
             stuck += 1
             continue
 
+        funder = cand.get("funding_agency")
+        if funder == row.get("funding_agency"):
+            # The page could not name itself, so the redirector's name is still
+            # sitting there. THE WHOLE COMPLAINT WAS THAT NAME. A row that keeps
+            # it is not repaired, however well the rest of the fields came out —
+            # writing the good fields around it would make a wrong funder look
+            # researched. Better a row that still obviously needs a human.
+            funder = verified_funder
+            if not funder:
+                print(f"    page does not name its owner and no verified funder — "
+                      f"{row.get('funding_agency')!r} would survive. LEFT ALONE\n")
+                stuck += 1
+                continue
+            print(f"    funder from the verified page: {funder!r}")
+
         patch: dict[str, object] = {
             "opportunity_link": cand["opportunity_link"],
-            "funding_agency": cand.get("funding_agency") or row.get("funding_agency"),
+            "funding_agency": funder,
         }
         # apply_url held the same redirect on every row seen; only move it when
         # it did, so a real application form is never overwritten.
