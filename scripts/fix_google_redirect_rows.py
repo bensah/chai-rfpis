@@ -70,11 +70,17 @@ from db.supabase_client import fetch_all, service_client   # noqa: E402
 # the redirect's destination and the resolver have both failed, so a wrong entry
 # here cannot quietly override a real resolution.
 #
-# `funder` is here because the page cannot always say who it belongs to: who.int
-# serves no `og:site_name`, its <title> is the headline with no site-name tail,
-# and WHO is not in `source_registry`, so `_funder_from_page` returns None and the
-# poisoned "Google" would have survived the repair. It is read off the verified
-# page by a human, which is the same standard as the URL beside it.
+# `funder` is here because the page cannot always say who it belongs to. who.int
+# serves no `og:site_name` and its <title> is the headline with no site-name tail,
+# so `_funder_from_page` returned None and the poisoned "Google" survived the
+# first dry run of this script intact.
+#
+# `scripts/register_who_primary.py` has since made who.int a confirmed primary
+# with its donor name, so the registry now answers first and this entry is no
+# longer what fixes WHO. It stays because the registry is a shared, mutable table:
+# if that row is ever un-confirmed or renamed, the guard below would start
+# refusing rows rather than repairing them, and a hand-verified name read off the
+# same page is a cheap floor under it. Any new entry still needs both.
 VERIFIED: dict[str, dict[str, str]] = {
     "call for proposals advanced hiv disease ahd": {
         "url": "https://www.who.int/news-room/articles-detail/"
