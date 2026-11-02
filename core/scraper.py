@@ -180,7 +180,13 @@ _DEADLINE_LABEL_RE = re.compile(
     # but NOT a bare "closed calls" / "closed competitions" (a non-deadline use
     # that used to false-trigger and let its capture window swallow the REAL
     # "Submission deadline: <date>" that followed). Require a date context.
-    r"|close[sd]?(?:\s*[:\-–]|\s+(?:on|date|by)\b|(?=\s+\d)|(?=\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)))"
+    # The optional (…) is a STAGE QUALIFIER, and without it a two-stage call loses its
+    # deadline entirely. WCRF writes "Grant calls close (Letter of Intent stage): 13
+    # November 2026, 5pm GMT" — "close" is followed by a parenthetical, so none of the
+    # alternatives below could reach the colon and the whole page parsed as having NO
+    # deadline. Bounded to 60 chars, and the date context after it is still required.
+    r"|close[sd]?(?:\s*\([^)]{1,60}\))?"
+    r"(?:\s*[:\-–]|\s+(?:on|date|by)\b|(?=\s+\d)|(?=\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)))"
     r"|date\s+closed"
     r"|due\s+(?:date|by|on)"
     r"|apply\s+(?:by|before|no\s+later\s+than|until)"
@@ -1704,8 +1710,102 @@ def _scan_rest_json(name: str, url: str) -> list[dict[str, Any]]:
     # NOTE: The World Bank projects API (search.worldbank.org/api/v3/projects)
     # returns ONGOING / COMPLETED projects, not open funding opportunities — use
     # the procnotices endpoint above for open procurement instead.
+    if _WP_REST_COLLECTION_RE.search(url):
+        return _scan_wp_rest(name, url)
     log.info("REST JSON endpoint not specifically handled: %s — returning []", url)
     return []
+
+
+# ---------------------------------------------------------------------------
+# WordPress REST — any donor whose calls are a custom post type
+# ---------------------------------------------------------------------------
+# Donor sites on WordPress publish their calls as a custom post type, and WP exposes
+# every registered type at /wp-json/wp/v2/<rest_base> for free. That is worth a GENERIC
+# handler rather than one more per-donor function: FCDO's Global Research and Technology
+# Development programme is the first user (rest_base `funding-opportunitie`, 37 live
+# opportunities), and the endpoint is the only honest way in — its /funding/ page says
+# "Showing 37 opportunities" but ships just 2 links in static HTML, because the cards are
+# rendered client-side by JetEngine. The alternative was Playwright for a site that is
+# already serving us clean JSON.
+#
+# Discover a site's types with /wp-json/wp/v2/types, then point a source row at the
+# collection URL with scrape_method='rest_json'.
+_WP_REST_COLLECTION_RE = re.compile(r"/wp-json/wp/v\d+/[a-z0-9._-]+/?$", re.I)
+_WP_REST_MAX_PAGES = 5           # 100 per page — 500 calls is far past any donor's list
+_WP_REST_DETAIL_MAX = 40         # bounded detail fetches (see below)
+
+
+def _wp_text(fragment: str | None) -> str:
+    """Readable text out of a WP `rendered` HTML fragment (also unescapes entities)."""
+    if not fragment:
+        return ""
+    return _clean(BeautifulSoup(fragment, "html.parser").get_text(" ", strip=True))
+
+
+def _scan_wp_rest(name: str, url: str) -> list[dict[str, Any]]:
+    """A WordPress REST collection of funding opportunities → candidates.
+
+    `content.rendered` is EMPTY on page-builder sites (Elementor/JetEngine keep the body
+    in post meta), which is exactly the case on FCDO GRTD — so the feed alone would give
+    titles with no text, and every candidate would fail the gate as "not-an-rfp: no valid
+    RFP signal". The detail PAGES are server-rendered, so we fetch the body for items the
+    feed leaves empty, bounded by `_WP_REST_DETAIL_MAX`."""
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    items: list[dict[str, Any]] = []
+    for page in range(1, _WP_REST_MAX_PAGES + 1):
+        try:
+            r = _http.get(url, headers=headers, timeout=HTTP_TIMEOUT,
+                          params={"per_page": 100, "orderby": "date",
+                              "order": "desc", "page": page})
+            if r.status_code == 400 and page > 1:
+                break                      # WP returns 400 past the last page
+            r.raise_for_status()
+            batch = r.json() or []
+        except Exception as exc:
+            log.warning("WP REST fetch failed (%s page %d): %s", url, page, exc)
+            break
+        if not isinstance(batch, list) or not batch:
+            break
+        items.extend(batch)
+        try:
+            if page >= int(r.headers.get("X-WP-TotalPages") or 1):
+                break
+        except ValueError:
+            break
+
+    out: list[dict[str, Any]] = []
+    detail_fetches = 0
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        link = (it.get("link") or "").strip()
+        title = _wp_text((it.get("title") or {}).get("rendered"))
+        if not link or not title:
+            continue
+        text = (_wp_text((it.get("content") or {}).get("rendered"))
+                or _wp_text((it.get("excerpt") or {}).get("rendered")))
+        if len(text) < 200 and detail_fetches < _WP_REST_DETAIL_MAX:
+            detail_fetches += 1
+            _, page_text = _cg_page(link, {"User-Agent": USER_AGENT,
+                                           "Accept": "text/html"})
+            text = page_text or text
+        cand: dict[str, Any] = {
+            "opportunity_title": title[:300],
+            "opportunity_link": link,
+            "funding_agency": name,
+            "brief_description": (text[:1800] or None),
+            "_page_text": (text[:20000] or None),
+            "_source_origin": name,
+        }
+        posted = _parse_freeform_date(str(it.get("date") or "")[:10])
+        if posted:
+            cand["date_posted"] = posted.isoformat()
+        dl = _extract_deadline_from_text(text)
+        if dl:
+            cand["call_submission_deadline"] = dl.isoformat()
+        out.append(cand)
+    log.info("WP REST %s: %d items, %d detail fetches", url, len(items), detail_fetches)
+    return _dedup_by_link_or_title(out)
 
 
 def _fetch_grants_gov_details(numeric_id: str) -> dict[str, Any] | None:
