@@ -107,10 +107,11 @@ def days_to_deadline(d: Any) -> int | None:
 # Meetings note-taker carried its own shorter version and drifted, which is why it
 # lives here now and both import it.
 #
-# A row is ACTIVE when all four hold:
+# A row is ACTIVE when all five hold:
 #   * decision starts with "Proceed" — post-screening, the team agreed to pursue it;
 #   * it is the canonical row, not a duplicate;
-#   * nothing records a submission (see `_submitted` below);
+#   * progress is neither Completed (it went in) nor Discontinued (dropped on purpose);
+#   * nothing records a submission (see `is_submitted` below);
 #   * the deadline has not passed (a NULL deadline is not a passed one — an
 #     open-ended or unrecorded deadline keeps the row active rather than hiding it).
 #
@@ -174,8 +175,8 @@ def is_active_proceed(row: Any, *, on: date | None = None) -> bool:
     comment above. Takes anything with `.get()`: a Supabase dict or a DataFrame row."""
     if not _txt(row.get("decision")).startswith("proceed"):
         return False
-    # bool() rather than a truth test: a pandas NaN in this column is truthy and would
-    # read a canonical row as a duplicate.
+    # Matched explicitly rather than by truthiness: a pandas NaN in this column is
+    # truthy and a plain `if row.get("is_duplicate")` would drop a canonical row.
     dup = row.get("is_duplicate")
     if dup is True or (isinstance(dup, str) and dup.strip().lower() == "true"):
         return False
