@@ -1482,42 +1482,108 @@ _GOOGLE_ALERT_NOISE_DOMAINS = (
 )
 
 
+# Per-feed ceiling on how many unresolved redirects we will spend a Serper search on.
+# One alert that suddenly serves nothing but /goto? links would otherwise cost a search
+# and a page fetch for every entry in it, inside the scan's own time budget.
+_MAX_ALERT_RESOLUTIONS = 12
+
+
+def _resolver_available() -> bool:
+    """True when source_resolver can actually run a search (Serper configured)."""
+    try:
+        from core import source_resolver as _sr
+        return bool(_sr.available())
+    except Exception:
+        return False
+
+
+def _strip_www(host: str) -> str:
+    """'www.worldbank.org' -> 'worldbank.org'.
+
+    NOT `host.lstrip("www.")`: lstrip takes a SET of characters, so it eats every leading
+    'w' and '.' it finds. That spelling turned 'www.worldbank.org' into 'orldbank.org' and
+    would silently fail to match any noise domain beginning with w."""
+    h = (host or "").lower()
+    return h[4:] if h.startswith("www.") else h
+
+
 def _unwrap_google_url(url: str) -> str:
-    """Strip the google.com/url? redirect wrapper to get the real target."""
+    """Strip a google.com redirect wrapper to get the real target.
+
+    Google Alerts hand out several redirect shapes, and this only knew `google.com/url?`.
+    `/goto?url=` goes through the same alert feeds and was passed straight through, so the
+    stored link stayed on google.com — see `_google_redirect_host` for what that cost.
+
+    The `url`/`q` parameter is only usable when it IS a URL. On `/goto?` it is often an
+    opaque base64 protobuf token ('CAESyAEB6zsw…'), which is not decoded here: guessing at
+    an internal encoding would be a different bug the day Google changes it. Those fall
+    through unchanged and are rejected by `_google_redirect_host` instead."""
     if not url:
-        return url
-    if "google.com/url" not in url:
         return url
     try:
         parsed = urlsplit(url)
+        if not _strip_www(parsed.netloc).endswith("google.com"):
+            return url
         qs = parse_qs(parsed.query)
         for key in ("url", "q"):  # Google uses either depending on context
             if key in qs and qs[key]:
-                return unquote(qs[key][0])
+                target = unquote(qs[key][0])
+                # Only accept a real absolute URL. An opaque token is not one.
+                if target.lower().startswith(("http://", "https://")):
+                    return target
     except Exception:
         pass
     return url
 
 
-def _is_google_alert_noise(url: str) -> bool:
-    """Return True if the URL is from a known noise domain."""
+def _google_redirect_host(url: str) -> bool:
+    """True when a link is STILL on a Google host after unwrapping — i.e. we never got to
+    the donor's own page.
+
+    Such a link is worthless to the scan twice over. There is nothing at the other end to
+    read, so every extracted field comes back blank; and `_domain_to_funder` reads the host
+    and names the funder after the redirector. AS-261030-124802 was stored exactly that
+    way: funder "Google", no description, no deadline, no value, no instrument — an empty
+    row presented as a Google funding opportunity, which is both wrong and, to anyone
+    reading the Screen table, misleading about who is offering the money."""
     try:
-        host = urlsplit(url).netloc.lower().lstrip("www.")
+        return _strip_www(urlsplit(url).netloc).endswith("google.com")
+    except Exception:
+        return False
+
+
+def _is_google_alert_noise(url: str) -> bool:
+    """Return True if the URL is from a known noise domain, or is an unresolved Google
+    redirect (which is noise for a different reason — see `_google_redirect_host`)."""
+    try:
+        host = _strip_www(urlsplit(url).netloc)
+        if host.endswith("google.com"):
+            return True
         return any(host == d or host.endswith("." + d) for d in _GOOGLE_ALERT_NOISE_DOMAINS)
     except Exception:
         return False
 
 
-def _domain_to_funder(url: str) -> str:
+def _domain_to_funder(url: str) -> str | None:
     """Convert a URL host into a readable funder label, e.g.
-    'https://www.fondation-mma.org/calls' → 'fondation-mma.org'."""
+    'https://www.fondation-mma.org/calls' → 'fondation-mma.org'.
+
+    Returns None rather than a host we know is not the funder. A name here is published
+    on the Screen table and in the Review header as the organisation offering the money,
+    so "Google" for an alert redirect states something untrue. None leaves the field
+    empty, which the UI renders as "—" and a reviewer reads as unknown — and which
+    `source_resolver.resolve_and_enrich` treats as "fill this in from the real page".
+
+    A bare host is a weak funder label at the best of times; `source_resolver.
+    is_aggregator_funder` already classes one as not-a-real-funder, so a resolved page
+    will overwrite whatever this returns."""
     try:
-        host = urlsplit(url).netloc.lower()
-        if host.startswith("www."):
-            host = host[4:]
-        return host or "(unknown)"
+        host = _strip_www(urlsplit(url).netloc)
+        if not host or _is_google_alert_noise(url):
+            return None
+        return host
     except Exception:
-        return "(unknown)"
+        return None
 
 
 def _scan_google_alerts(name: str, url: str) -> list[dict[str, Any]]:
@@ -1554,20 +1620,19 @@ def _scan_google_alerts(name: str, url: str) -> list[dict[str, Any]]:
 
     out: list[dict[str, Any]] = []
     skipped_noise = 0
+    rescued = 0
+    unresolvable = 0
     for entry in feed.entries[:100]:
         title = _clean(getattr(entry, "title", "") or "")
         raw_link = _clean(getattr(entry, "link", "") or "")
         link = _unwrap_google_url(raw_link)
         if not title or not link:
             continue
-        if _is_google_alert_noise(link):
-            skipped_noise += 1
-            continue
         # Google's <summary> already strips bold tags etc. into clean
         # snippet text — use it as the starting description.
         summary = _clean(getattr(entry, "summary", "") or "")
         published = _parse_struct_time(getattr(entry, "published_parsed", None))
-        out.append({
+        cand = {
             "opportunity_title": title,
             "opportunity_link": link,
             "funding_agency": _domain_to_funder(link),
@@ -1575,12 +1640,44 @@ def _scan_google_alerts(name: str, url: str) -> list[dict[str, Any]]:
             "date_posted": published,
             "call_submission_deadline": None,
             "_source_origin": f"{name} (Google Alert)",
-        })
+        }
+
+        if _google_redirect_host(link):
+            # The alert handed us a redirect we could not unwrap, so there is no donor
+            # page behind this link to read: left alone it becomes a row with a real
+            # title, no description, no deadline, no value, and "Google" as the funder.
+            #
+            # A title is still a lead, and we already own the machinery to chase it —
+            # the same Serper-backed resolver that turns a DevelopmentAid listing into
+            # the donor's own page. Run it here before giving up, bounded per feed so a
+            # bad alert cannot turn one scan into a hundred searches.
+            if rescued < _MAX_ALERT_RESOLUTIONS and _resolver_available():
+                try:
+                    from core import source_resolver as _sr
+                    if _sr.resolve_and_enrich(cand):
+                        rescued += 1
+                        out.append(cand)
+                        continue
+                except Exception as exc:         # never raise into a scan
+                    log.debug("Google Alert resolve failed for %r: %s", title, exc)
+            # Nothing to read and nothing found: drop it rather than store an empty row
+            # attributed to the redirector. The title is in the log if anyone asks.
+            unresolvable += 1
+            log.info("Google Alert %s: unresolved redirect, dropped %r", name, title[:80])
+            continue
+
+        if _is_google_alert_noise(link):
+            skipped_noise += 1
+            continue
+        out.append(cand)
     if skipped_noise:
         log.info(
             "Google Alert %s: skipped %d noise-domain entr%s (social / aggregator)",
             name, skipped_noise, "y" if skipped_noise == 1 else "ies",
         )
+    if rescued or unresolvable:
+        log.info("Google Alert %s: %d redirect(s) resolved to a source page, %d dropped",
+                 name, rescued, unresolvable)
     return out
 
 
