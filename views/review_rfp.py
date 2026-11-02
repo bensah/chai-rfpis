@@ -24,6 +24,7 @@ from core.review_week import all_weeks_for_year, review_week_label, upcoming_rev
 from core.scorer import (
     CRITERIA, criterion_score, default_response, score_submission,
 )
+from core.scorer import decline_flags as _scorer_decline_flags
 from core.records import clean_df, drop_concluded
 from db.supabase_client import get_client, safe_execute
 from views.rfp_editor import render_rfp_editor
@@ -230,6 +231,24 @@ def _baseline_val(key):
     return _derived.get(key) or row.get(key)
 
 
+# DECLINE FLAGS — recomputed from the values this page is SHOWING, by the same rule
+# scan-time scoring uses (core.scorer.decline_flags).
+#
+# It used to print the stored `decline_flags_present` column straight out of the row,
+# while every criterion above it came from `_baseline_val` — the live derivation. The
+# two drift apart the moment the org profile, donor intel or derivation logic changes
+# after a scan, and the page then states a contradiction. Reported 2026-11-02 on
+# AS-261030-1248172 (Grand Challenges Canada): all five MUSTs green on screen, and
+# "Decline flags: Yes" beneath them. The column was written on 30 October off
+# qualification = "No, not eligible"; the live derivation reads "Yes, fully".
+#
+# A human's saved answer still wins, on the same test the decision chip uses — a
+# stamped `decision_date` means a real Review save, so the stored flag is that
+# reviewer's call rather than a scan-time leftover.
+_live_decline = _scorer_decline_flags({k: _baseline_val(k) for k in CRITERIA})
+_decline_now = bool(row.get("decline_flags_present")) if _reviewed else _live_decline
+
+
 # PERSISTENT SYSTEM decision — computed from the pure DERIVED criteria (the system's
 # own read), NOT the human-editable values. It does NOT change as the reviewer edits
 # the criteria; that's what makes the system-vs-human comparison meaningful. (The Bid
@@ -428,9 +447,13 @@ stored_has_values = any(
 # NOT seeded any more: there is no criterion-level widget to seed — each criterion is
 # edited through its components, and every component widget takes its own default from the
 # live derivation on each render. Sentinel seeds once per UID per session.
-_seed_sentinel = f"_review_seeded_v6_{row['uid']}"
+# The seed key is bumped to v7 because the decline seed below changed meaning: a session
+# that already seeded v6 would otherwise keep serving the stale stored flag it cached.
+_seed_sentinel = f"_review_seeded_v7_{row['uid']}"
 if _seed_sentinel not in st.session_state:
-    st.session_state[f"decline_{row['uid']}"] = "Yes" if row.get("decline_flags_present") else "No"
+    # Seeded from `_decline_now`, not the stored column, so opening the editor shows the
+    # same answer the read-only card does rather than reverting to the scan-time flag.
+    st.session_state[f"decline_{row['uid']}"] = "Yes" if _decline_now else "No"
     st.session_state[f"risks_{row['uid']}"] = _safe_str(row.get("key_risks"))
     _stored_dec = row.get("decision") or row.get("auto_recommendation")
     if _stored_dec:
@@ -798,13 +821,13 @@ with dl_col:
     if edit_mode:
         decline_in = st.radio(
             "Decline flags?", ["No", "Yes"], horizontal=True,
-            index=1 if row.get("decline_flags_present") else 0,
+            index=1 if _decline_now else 0,
             key=f"decline_{row['uid']}")
         risks_in = st.text_input(
             "Key risks (one line)", value=_safe_str(row.get("key_risks")),
             key=f"risks_{row['uid']}")
     else:
-        decline_in = "Yes" if row.get("decline_flags_present") else "No"
+        decline_in = "Yes" if _decline_now else "No"
         risks_in = _safe_str(row.get("key_risks"))
         _risk_disp = (_esc(row.get("key_risks"))
                       if str(row.get("key_risks") or "").strip() else "—")

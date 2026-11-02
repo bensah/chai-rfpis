@@ -34,13 +34,12 @@ os.environ.setdefault("SUPABASE_KEY", "sb_secret_dummy")
 
 from core.auto_scorer import _MUST_KEYS, _PREFER_KEYS                 # noqa: E402
 from core.scorer import criterion_score                              # noqa: E402
+from core.scorer import decline_flags as _flag                       # noqa: E402
 
-
-def _flag(values: dict) -> bool:
-    """The shipped rule, expressed exactly as auto_score computes it."""
-    musts_failed = sum(1 for m in _MUST_KEYS if criterion_score(values.get(m)) == 0)
-    prefers_failed = sum(1 for p in _PREFER_KEYS if criterion_score(values.get(p)) == 0)
-    return bool(musts_failed) or prefers_failed >= 2
+# `_flag` IS the shipped function now. It used to be a copy of the rule written out
+# again here, which tested that the rule was what this file said it was — not that the
+# app computed it that way. The app has two callers (scan-time scoring and the Review
+# page's live recompute); a copy here would have told us nothing about either.
 
 
 def _values(musts, prefers):
@@ -124,6 +123,41 @@ class TheDifferenceFromTheOldRuleTests(unittest.TestCase):
         v = _values(ALL_MUST_OK, ALL_PREFER_OK)
         self.assertFalse(self._old(v))
         self.assertFalse(_flag(v))
+
+
+class TheReviewPageMustRecomputeFromWhatItShowsTests(unittest.TestCase):
+    """Reported 2026-11-02 on AS-261030-1248172 (Grand Challenges Canada): five green
+    MUSTs on screen and "Decline flags: Yes" underneath them.
+
+    The grid rendered the LIVE derivation while the flag printed the stored column, so
+    the page contradicted itself. These are that row's real values, measured."""
+
+    STORED = {"qualification": "No, not eligible", "strategic_fit": "Strongly aligns",
+              "capacity": "Yes, comfortably", "geographic_fit": "Yes, our own presence",
+              "cofinancing": "Yes, fully met", "funding_quality": "High",
+              "funder_relationship": "Some contact",
+              "competitiveness": "Strong (limited field / incumbent / clear edge)",
+              "bid_effort": "Ample time, sufficient resources"}
+    # What derive_criteria returns for the same row today.
+    LIVE = {**STORED, "qualification": "Yes, fully", "funder_relationship": "None",
+            "bid_effort": "Ample time, but no dedicated team"}
+
+    def test_the_stored_values_really_did_flag(self):
+        # The column was not wrong when it was written — qualification was a failing MUST.
+        self.assertTrue(_flag(self.STORED))
+
+    def test_the_live_values_do_not_flag(self):
+        # One failing PREFER (funder_relationship) is not two, and no MUST fails.
+        self.assertFalse(_flag(self.LIVE))
+
+    def test_so_the_two_disagree_which_is_the_bug(self):
+        self.assertNotEqual(_flag(self.STORED), _flag(self.LIVE))
+
+    def test_a_single_failing_prefer_is_still_not_enough(self):
+        # Guards the specific near-miss: drop funder_relationship only and nothing flags.
+        self.assertEqual(
+            sum(1 for p in _PREFER_KEYS if criterion_score(self.LIVE.get(p)) == 0), 1)
+        self.assertFalse(_flag(self.LIVE))
 
 
 class TheFlagStillOverridesTheScoreTests(unittest.TestCase):

@@ -33,6 +33,7 @@ from typing import Any
 from core import geographies as geo
 from core.policies import CRITERION_KEYS
 from core.scorer import criterion_score, score_submission
+from core.scorer import decline_flags as _decline_flags
 
 # Region/tier labels from the shared geography vocabulary — used so an admin's
 # eligible-geographies selection that is a REGION (not a country) is recognised
@@ -2710,11 +2711,10 @@ def _criterion_value(text: str, rule: dict[str, Any]) -> str:
 
 # MUST / PREFER membership — explicit since the bid/no-bid rename dropped the
 # must_/prefer_ prefixes (the keys now speak for themselves). Order mirrors
-# CRITERION_KEYS.
-_MUST_KEYS = ("qualification", "strategic_fit", "capacity",
-              "geographic_fit", "cofinancing")
-_PREFER_KEYS = ("funding_quality", "funder_relationship",
-                "competitiveness", "bid_effort")
+# CRITERION_KEYS. Re-exported from core.scorer, which slices them off CRITERIA:
+# they were a second hand-written copy of that same split, and the decline-flag
+# rule that reads them now lives there too.
+from core.scorer import MUST_KEYS as _MUST_KEYS, PREFER_KEYS as _PREFER_KEYS
 
 
 def recommend_from_composite(crit_vals: dict[str, Any], composite: float,
@@ -3272,30 +3272,11 @@ def auto_score(
     # the derivation against the RFP text (see policies['criteria']).
     values = _apply_criteria_keywords(values, text, policies)
 
-    # DECLINE-FLAG RULE (owner, 2026-08-17):
-    #   * any ONE failing MUST                     -> Yes
-    #   * all MUSTs pass, but >= 2 failing PREFERs  -> Yes
-    #   * otherwise                                 -> No
-    #
-    # This is a flag about FAILURE, and it used to be a flag about the absence of
-    # success: `not (all 5 MUSTs green AND >= 3 of 4 PREFERs green)`. The difference
-    # matters because the flag is not a badge - `scorer.auto_recommendation` returns
-    # "Decline" whenever it is set, whatever the score. Under the old rule a call with
-    # every MUST green, two PREFERs green and two merely UNCERTAIN was flagged, so a
-    # 92/100 call was recommended Decline on the strength of two questions we could not
-    # answer. Nothing had failed.
-    #
-    # "Not sure" and "Partial" are therefore NOT failures here. That is the same
-    # principle the rest of the model already follows - an unstated value is excluded
-    # from a criterion's count rather than scored zero - and it is the substantive change:
-    # only a measured 0 counts against a call. A partial MUST still costs points through
-    # the weighted score, which is the proportionate instrument; it no longer forces the
-    # verdict past the score entirely.
-    _must_scores = [criterion_score(values.get(m)) for m in _MUST_KEYS]
-    _prefer_scores = [criterion_score(values.get(p)) for p in _PREFER_KEYS]
-    _musts_failed = sum(1 for s in _must_scores if s == 0)
-    _prefers_failed = sum(1 for s in _prefer_scores if s == 0)
-    decline_flags = bool(_musts_failed) or _prefers_failed >= 2
+    # DECLINE-FLAG RULE (owner, 2026-08-17) — now `scorer.decline_flags`, which carries
+    # the rule and the reasoning. It moved there because the rule has a second caller:
+    # any screen that shows the LIVE derivation has to recompute the flag from the values
+    # it is displaying, or it contradicts its own criteria grid.
+    decline_flags = _decline_flags(values)
 
     # Numeric score for display purposes (Review gauge). We still compute
     # it the legacy way — weighted sum of MUST/PREFER values, 0-100 scale.
