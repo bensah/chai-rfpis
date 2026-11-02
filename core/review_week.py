@@ -39,6 +39,24 @@ def upcoming_review_week_label(d: date | None = None) -> str:
     return review_week_label(d)
 
 
+def previous_review_week_label(d: date | None = None) -> str:
+    """Label for the week BEFORE the one containing `d` (default today).
+
+    This is what the review screens open on, and it is a statement about how the team
+    works rather than a convenience. A week runs Monday to Sunday; the scan finds calls
+    across that week; the team sits down on the following Monday and reviews what the
+    week just gone turned up. On that Monday the current week is one day old and holds
+    almost nothing, so defaulting to it opened Screen and Review on a near-empty page and
+    every reviewer changed the selector by hand before starting — every Monday.
+
+    On Monday 2 Nov 2026 this returns "Week 44 (26 Oct - 1 Nov)": the week that ended the
+    day before. Stamping is untouched — a row still records the week it was found in.
+    """
+    d = d or date.today()
+    mon, _ = week_bounds(d)
+    return review_week_label(mon - timedelta(days=7))
+
+
 def all_weeks_for_year(year: int) -> list[str]:
     """All 52 (or 53) ISO-week labels for the given year. Used in selectors."""
     labels: list[str] = []

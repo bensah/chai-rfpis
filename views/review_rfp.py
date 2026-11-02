@@ -20,7 +20,7 @@ import streamlit as st
 from core import ui_links as _links
 
 from core import dropdowns, settings
-from core.review_week import all_weeks_for_year, review_week_label, upcoming_review_week_label
+from core.review_week import all_weeks_for_year, previous_review_week_label
 from core.scorer import (
     CRITERIA, criterion_score, default_response, score_submission,
 )
@@ -52,7 +52,9 @@ st.markdown(
 # Week + data
 # -----------------------------------------------------------------------------
 all_weeks = all_weeks_for_year(year)
-default_week = review_week_label()
+# Opens on the week that ENDED last Sunday, not the one running now — Monday's review
+# goes through what the week just gone turned up. See review_week.previous_review_week_label.
+default_week = previous_review_week_label()
 if default_week not in all_weeks:
     all_weeks = [default_week] + all_weeks
 

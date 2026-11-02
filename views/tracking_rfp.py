@@ -33,7 +33,9 @@ from core.currency import format_money
 from core.scorer import criterion_score
 from core.records import clean_record, clean_df
 from core.pipeline import days_to_deadline, deadline_status, is_active_proceed, usd_value
-from core.review_week import all_weeks_for_year, monday_from_week_label, week_bounds
+from core.review_week import (
+    all_weeks_for_year, monday_from_week_label, previous_review_week_label, week_bounds,
+)
 from db.supabase_client import get_client
 from views.rfp_editor import render_rfp_editor
 from core.cache_scope import scope_key
@@ -280,10 +282,11 @@ with st.container(border=True):
             all_weeks[0],
         )
     else:
-        # current ISO week
-        today_mon = today - timedelta(days=today.weekday())
+        # No note on this RFP yet — open on the week the team is reviewing, which is the
+        # one that ended last Sunday, the same default Screen and Review use.
+        prev_mon = monday_from_week_label(previous_review_week_label(today), year)
         default_label = next(
-            (w for w in all_weeks if _monday_label_to_date(w) == today_mon),
+            (w for w in all_weeks if _monday_label_to_date(w) == prev_mon),
             all_weeks[0],
         )
 
