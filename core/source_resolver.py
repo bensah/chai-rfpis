@@ -379,6 +379,22 @@ def resolve_and_enrich(cand: dict) -> bool:
     src = resolve(cand.get("opportunity_title"), cand.get("funding_agency"))
     if not src:
         return False
+    return enrich_from_source(cand, src)
+
+
+def enrich_from_source(cand: dict, src: str, *, force_funder: bool = False) -> bool:
+    """Fetch `src` and fill the candidate from it. Split out of `resolve_and_enrich`
+    so a caller that ALREADY knows the primary URL can use the same extraction —
+    `scripts/fix_google_redirect_rows.py` repairs stored rows this way, and
+    repeating this body there is how the two would drift apart.
+
+    `force_funder` overrides the funder even when the stored one is not a
+    recognisable aggregator label. The repair script needs it: a funder derived
+    from a REDIRECTOR's host ("Google", off a google.com/goto link) is a real
+    organisation's name, so no name-based test can tell it from the genuine
+    article — google.org's Impact Challenge is a live row with "Google" correctly
+    as its funder. What condemns the value is where it came from, which only the
+    caller knows."""
     src = canonical_grandchallenges(src)          # www.grandchallenges → gcgh. (working host)
     try:
         import requests
@@ -404,7 +420,8 @@ def resolve_and_enrich(cand: dict) -> bool:
     # "FundsForNGOs" as the funder in the rail and on the opportunity page. Only overwrite
     # when what we hold IS an aggregator label or a bare host: a real funder name that the
     # listing happened to get right must not be traded for a page's <title> tail.
-    if is_aggregator_funder(cand.get("funding_agency")) or not cand.get("funding_agency"):
+    if force_funder or is_aggregator_funder(cand.get("funding_agency")) \
+            or not cand.get("funding_agency"):
         better = _funder_from_page(src, soup)
         if better:
             cand["_funder_from_aggregator"] = cand.get("funding_agency")
@@ -421,5 +438,36 @@ def resolve_and_enrich(cand: dict) -> bool:
         desc = (desc + ("\n\n" if desc else "") + "Eligibility: " + elig)
     if desc:
         cand["brief_description"] = desc[:1800]
+    # Underscore keys are transients: the scan path copies named columns and ignores
+    # these, so exposing them costs it nothing. A caller repairing a STORED row has
+    # columns for them (`eligibility_specifics`) and a reason to want the real title
+    # (a feed sends a truncated one), which the scan path, holding the scraped title
+    # already, does not.
+    if elig:
+        cand["_eligibility"] = elig
+    title = _page_title(soup)
+    if title:
+        cand["_page_title"] = title
     log.info("resolved aggregator → source: %s", src)
     return True
+
+
+def _page_title(soup) -> str | None:
+    """The page's own headline, with the site-name tail a publisher appends removed —
+    `_funder_from_page` reads that tail as the ORGANISATION, so the two must not both
+    claim it. Returns None rather than a fragment."""
+    if soup is None:
+        return None
+    try:
+        og = soup.find("meta", attrs={"property": "og:title"})
+        raw = (og.get("content") or "").strip() if og else ""
+        if not raw:
+            t = soup.find("title")
+            raw = (t.get_text(" ", strip=True) if t else "") or ""
+        for sep in ("|", " - ", " – ", " — ", "::"):
+            if sep in raw:
+                raw = raw.split(sep)[0].strip()
+                break
+        return raw if 10 < len(raw) <= 300 else None
+    except Exception:
+        return None
