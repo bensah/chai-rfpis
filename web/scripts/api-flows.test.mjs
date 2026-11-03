@@ -1143,3 +1143,216 @@ test("Submitted counts a tenant with more than 1000 waiting proposals in full", 
   assert.equal(r.body.total, 1500);
   assert.equal(r.body.rows.length, 1500);
 });
+
+test("Submitted and Outcome partition the submitted set, with no row in both", async () => {
+  // The last two stages split one population on `is_outcome` alone. Asserted together,
+  // because the two ways this goes wrong are invisible separately: a row in neither has
+  // fallen off the end of the line, and a row in both is counted twice in the money.
+  const { db, call, signIn } = setup();
+  const base = {
+    tenant_id: T1, decision: "Proceed", is_duplicate: false, progress_status: "Completed",
+    date_completed: "2026-05-01",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "O-WON", ...base, donor_decision: "Approved", amount_secured: 1000,
+      currency_secured: "USD" },
+    { uid: "O-LOST", ...base, donor_decision: "Not Approved", amount_requested: 500,
+      currency_secured: "USD" },
+    { uid: "O-WAIT", ...base, donor_decision: "Under Review" },
+    { uid: "O-BLANK", ...base, donor_decision: "Not submitted" },
+    { uid: "O-ODD", ...base, donor_decision: "Submitted" },
+    { uid: "O-DUP", ...base, donor_decision: "Approved", is_duplicate: true },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const w = "from=2026-01-01&to=2027-01-01";
+
+  const sub = (await call("GET", `/pipelines/submitted?${w}`, null, col.token))
+    .body.rows.map((r) => r.uid).sort();
+  const out = (await call("GET", `/pipelines/outcome?${w}`, null, col.token))
+    .body.rows.map((r) => r.uid).sort();
+
+  assert.deepEqual(out, ["O-LOST", "O-WON"], "only what the funder answered");
+  assert.deepEqual(sub, ["O-BLANK", "O-ODD", "O-WAIT"], "Under Review is NOT an outcome");
+  assert.deepEqual(sub.filter((u) => out.includes(u)), [], "no row on both stages");
+  assert.deepEqual([...sub, ...out].filter((u) => u === "O-DUP"), [],
+    "a duplicate is not a second application");
+});
+
+test("counts are applications, not rows — a proposal submitted twice counts twice", async () => {
+  // core/records.py::submission_weight. One live Not-Approved row carries submissions = 2,
+  // so counting rows would show 4 losses where the Streamlit Applied Funding page shows 5.
+  const { db, call, signIn } = setup();
+  const base = {
+    tenant_id: T1, decision: "Proceed", is_duplicate: false, progress_status: "Completed",
+    date_of_approval: "2026-05-01", currency_secured: "USD",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "W-ONCE", ...base, donor_decision: "Not Approved", submissions: 1,
+      amount_requested: 100 },
+    { uid: "W-TWICE", ...base, donor_decision: "Not Approved", submissions: 2,
+      amount_requested: 100 },
+    // A Completed row counts at least once, which is also the floor migration 089 enforces.
+    { uid: "W-ZERO", ...base, donor_decision: "Approved", submissions: 0,
+      amount_secured: 50 },
+    { uid: "W-NULL", ...base, donor_decision: "Approved", amount_secured: 50 },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/outcome?from=2026-01-01&to=2027-01-01",
+    null, col.token);
+
+  assert.equal(r.body.rows.length, 4, "four rows");
+  assert.equal(r.body.counts.applications, 5, "but five applications");
+  assert.equal(r.body.counts.notApproved, 3, "the twice-submitted one counts twice");
+  assert.equal(r.body.counts.approved, 2, "0 and null both floor at 1");
+});
+
+test("an answered row whose progress never reached Completed is reported, not repaired", async () => {
+  // The submission ledger counts only Completed rows, which is the owner's rule: a donor
+  // decision alone once resurrected counts migration 089 had deliberately reset. So a row
+  // that contradicts itself — the funder answered, yet progress says Not Started — weighs
+  // ZERO and is named, rather than being quietly fixed or quietly dropped.
+  const { db, call, signIn } = setup();
+  db.tables.rfp_submissions.push(
+    { uid: "G-STALE", tenant_id: T1, decision: "Proceed", is_duplicate: false,
+      progress_status: "Not Started", donor_decision: "Approved",
+      date_of_approval: "2026-05-01", amount_secured: 999, currency_secured: "USD" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/outcome?from=2026-01-01&to=2027-01-01",
+    null, col.token);
+
+  assert.deepEqual(r.body.rows.map((x) => x.uid), ["G-STALE"], "still shown");
+  assert.equal(r.body.rows[0].applications, 0);
+  assert.equal(r.body.counts.approved, 0, "and counted as nothing");
+  assert.deepEqual(r.body.ledgerGap, ["G-STALE"], "but named, so somebody can fix the row");
+  // The row is NOT written to. Reporting is the whole feature.
+  assert.equal(db.tables.rfp_submissions.find((x) => x.uid === "G-STALE").progress_status,
+    "Not Started");
+});
+
+test("the request converts in the currency we submitted in, not the call's", async () => {
+  // core/records.py::requested_currency, and a named bug: a Canadian call advertised in
+  // CAD against a budget submitted in USD rendered a USD 715,400 request as "$509,530
+  // USD". Live, the one CAD call among the answered applications was requested in USD.
+  const { db, call, signIn } = setup();
+  db.tables.rfp_submissions.push(
+    { uid: "C-CAD", tenant_id: T1, decision: "Proceed", is_duplicate: false,
+      progress_status: "Completed", donor_decision: "Not Approved",
+      date_of_approval: "2026-05-01",
+      amount_requested: 715400, currency: "CAD $", currency_secured: "USD" },
+    // No currency_secured at all: the call's currency is the documented fallback for rows
+    // saved before that field existed.
+    { uid: "C-LEGACY", tenant_id: T1, decision: "Proceed", is_duplicate: false,
+      progress_status: "Completed", donor_decision: "Not Approved",
+      date_of_approval: "2026-05-01", amount_requested: 1000, currency: "USD" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/outcome?from=2026-01-01&to=2027-01-01",
+    null, col.token);
+  const by = Object.fromEntries(r.body.rows.map((x) => [x.uid, x]));
+
+  assert.equal(by["C-CAD"].usd_requested, 715400,
+    "submitted in USD, so no conversion — reading the call's CAD would cut it by 28%");
+  assert.equal(by["C-LEGACY"].usd_requested, 1000);
+});
+
+test("money: secured is what was won, unsecured is what was asked for and refused", async () => {
+  // core/records.py's two amount rules. Unsecured is funding LOST — the request tied to a
+  // declined application — not funding not yet won, which is still on Submitted.
+  const { db, call, signIn } = setup();
+  const base = {
+    tenant_id: T1, decision: "Proceed", is_duplicate: false, progress_status: "Completed",
+    date_of_approval: "2026-05-01", currency_secured: "USD",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "M-WON", ...base, donor_decision: "Approved",
+      amount_requested: 600272, amount_secured: 546114 },
+    { uid: "M-LOST", ...base, donor_decision: "Not Approved", amount_requested: 130000 },
+    // Approved with no amount recorded: adds nothing rather than counting the request.
+    { uid: "M-WON-BLANK", ...base, donor_decision: "Approved", amount_requested: 90000 },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/outcome?from=2026-01-01&to=2027-01-01",
+    null, col.token);
+
+  assert.equal(r.body.money.secured, 546114, "only what was actually awarded");
+  assert.equal(r.body.money.unsecured, 130000, "only the declined request");
+  assert.equal(r.body.money.requested, 600272 + 130000 + 90000, "every answered request");
+});
+
+test("the Funding page's win rate stays recomputable from this response", async () => {
+  // Two denominators, both correct for their page: this stage divides by DECIDED
+  // applications ("when a funder answers, how often is it yes"), app_pages/grants.py by
+  // everything submitted including pending. `pending` is returned so neither number has to
+  // be taken on faith — live, 44% here against the Funding page's 17%.
+  const { db, call, signIn } = setup();
+  const base = {
+    tenant_id: T1, decision: "Proceed", is_duplicate: false, progress_status: "Completed",
+    date_of_approval: "2026-05-01", date_completed: "2026-04-01", currency_secured: "USD",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "R-W1", ...base, donor_decision: "Approved" },
+    { uid: "R-L1", ...base, donor_decision: "Not Approved" },
+    { uid: "R-P1", ...base, donor_decision: "Under Review" },
+    { uid: "R-P2", ...base, donor_decision: "Under Review", submissions: 3 },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/outcome?from=2026-01-01&to=2027-01-01",
+    null, col.token);
+  const { approved, notApproved, pending } = r.body.counts;
+
+  assert.equal(approved, 1);
+  assert.equal(notApproved, 1);
+  assert.equal(pending, 4, "weighted too — one of them was submitted three times");
+  assert.equal(Math.round(approved / (approved + notApproved) * 100), 50, "this stage");
+  assert.equal(Math.round(approved / (approved + notApproved + pending) * 100), 17,
+    "the Funding page's, from the same response");
+});
+
+test("an answer is dated by the day the funder gave it, with a fallback", async () => {
+  // date_of_approval is NOT approvals-only despite the name — a live Not-Approved row
+  // carries it — and only 4 of the 8 answered rows have it at all, so the fallback is
+  // doing real work rather than guarding a corner.
+  const { db, call, signIn } = setup();
+  const base = {
+    tenant_id: T1, decision: "Proceed", is_duplicate: false, progress_status: "Completed",
+    donor_decision: "Not Approved", currency_secured: "USD",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "D-EXACT", ...base, date_of_approval: "2026-09-04",
+      date_completed: "2026-08-07", submitted_at: "2026-01-01T00:00:00+00:00" },
+    { uid: "D-SENT", ...base, date_completed: "2026-06-24",
+      submitted_at: "2026-01-01T00:00:00+00:00" },
+    { uid: "D-INTAKE", ...base, submitted_at: "2026-03-15T00:00:00+00:00" },
+    { uid: "D-NONE", ...base },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/outcome?from=2026-01-01&to=2027-01-01",
+    null, col.token);
+  const by = Object.fromEntries(r.body.rows.map((x) => [x.uid, x]));
+
+  assert.equal(by["D-EXACT"].outcome_on, "2026-09-04");
+  assert.equal(by["D-SENT"].outcome_on, "2026-06-24");
+  assert.equal(by["D-INTAKE"].outcome_on, "2026-03-15");
+  assert.ok(!("D-NONE" in by), "no date at all, so no period to put it in");
+  assert.equal(r.body.undated, 1, "counted rather than dropped");
+  // Newest first: the recent answer is the one somebody came to look at.
+  assert.deepEqual(r.body.rows.map((x) => x.uid), ["D-EXACT", "D-SENT", "D-INTAKE"]);
+});
+
+test("Outcome counts a tenant with more than 1000 answers in full", async () => {
+  // PostgREST caps a response at 1000 rows silently, and these totals are money.
+  const { db, call, signIn } = setup();
+  for (let i = 0; i < 1500; i++) {
+    db.tables.rfp_submissions.push({
+      uid: `AW-${String(i).padStart(4, "0")}`, tenant_id: T1, decision: "Proceed",
+      is_duplicate: false, progress_status: "Completed", donor_decision: "Approved",
+      date_of_approval: "2026-02-02", amount_secured: 10, currency_secured: "USD",
+    });
+  }
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/outcome?from=2026-01-01&to=2027-01-01",
+    null, col.token);
+  assert.equal(r.body.counts.approved, 1500);
+  assert.equal(r.body.money.secured, 15000);
+});

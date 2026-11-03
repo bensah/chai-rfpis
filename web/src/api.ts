@@ -300,6 +300,62 @@ export const fetchSubmitted = (from: string, to: string) =>
   call<Submitted>(
     `/pipelines/submitted?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
 
+/** An application the funder has answered, as `/pipelines/outcome` projects it. */
+export type OutcomeRow = ScreenRow & {
+  date_completed: string | null;
+  date_of_approval: string | null;
+  amount_secured: number | null;
+  currency_secured: string | null;
+  amount_requested: number | null;
+  submissions: number | null;
+  proposal_lead: string | null;
+  donor_program_officer: string | null;
+  kickoff_date: string | null;
+  project_duration: string | null;
+  /** The day the funder answered: `date_of_approval`, else `date_completed`, else
+   *  `submitted_at`. Resolved by the API. */
+  outcome_on: string | null;
+  /** How many donor-side applications this row IS — `core/records.py::submission_weight`.
+   *  A row submitted twice is two, and a row whose progress never reached Completed is
+   *  ZERO, which is what `ledgerGap` surfaces. */
+  applications: number;
+  /** Converted server-side at the live rate, so the page adds up one set of numbers.
+   *  The request uses the currency WE submitted in, not the call's advertised one. */
+  usd_requested: number;
+  usd_secured: number;
+};
+
+export type Outcome = {
+  from: string; to: string;
+  rows: OutcomeRow[];
+  /**
+   * SUBMISSION-WEIGHTED, not row counts. `pending` is here only so the Funding page's win
+   * rate — approved over everything submitted, including what is still waiting — stays
+   * recomputable from this one response. This stage's own rate divides by the DECIDED
+   * applications, because it shows only answered ones; live, that is 44% against the
+   * Funding page's 17%, and they answer different questions.
+   */
+  counts: { applications: number; approved: number; notApproved: number; pending: number };
+  /** USD. `unsecured` is what was asked for on applications that were turned down —
+   *  funding lost, not funding not yet won. `rates` is what each currency converted at. */
+  money: {
+    requested: number; secured: number; unsecured: number;
+    rates: Record<string, [number | null, string | null]>;
+  };
+  /** Answered rows the ledger counts as zero applications, because `progress_status`
+   *  never reached Completed. Reported, never repaired — writing it is the resurrection
+   *  migration 089 undid. */
+  ledgerGap: string[];
+  total: number;
+  undated: number;
+  latest: string | null;
+};
+
+/** The window is when the FUNDER ANSWERED, not when the call was found. */
+export const fetchOutcome = (from: string, to: string) =>
+  call<Outcome>(
+    `/pipelines/outcome?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+
 export const fetchTrack = (from?: string, to?: string) =>
   call<Track>("/pipelines/track" + (from && to
     ? `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` : ""));
