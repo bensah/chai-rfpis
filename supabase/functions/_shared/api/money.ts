@@ -180,9 +180,7 @@ export function requestedCurrency(row: {
  *
  * A Completed row counts at least once, which is also the floor migration 089 enforces.
  */
-export function submissionWeight(row: {
-  progress_status?: unknown; submissions?: unknown;
-}): number {
+export function submissionWeight(row: RowLike): number {
   if (String(row.progress_status ?? "").trim().toLowerCase() !== "completed") return 0;
   const n = Number(row.submissions);
   return Number.isFinite(n) ? Math.max(1, Math.trunc(n)) : 1;
@@ -197,6 +195,19 @@ export function submissionWeight(row: {
  * disagree with themselves and lets a person decide — the same shape as the Bidding stage's
  * awaiting-submission panel, and for the same reason.
  */
-export function ledgerGap<T extends { progress_status?: unknown }>(rows: T[]): T[] {
+export function ledgerGap<T extends RowLike>(rows: T[]): T[] {
   return rows.filter((r) => submissionWeight(r) === 0);
 }
+
+/**
+ * A stored row, as these rules read one: the columns they actually look at, plus an index
+ * signature that makes the type OPEN.
+ *
+ * The index signature is not decoration. `{ progress_status?: unknown }` is what TypeScript
+ * calls a WEAK TYPE — every property optional — and it rejects any argument that shares no
+ * DECLARED property with it. A plain `Record<string, unknown>` slips through, so this was
+ * invisible while the callers passed raw rows; the moment one passed a row with derived
+ * fields spread onto it the call stopped compiling, with "has no properties in common". An
+ * index signature on the source does not rescue it. Opening the target does.
+ */
+type RowLike = { progress_status?: unknown; submissions?: unknown; [k: string]: unknown };
