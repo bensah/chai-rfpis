@@ -17,7 +17,7 @@ import logging
 import re
 from typing import Any, Iterable
 
-from db.supabase_client import get_client
+from db.supabase_client import fetch_all, get_client
 
 log = logging.getLogger(__name__)
 
@@ -124,9 +124,14 @@ def log_rejects(records: Iterable[dict]) -> int:
         seen_link: set[str] = set()
         seen_id: set[str] = set()
         try:
-            existing = (sb.table(_TABLE)
-                        .select("opportunity_link,opportunity_title,funding_agency")
-                        .eq("event_type", "system_reject").execute().data or [])
+            # EVERY system_reject row, in pages. This set is the dedupe key store: a link
+            # missing from it is logged again as a new rejection. PostgREST caps a response
+            # at 1000 rows, and there are 3,621 system_reject rows (2026-11-03), so 72% of
+            # the set was absent and the same call was re-logged on every scan.
+            existing = fetch_all(
+                lambda: sb.table(_TABLE)
+                .select("opportunity_link,opportunity_title,funding_agency")
+                .eq("event_type", "system_reject"))
             for e in existing:
                 lk, idk = _reject_keys(e.get("opportunity_link") or "",
                                        e.get("opportunity_title") or "",
@@ -349,10 +354,14 @@ def latest_reasons(event_type: str) -> dict[str, str]:
     (e.g. the human-corrected reject reason). Lets the Verify UI re-display a
     saved Correct reason after a reload. {} on any error."""
     try:
-        rows = (get_client().table(_TABLE)
-                .select("opportunity_link, reason, created_at")
-                .eq("event_type", event_type)
-                .order("created_at", desc=True).limit(5000).execute().data or [])
+        # Every row for this event_type, then newest-first in Python. The .limit(5000) was
+        # answered with 1000, so a correction stopped being displayed as soon as a thousand
+        # newer events existed — the saved reason was still in the table, just never read.
+        rows = sorted(
+            fetch_all(lambda: get_client().table(_TABLE)
+                      .select("opportunity_link, reason, created_at, id")
+                      .eq("event_type", event_type)),
+            key=lambda r: str(r.get("created_at") or ""), reverse=True)
     except Exception:
         return {}
     out: dict[str, str] = {}
@@ -368,10 +377,11 @@ def latest_verifications(event_type: str) -> dict[str, str]:
     ('reject_verification' or 'feedback'). Powers the verification UI so each row
     shows its current human verdict. {} on any error."""
     try:
-        rows = (get_client().table(_TABLE)
-                .select("opportunity_link, label, created_at")
-                .eq("event_type", event_type)
-                .order("created_at", desc=True).limit(5000).execute().data or [])
+        rows = sorted(
+            fetch_all(lambda: get_client().table(_TABLE)
+                      .select("opportunity_link, label, created_at, id")
+                      .eq("event_type", event_type)),
+            key=lambda r: str(r.get("created_at") or ""), reverse=True)
     except Exception:
         return {}
     out: dict[str, str] = {}

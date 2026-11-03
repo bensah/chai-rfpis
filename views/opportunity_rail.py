@@ -54,9 +54,15 @@ def _load_catalog() -> list[dict]:
     THIS tenant's gate. Deliberately org-agnostic and not tenant-scoped: it is the pool the
     Featured card ranks, which is what makes a screening miss recoverable."""
     try:
-        from db.supabase_client import service_client
-        return (service_client().table("extracted_solicitations").select(_CATALOG_FIELDS)
-                .order("scraped_at", desc=True).limit(1200).execute().data or [])
+        from db.supabase_client import fetch_all, service_client
+        # The whole catalogue, then newest-first, then the 1200 this card ranks. The old
+        # read asked for 1200 and PostgREST handed back 1000, so the pool the Featured
+        # card drew from was a sixth smaller than intended — and this is the pool that
+        # makes a screening miss recoverable, so a smaller one is a worse rail.
+        rows = fetch_all(lambda: service_client().table("extracted_solicitations")
+                         .select(_CATALOG_FIELDS), order="uid")
+        rows.sort(key=lambda r: str(r.get("scraped_at") or ""), reverse=True)
+        return rows[:1200]
     except Exception:
         return []
 

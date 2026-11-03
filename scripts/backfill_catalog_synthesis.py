@@ -79,7 +79,7 @@ def main() -> int:
     args = ap.parse_args()
 
     _load_env()
-    from db.supabase_client import service_client
+    from db.supabase_client import fetch_all, service_client
     from core import catalog_synthesis as CS
     from core import opportunity_detail as _od
 
@@ -109,10 +109,18 @@ def main() -> int:
 
     # ORDERED, so consecutive runs advance through the catalogue instead of re-reading
     # whatever the database happened to return first.
-    q = sb.table("extracted_solicitations").select("*").order("uid")
-    if args.uid:
-        q = q.eq("uid", args.uid)
-    rows = q.limit(5000).execute().data or []
+    def _catalogue():
+        q = sb.table("extracted_solicitations").select("*")
+        if args.uid:
+            q = q.eq("uid", args.uid)
+        return q
+
+    # EVERY row, paged by uid. The .limit(5000) was answered with 1000, so each run only
+    # ever saw the first thousand by uid: once those were synthesised the script reported
+    # nothing left to do while 597 rows had never been looked at. The comment below used to
+    # say the ordering let consecutive runs advance through the catalogue - it could not,
+    # because every run started from the same thousand.
+    rows = fetch_all(_catalogue, order="uid")
 
     # DON'T SPEND A CALL ON A CLOSED CALL. Nobody can bid on it, so an overview for it is pure
     # cost: 78 of the 357 outstanding rows are expired — 22% of the work, removed by default
@@ -142,8 +150,8 @@ def main() -> int:
     _pipe_links: set = set()
     if args.screened or args.decided:
         _dec = {"proceed", "park", "decline"}
-        for srow in (sb.table("rfp_submissions").select("opportunity_link,decision")
-                     .limit(5000).execute().data or []):
+        for srow in fetch_all(lambda: sb.table("rfp_submissions")
+                              .select("opportunity_link,decision"), order="uid"):
             link = _od.normalise_link(srow.get("opportunity_link"))
             if not link:
                 continue

@@ -69,12 +69,14 @@ def main() -> int:
 
     _load_env()
     from datetime import date
-    from db.supabase_client import service_client
+    from db.supabase_client import fetch_all, service_client
 
     sb = service_client()
-    rows = (sb.table("extracted_solicitations")
-            .select("uid,opportunity_url,opportunity_name,deadline,funding_status")
-            .limit(5000).execute().data or [])
+    # EVERY row. This reports which calls are dead, so a truncated read reports a clean
+    # catalogue while a third of it was never examined.
+    rows = fetch_all(lambda: sb.table("extracted_solicitations")
+                     .select("uid,opportunity_url,opportunity_name,deadline,funding_status"),
+                     order="uid")
 
     today = date.today()
 
