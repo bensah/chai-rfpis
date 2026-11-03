@@ -13,41 +13,95 @@
  * seam the migration is retiring, and a win/loss total that stops working when the scoring
  * worker does would be a strange thing to have built.
  */
+import { q, type Db } from "./db.ts";
 import { normaliseCurrency, type Rate } from "./fx.ts";
+
+export type Currency = {
+  code: string; label: string; aliases: string[]; usdRate: number;
+};
 
 /**
  * `config/dropdowns.yaml`'s `currencies`, copied for the same reason `STAGES` and
  * `DECISIONS` are: this module also runs as a Deno Edge Function with no filesystem to read
- * the YAML from. The test "the currency table matches config/dropdowns.yaml" keeps the copy
- * honest — including the rates, because a stale one here is a wrong total rather than a
- * failure anybody would see.
+ * the YAML from.
  *
- * These are the FALLBACK. `usd_rate` tries the live rate first and only lands here when the
- * network does not answer, which matters: the static GBP is 1.33 against a live 1.340956 and
- * the static EUR 1.16 against 1.119485, so the two disagree by up to about 3.6%.
+ * THE DEFAULT, NOT THE TABLE. `core/dropdowns.py::load` replaces this list wholesale with
+ * `app_settings.currencies_json` when a deployment has one — `data = {**data, "currencies":
+ * overrides}`, a replacement rather than a merge — so the rates a deployment actually
+ * converts at are configured in Admin → Settings and need not resemble these at all. This
+ * one has six entries where the YAML has five: an admin added SEK, which no copy of the
+ * file would ever have mentioned.
+ *
+ * Which is the whole reason `loadCurrencies` exists. Hard-coding the YAML here would have
+ * been a table that silently disagreed with the Streamlit app for one currency and for any
+ * rate anybody ever edits.
  */
-export const CURRENCIES: {
-  code: string; label: string; aliases: string[]; usdRate: number;
-}[] = [
+export const DEFAULT_CURRENCIES: Currency[] = [
   { code: "USD", label: "USD", aliases: ["USD $", "US$", "$"], usdRate: 1.0 },
   { code: "GBP", label: "GBP", aliases: ["GBP £", "£"], usdRate: 1.33 },
   { code: "EUR", label: "EUR", aliases: ["Euro", "Euro €", "€"], usdRate: 1.16 },
   { code: "XAF", label: "FCFA", aliases: ["FCFA", "F CFA"], usdRate: 0.00166 },
   { code: "CAD", label: "CAD", aliases: ["CAD $", "Can$", "C$"], usdRate: 0.73 },
-  { code: "SEK", label: "SEK", aliases: ["SEK kr"], usdRate: 0.11 },
 ];
+
+/** One entry of `currencies_json`, which is the YAML's own shape round-tripped through
+ *  Admin → Settings. `symbol` is carried in the stored JSON and unused here. */
+function toCurrency(v: unknown): Currency | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const code = String(o.code ?? "").trim();
+  if (!code) return null;
+  const rate = Number(o.usd_rate);
+  return {
+    code,
+    label: String(o.label ?? code).trim() || code,
+    aliases: Array.isArray(o.aliases)
+      ? o.aliases.map((a) => String(a ?? "").trim()).filter(Boolean) : [],
+    usdRate: Number.isFinite(rate) ? rate : 1.0,
+  };
+}
+
+/**
+ * The deployment's currency table: `app_settings.currencies_json` if it has one, else the
+ * YAML defaults above.
+ *
+ * GLOBAL, not tenant-scoped, and that is the Python's routing rather than a simplification:
+ * `currencies_json` is not in `core/settings.py::_TENANT_SCOPED_KEYS` (which holds only
+ * `schedule_json`, `scan_policies` and `team_members_json`), so `_scoped_store` returns
+ * None for it and the shared `app_settings` row answers for every tenant. Reading
+ * `tenant_settings` here would find nothing and quietly fall back to the YAML.
+ *
+ * Never throws. A missing or malformed setting leaves the defaults in place, which is what
+ * `load()`'s bare `except Exception: pass` does.
+ */
+export async function loadCurrencies(db: Db): Promise<Currency[]> {
+  try {
+    const rows = await db.service.get(
+      "app_settings", `select=value&key=eq.${q("currencies_json")}&limit=1`);
+    const raw = rows[0]?.value;
+    if (!raw) return DEFAULT_CURRENCIES;
+    const parsed = JSON.parse(String(raw));
+    if (!Array.isArray(parsed)) return DEFAULT_CURRENCIES;
+    const out = parsed.map(toCurrency).filter((c): c is Currency => c !== null);
+    // A list that parses to nothing usable is a broken setting, not an instruction to
+    // convert everything at 1.0.
+    return out.length ? out : DEFAULT_CURRENCIES;
+  } catch {
+    return DEFAULT_CURRENCIES;
+  }
+}
 
 /** `core/dropdowns.py::usd_rate`'s static half: code, then label, then aliases, then the
  *  first token. Returns null when the table has never heard of the value, which the caller
  *  reads as "no conversion" exactly as the Python's trailing `return 1.0` does. */
-export function staticRate(currency: string): number | null {
+export function staticRate(currency: string, table: Currency[] = DEFAULT_CURRENCIES): number | null {
   const cur = currency.trim();
   if (!cur) return null;
-  for (const e of CURRENCIES) if (e.code === cur) return e.usdRate;
-  for (const e of CURRENCIES) if (e.label === cur) return e.usdRate;
-  for (const e of CURRENCIES) if (e.aliases.includes(cur)) return e.usdRate;
+  for (const e of table) if (e.code === cur) return e.usdRate;
+  for (const e of table) if (e.label === cur) return e.usdRate;
+  for (const e of table) if (e.aliases.includes(cur)) return e.usdRate;
   const first = cur.split(/\s+/)[0];
-  for (const e of CURRENCIES) if (e.code === first) return e.usdRate;
+  for (const e of table) if (e.code === first) return e.usdRate;
   return null;
 }
 
@@ -64,23 +118,26 @@ export function staticRate(currency: string): number | null {
  * a symbol — "GBP £", "Euro €", "CAD $" — and without the split none of them would reach a
  * live rate at all.
  */
-export function usdRate(currency: unknown, rates: Record<string, Rate>): number {
+export function usdRate(
+  currency: unknown, rates: Record<string, Rate>, table: Currency[] = DEFAULT_CURRENCIES,
+): number {
   const cur = String(currency ?? "").trim();
   if (!cur || cur.toUpperCase() === "USD") return 1.0;
   const key = normaliseCurrency(cur);
   const live = key ? rates[key]?.[0] : null;
   if (live) return live;
-  return staticRate(cur) ?? 1.0;
+  return staticRate(cur, table) ?? 1.0;
 }
 
 /** `core/pipeline.py::usd_value` — 0 for anything that is not a number, which is how a NaN
  *  amount (the Excel import's empty cell) stops being counted rather than poisoning a sum. */
 export function usdValue(
   amount: unknown, currency: unknown, rates: Record<string, Rate>,
+  table: Currency[] = DEFAULT_CURRENCIES,
 ): number {
   const n = Number(amount);
   if (amount === null || amount === undefined || amount === "" || !Number.isFinite(n)) return 0;
-  return n * usdRate(currency, rates);
+  return n * usdRate(currency, rates, table);
 }
 
 /**

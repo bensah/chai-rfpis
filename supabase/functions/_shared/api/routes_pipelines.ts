@@ -33,7 +33,7 @@ import { isOutcome, isSubmitted } from "./donor_decision.ts";
 import { ratesFor } from "./fx.ts";
 import { gzipped, json, str } from "./http.ts";
 import {
-  ledgerGap, requestedCurrency, submissionWeight, usdValue,
+  ledgerGap, loadCurrencies, requestedCurrency, submissionWeight, usdValue,
 } from "./money.ts";
 import type { Json } from "./jwt.ts";
 import type { Ctx } from "./session.ts";
@@ -590,6 +590,13 @@ export function createPipelineRoutes(db: Db) {
    * these six in query syntax would trade exact, readable fidelity for nothing. Days to
    * deadline, deadline status and the USD value stay in the browser, which already holds
    * the FX rates from /scoring/snapshot; a second rate source here would drift from it.
+   *
+   * `/pipelines/outcome` below converts SERVER-SIDE instead, and that is a reversal rather
+   * than an inconsistency. The rule above is about not introducing a second rate source;
+   * `ratesFor` is the same function the snapshot calls, so calling it one step earlier adds
+   * no source. What it buys is a money total that does not depend on the Pyodide scoring
+   * seam the migration is retiring. This route keeps the browser conversion because its
+   * money is incidental to it, and changing it would be churn.
    */
   async function track(req: Request, ctx: Ctx): Promise<Response> {
     const url = new URL(req.url);
@@ -910,15 +917,23 @@ export function createPipelineRoutes(db: Db) {
     // One fetch for every currency on the page, then every conversion reads the same map.
     // Both columns, because the request and the award can be in different units and
     // `requestedCurrency` prefers `currency_secured` for the request as well.
-    const rates = await ratesFor(
-      answered.flatMap((r) => [r.currency_secured, r.currency]));
+    //
+    // `table` is the DEPLOYMENT's currency list, not the checked-in YAML's: a deployment
+    // can replace it wholesale from Admin → Settings, and this one has (it carries an SEK
+    // the file has never heard of). It is only the fallback — the live rate wins — but the
+    // fallback is what answers when the network does not, which is exactly when a silently
+    // wrong money total would be worst.
+    const [rates, table] = await Promise.all([
+      ratesFor(answered.flatMap((r) => [r.currency_secured, r.currency])),
+      loadCurrencies(db),
+    ]);
 
     const rows = answered.map((r) => ({
       ...r,
       outcome_on: outcomeOn(r),
       applications: submissionWeight(r),
-      usd_requested: usdValue(r.amount_requested, requestedCurrency(r), rates),
-      usd_secured: usdValue(r.amount_secured, r.currency_secured, rates),
+      usd_requested: usdValue(r.amount_requested, requestedCurrency(r), rates, table),
+      usd_secured: usdValue(r.amount_secured, r.currency_secured, rates, table),
     }));
     const dated = rows.filter((r) => r.outcome_on);
     const inWindow = dated

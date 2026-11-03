@@ -22,6 +22,13 @@ const D = await import(pathToFileURL(
   path.join(root, "supabase/functions/_shared/api/donor_decision.ts")).href);
 const P = await import(pathToFileURL(
   path.join(root, "supabase/functions/_shared/api/routes_pipelines.ts")).href);
+// The money rules the Outcome stage adds up with, and the FX normaliser they look rates
+// up through. Both are ports of Python the Streamlit Funding page uses, so the tests below
+// pin them to that behaviour and to config/dropdowns.yaml.
+const M = await import(pathToFileURL(
+  path.join(root, "supabase/functions/_shared/api/money.ts")).href);
+const F = await import(pathToFileURL(
+  path.join(root, "supabase/functions/_shared/api/fx.ts")).href);
 
 // ── core/donor_decision.py ───────────────────────────────────────────────────
 
@@ -320,4 +327,167 @@ test("is_submitted is the one test both Bidding and Submitted use", () => {
     decision_overridden_at: "2026-11-03T08:00:00+00:00",
   }), "2026-06-25");
   assert.equal(P.submittedOn({ decision_overridden_at: "2026-11-03T08:00:00+00:00" }), null);
+});
+
+// ── money.ts — core/dropdowns.usd_rate, core/pipeline.usd_value, core/records ─────────
+
+/** The `currencies:` block, as a list of {code,label,aliases,usdRate}. Its own reader
+ *  because `yamlList` above only handles a flat list of scalars. CRLF-normalised first,
+ *  for the reason the stage-vocabulary test learned the hard way: this tree is checked out
+ *  CRLF and JS `.` does not match `\r`. */
+function yamlCurrencies() {
+  const yaml = readFileSync(path.join(root, "config/dropdowns.yaml"), "utf8")
+    .replace(/\r\n/g, "\n");
+  const block = yaml.match(/^currencies:[ \t]*\n((?:[ \t]+.*\n|\n)+)/m);
+  if (!block) return null;
+  const out = [];
+  for (const line of block[1].split("\n")) {
+    const start = line.match(/^[ \t]*-[ \t]*code:[ \t]*(.+?)[ \t]*$/);
+    if (start) { out.push({ code: unquote(start[1]), aliases: [] }); continue; }
+    if (!out.length) continue;
+    const cur = out[out.length - 1];
+    const kv = line.match(/^[ \t]+(\w+):[ \t]*(.+?)[ \t]*$/);
+    if (!kv) continue;
+    const [, k, raw] = kv;
+    const v = raw.replace(/[ \t]*#.*$/, "").trim();
+    if (k === "label") cur.label = unquote(v);
+    else if (k === "usd_rate") cur.usdRate = Number(v);
+    else if (k === "aliases") {
+      cur.aliases = v.startsWith("[")
+        ? v.slice(1, -1).split(",").map((s) => unquote(s.trim())).filter(Boolean)
+        : [];
+    }
+  }
+  return out;
+}
+const unquote = (s) => s.trim().replace(/^["']|["']$/g, "");
+
+test("the default currency table matches config/dropdowns.yaml, rates and all", () => {
+  // Copied because this module also runs as a Deno Edge Function with no filesystem. The
+  // RATES matter as much as the codes: these are the fallback when the live rate does not
+  // answer, so a stale one here is a wrong money total rather than a failure anybody sees.
+  const want = yamlCurrencies();
+  assert.ok(want && want.length, "config/dropdowns.yaml no longer declares `currencies`");
+  assert.deepEqual(
+    M.DEFAULT_CURRENCIES.map((c) => ({ code: c.code, label: c.label, aliases: c.aliases, usdRate: c.usdRate })),
+    want.map((c) => ({ code: c.code, label: c.label, aliases: c.aliases, usdRate: c.usdRate })),
+  );
+});
+
+test("the deployment's own currency table REPLACES the file's", async () => {
+  // THE REASON loadCurrencies EXISTS, and the thing a copied YAML gets wrong.
+  // core/dropdowns.py::load does `data = {**data, "currencies": overrides}` — a
+  // replacement, not a merge — so `app_settings.currencies_json` is the table a deployment
+  // actually converts at. This one carries six entries where the file has five: an admin
+  // added SEK through Admin → Settings, and no copy of the YAML would ever mention it.
+  const stored = JSON.stringify([
+    { code: "USD", label: "USD", symbol: "$", aliases: ["USD $"], usd_rate: 1.0 },
+    { code: "SEK", label: "SEK", symbol: "kr", aliases: ["SEK kr"], usd_rate: 0.11 },
+  ]);
+  const db = fakeSettingsDb(stored);
+  const table = await M.loadCurrencies(db);
+  assert.deepEqual(table.map((c) => c.code), ["USD", "SEK"],
+    "replaced wholesale — GBP and EUR are gone because the override does not list them");
+  assert.equal(M.staticRate("SEK kr", table), 0.11, "and a currency the file never had");
+  assert.equal(M.staticRate("GBP", table), null, "while one it dropped is genuinely gone");
+
+  // Unset, malformed, and a list of nothing usable all leave the defaults in place —
+  // load()'s bare `except Exception: pass`. Converting everything at 1.0 because a setting
+  // is broken would be the worst of the available answers.
+  for (const bad of [null, "", "{not json", "[]", '["nonsense"]', '{"a":1}']) {
+    const d = await M.loadCurrencies(fakeSettingsDb(bad));
+    assert.deepEqual(d, M.DEFAULT_CURRENCIES, `fallback for ${JSON.stringify(bad)}`);
+  }
+  assert.deepEqual(await M.loadCurrencies(brokenDb()), M.DEFAULT_CURRENCIES,
+    "and a read that throws never takes the stage down with it");
+});
+
+/** The smallest thing `loadCurrencies` needs: `db.service.get`. GLOBAL app_settings, which
+ *  is the Python's routing — `currencies_json` is not in `_TENANT_SCOPED_KEYS`. */
+function fakeSettingsDb(value) {
+  return {
+    service: {
+      get: async (table, query) => {
+        assert.equal(table, "app_settings",
+          "currencies_json is global; reading tenant_settings would find nothing");
+        assert.ok(query.includes("currencies_json"));
+        return value === null ? [] : [{ value }];
+      },
+    },
+  };
+}
+const brokenDb = () => ({ service: { get: async () => { throw new Error("network"); } } });
+
+test("a currency written with its symbol still resolves, by code, label or alias", () => {
+  // Every spelling the live table actually uses. core/dropdowns.usd_rate resolves all of
+  // them; a table lookup that only knew the ISO code would read "GBP £" as USD and
+  // understate a £200,000 award by a third.
+  assert.equal(M.staticRate("GBP"), 1.33);
+  assert.equal(M.staticRate("GBP £"), 1.33, "alias");
+  assert.equal(M.staticRate("£"), 1.33, "symbol alone");
+  assert.equal(M.staticRate("Euro €"), 1.16);
+  assert.equal(M.staticRate("FCFA"), 0.00166, "label, not code");
+  assert.equal(M.staticRate("F CFA"), 0.00166, "alias with a space");
+  assert.equal(M.staticRate("CAD $"), 0.73);
+  assert.equal(M.staticRate("ZZZ"), null, "unknown stays unknown rather than becoming 1.0");
+});
+
+test("the live rate wins over the table, and a symbol does not hide it", () => {
+  // THE BUG THIS FIXES. fx.ts::normaliseCurrency did not split the first token the way
+  // core/dropdowns.usd_rate does, so every cell carrying a symbol failed its ISO test, got
+  // no live rate, and silently used the table instead. 13 live rows.
+  for (const [raw, key] of [["GBP", "GBP"], ["GBP £", "GBP"], ["Euro €", "EUR"],
+                            ["CAD $", "CAD"], ["FCFA", "XAF"], ["F CFA", null],
+                            ["USD", null], ["USD $", null], ["", null], ["ZZZ", "ZZZ"]]) {
+    assert.equal(F.normaliseCurrency(raw), key, `normaliseCurrency(${JSON.stringify(raw)})`);
+  }
+  // "F CFA" reaches no live rate either way — neither the whole string nor the first token
+  // is an ISO code — and the static table catches it, exactly as the Python does.
+  assert.equal(M.usdRate("F CFA", {}), 0.00166);
+
+  const live = { GBP: [1.340956, "Tue, 03 Nov 2026"], EUR: [1.119485, null] };
+  assert.equal(M.usdRate("GBP £", live), 1.340956, "the live rate, not the table's 1.33");
+  assert.equal(M.usdRate("Euro €", live), 1.119485);
+  assert.equal(M.usdRate("GBP £", {}), 1.33, "and the table when nothing answered");
+  assert.equal(M.usdRate("USD $", live), 1.0, "USD never needs a rate");
+  assert.equal(M.usdRate("ZZZ", {}), 1.0, "unknown means no conversion, as the Python ends");
+});
+
+test("a non-numeric amount is worth nothing rather than poisoning a total", () => {
+  // The Excel import leaves empty cells, and `usd_value` returns 0.0 for them. A NaN that
+  // reached a sum would make every figure on the stage read NaN.
+  const live = { GBP: [1.340956, null] };
+  assert.equal(M.usdValue(200000, "GBP £", live), 200000 * 1.340956);
+  assert.equal(M.usdValue(null, "USD", live), 0);
+  assert.equal(M.usdValue("", "USD", live), 0);
+  assert.equal(M.usdValue(undefined, "USD", live), 0);
+  assert.equal(M.usdValue("nan", "USD", live), 0);
+  assert.equal(M.usdValue(NaN, "USD", live), 0);
+  assert.equal(M.usdValue("1500", "USD", live), 1500, "a numeric string still counts");
+});
+
+test("the request's currency is the one we submitted in", () => {
+  // core/records.requested_currency. `currency` is what the CALL was advertised in and is
+  // only the legacy fallback — conflating them rendered a USD 715,400 request as $509,530.
+  assert.equal(M.requestedCurrency({ currency_secured: "USD", currency: "CAD $" }), "USD");
+  assert.equal(M.requestedCurrency({ currency: "CAD $" }), "CAD $", "legacy fallback");
+  assert.equal(M.requestedCurrency({ currency_secured: "  ", currency: "EUR" }), "EUR");
+  assert.equal(M.requestedCurrency({}), "");
+});
+
+test("only a Completed row counts as an application, and it counts at least once", () => {
+  // core/records.submission_weight, and the gate is the owner's rule rather than an
+  // oversight: a donor decision alone once resurrected counts migration 089 had reset.
+  assert.equal(M.submissionWeight({ progress_status: "Completed" }), 1, "null submissions");
+  assert.equal(M.submissionWeight({ progress_status: "Completed", submissions: 0 }), 1,
+    "the floor migration 089 enforces");
+  assert.equal(M.submissionWeight({ progress_status: "completed", submissions: 3 }), 3);
+  assert.equal(M.submissionWeight({ progress_status: "  Completed  ", submissions: 2 }), 2);
+  assert.equal(M.submissionWeight({ progress_status: "In Progress", submissions: 5 }), 0);
+  // The incident core/records.py records: a donor decision over a stale progress field.
+  assert.equal(M.submissionWeight({ progress_status: "Not Started", donor_decision: "Approved" }), 0);
+  assert.deepEqual(
+    M.ledgerGap([{ uid: "a", progress_status: "Completed" },
+                 { uid: "b", progress_status: "Not Started" }]).map((r) => r.uid),
+    ["b"]);
 });
