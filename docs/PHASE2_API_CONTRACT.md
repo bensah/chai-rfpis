@@ -402,6 +402,103 @@ Live, 2026-11-03: 14 waiting, all in one tenant; longest wait 292 days; 7 with
 no answer recorded; 9 whose `stage` still says the application was never
 started.
 
+### `GET /pipelines/outcome?from=<iso>&to=<iso>` — built
+
+```
+{ rows: (RfpSubmission & { outcome_on: string,
+                           applications: number,
+                           usd_requested: number,
+                           usd_secured: number })[],
+  from: string, to: string,
+  counts: { applications, approved, notApproved, pending },   // SUBMISSION-WEIGHTED
+  money:  { requested, secured, unsecured, rates },           // USD
+  ledgerGap: string[],       // answered, yet worth zero applications
+  total: number, undated: number, latest: string | null }
+```
+
+What the funder decided, newest first. Windowed like Reviewed, because an answer
+is an event; `total` still counts every answered application whatever its date.
+
+**Membership is exactly the complement of `/pipelines/submitted`** within the
+submitted set: both test `is_submitted`, and `is_outcome` alone decides which
+side a row falls on. Asserted as a pair in one test, because the two failures
+are invisible separately — a row in neither has fallen off the end of the line,
+and a row in both is counted twice in the money.
+
+**Which date an outcome counts under**, best evidence first:
+
+| column | meaning |
+|---|---|
+| `date_of_approval` | the day the funder answered — stamped for a decline too |
+| `date_completed` | the day it went in; the answer came after, never before |
+| `submitted_at` | the row's own date, so an answer is never undated |
+
+`date_of_approval` is not approvals-only despite the name: a live Not-Approved
+row carries it, and the Streamlit Summary windows both its approved count and
+its secured value on it. 4 of 8 answered rows have it.
+
+#### Counts are applications, not rows
+
+`core/records.py::submission_weight`: a proposal submitted to a funder twice is
+TWO applications. One live Not-Approved row carries `submissions = 2`, so
+counting rows would report 4 losses here against the Funding page's 5.
+
+Only `progress_status = Completed` opens the gate, and that is the owner's rule
+rather than an oversight — a donor decision alone once resurrected counts that
+migration 089 had deliberately reset. So a row the funder has answered whose
+progress never reached Completed weighs **zero**, and `ledgerGap` names it.
+**Reported, never repaired.** Writing `progress_status` here because a decision
+implies one is precisely the resurrection 089 undid.
+
+#### Two win rates, and both are returned
+
+| | denominator | live |
+|---|---|---|
+| this stage | decided applications | 44% |
+| `app_pages/grants.py` | everything submitted, pending included | 17% |
+
+Neither is derived from the other by accident: they answer different questions,
+and this stage shows only answers, so "when a funder answers, how often is it
+yes" is the one its denominator can carry. `counts.pending` is returned so the
+Funding page's figure stays recomputable from this one response instead of being
+a second number nobody can tie back.
+
+#### Money
+
+Converted **server-side**, which reverses what `/pipelines/track` says about
+conversion belonging in the browser. That rule was about not introducing a second
+rate source; `ratesFor` here is the SAME function `/scoring/snapshot` calls, one
+step earlier. The reason to move it is that a win/loss total must not depend on
+the Pyodide scoring seam the migration is retiring.
+
+* `secured` — `amount_secured` on approved applications.
+* `unsecured` — `amount_requested` on declined ones. Funding **lost**, not
+  funding not yet won; the latter is on Submitted.
+* The request converts in the currency WE submitted in
+  (`core/records.py::requested_currency` → `currency_secured`, falling back to
+  `currency`), not the call's advertised one. Conflating them rendered a
+  USD 715,400 request as "$509,530 USD"; live, the one CAD call among the
+  answered applications was requested in USD.
+
+Verified against the Streamlit page's own helpers on live data: Secured
+$1,384,856 and Unsecured $6,745,845, both exact.
+
+**The currency table is the DEPLOYMENT's, not the file's.** `core/dropdowns.py::load`
+replaces the YAML list wholesale with `app_settings.currencies_json` when one
+exists — a replacement, not a merge — so `loadCurrencies` reads that setting and
+falls back to the copied YAML only when there is none. This deployment has six
+entries where the file has five: an admin added SEK. It is a global key, not
+tenant-scoped (`currencies_json` is not in `core/settings.py::_TENANT_SCOPED_KEYS`),
+so `app_settings` answers for every tenant.
+
+**`fx.ts::normaliseCurrency` was fixed to reach this route.** It did not split
+the first token the way `usd_rate` does before its live lookup, so every currency
+cell carrying a symbol — "GBP £", "Euro €", "CAD $" — failed its ISO test, got no
+live rate, and fell back to the table while the Python used the live one. 13 live
+rows; static GBP 1.33 against a live 1.340956. `fx.ts`'s own header calls that gap
+"enough to move an amount into a different scoring band", so this was a scoring
+divergence as well as a money one.
+
 ### `GET /pipelines/rfp/:uid?reporting=1` — agreed
 
 ```

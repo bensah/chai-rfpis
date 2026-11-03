@@ -1,5 +1,5 @@
 /**
- * Pipeline — the stages an opportunity moves through, not four sibling tabs.
+ * Pipeline — the stages an opportunity moves through, not a row of sibling tabs.
  *
  * The owner's shape: the things every stage shares sit on top (the period, and the week
  * when the stage is week-keyed), the stage line shows where work is, and opening one
@@ -16,25 +16,31 @@ import { periodOf, type Period } from "../pipeline/period";
 import PeriodPicker from "../pipeline/PeriodPicker";
 import BiddingStage from "../pipeline/BiddingStage";
 import ReviewedStage from "../pipeline/ReviewedStage";
+import OutcomeStage from "../pipeline/OutcomeStage";
 import ScreenedStage from "../pipeline/ScreenedStage";
 import SubmittedStage from "../pipeline/SubmittedStage";
-import { Card, EmptyState, PageHeader, Select } from "../ui";
+import { PageHeader, Select } from "../ui";
 
 /**
  * The stages, owner-confirmed 2026-10-27. Each is a place a row IS, decided by its own
  * columns — not a tab somebody clicks. The rule is written beside the label so the next
  * reader can check a row against it without going to the Python.
  *
- * The line deliberately runs past Bidding. Bidding is "preparing a bid"; the application
- * is then submitted and the funder answers, and that tail is today's separate Funding
- * page. So the pipeline is currently cut in half across two nav items. Folding Funding in
- * is a later change — these last two stages are named here so the shape is honest now
- * rather than looking like it stops at Track.
+ * The line runs past Bidding to the end: the application is submitted, and the funder
+ * answers. That tail used to be a separate Funding page ("Your Applied Funding"), so the
+ * pipeline was cut in half across two nav items. It is one line now.
+ *
+ * The Funding page is NOT deleted by this. It still holds the per-funder breakdown and the
+ * reporting tab, and it still counts Under Review and Approved together as applied funding,
+ * which is the right frame for a funding log and the wrong one for a journey — a proposal
+ * that is still being read has not reached an outcome. So the two differ on purpose, and
+ * `/pipelines/outcome` returns the pending count precisely so the Funding page's own
+ * figures stay reconstructable from this side.
  */
 type StageKey = "screened" | "reviewed" | "bidding" | "submitted" | "outcome";
 
 const STAGES: {
-  key: StageKey; label: string; hint: string; rule: string; icon: typeof Search; built: boolean;
+  key: StageKey; label: string; hint: string; rule: string; icon: typeof Search; built: true;
 }[] = [
   { key: "screened", label: "Screened", icon: Search, built: true,
     hint: "Found and scored, nobody has decided yet",
@@ -48,9 +54,9 @@ const STAGES: {
   { key: "submitted", label: "Submitted", icon: Send, built: true,
     hint: "With the funder, awaiting their answer",
     rule: "something records it going in, and the funder has not approved or declined it" },
-  { key: "outcome", label: "Outcome", icon: Trophy, built: false,
+  { key: "outcome", label: "Outcome", icon: Trophy, built: true,
     hint: "The funder has answered",
-    rule: "approved or not approved — today's Funding page" },
+    rule: "approved or not approved — what the Funding page calls applied funding" },
 ];
 
 export default function PipelinePage({ user }: { user: User }) {
@@ -95,7 +101,7 @@ export default function PipelinePage({ user }: { user: User }) {
         {stage === "reviewed" && <ReviewedStage period={period} onPickPeriod={setPeriod} />}
         {stage === "bidding" && <BiddingStage period={period} />}
         {stage === "submitted" && <SubmittedStage period={period} onPickPeriod={setPeriod} />}
-        {stage === "outcome" && <StageNotBuilt stage={stage} />}
+        {stage === "outcome" && <OutcomeStage period={period} onPickPeriod={setPeriod} />}
       </div>
     </section>
   );
@@ -135,11 +141,6 @@ function StageLine({ stage, onPick }: { stage: StageKey; onPick: (s: StageKey) =
               <span className="min-w-0">
                 <span className="flex items-center gap-1.5 text-sm font-semibold">
                   {s.label}
-                  {!s.built && (
-                    <span className={`rounded px-1 py-0.5 text-[0.6rem] font-medium ${
-                      on ? "bg-white/15 text-brand-100" : "bg-ink-100 text-ink-500"
-                    }`}>soon</span>
-                  )}
                 </span>
                 <span className={`mt-0.5 block text-[0.7rem] leading-snug ${on ? "text-brand-100" : "text-ink-500"}`}>
                   {s.hint}
@@ -158,19 +159,3 @@ function StageLine({ stage, onPick }: { stage: StageKey; onPick: (s: StageKey) =
   );
 }
 
-/** Honest about what is not built yet, and about where the work still happens. */
-function StageNotBuilt({ stage }: { stage: StageKey }) {
-  const s = STAGES.find((x) => x.key === stage)!;
-  return (
-    <Card>
-      <EmptyState icon={<s.icon className="h-5 w-5" />} title={`${s.label} is not rebuilt yet`}>
-        <p>{s.hint} — <span className="text-ink-400">{s.rule}</span>.</p>
-        <p className="mt-2">
-          It still works in the classic app meanwhile. {s.key === "outcome" || s.key === "submitted"
-            ? "Today this part of the journey lives on the Funding page rather than here."
-            : "This stage moves here as Phase 2 lands."}
-        </p>
-      </EmptyState>
-    </Card>
-  );
-}

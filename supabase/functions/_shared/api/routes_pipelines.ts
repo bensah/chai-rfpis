@@ -30,7 +30,11 @@
  */
 import { q, type Db } from "./db.ts";
 import { isOutcome, isSubmitted } from "./donor_decision.ts";
+import { ratesFor } from "./fx.ts";
 import { gzipped, json, str } from "./http.ts";
+import {
+  ledgerGap, loadCurrencies, requestedCurrency, submissionWeight, usdValue,
+} from "./money.ts";
 import type { Json } from "./jwt.ts";
 import type { Ctx } from "./session.ts";
 
@@ -102,6 +106,19 @@ const SUBMITTED_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,
   "date_of_approval,amount_secured,currency_secured,amount_requested,submissions," +
   "stage,applicant_role,proposal_lead,assigned_to,donor_program_officer," +
   "expected_award_date,next_action,is_duplicate,duplicate_of_uid";
+
+/** What the Outcome stage draws. Money is the point of this stage, so every column the
+ *  two totals are computed from is here — `amount_secured` and `currency_secured` for what
+ *  was won, `amount_requested` for what was asked, and `currency` only as the legacy
+ *  fallback `requestedCurrency` needs. `submissions` and `progress_status` carry the
+ *  submission weight, which is what makes these counts agree with the Streamlit page. */
+const OUTCOME_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,currency," +
+  "call_submission_deadline,call_geographic_scope,focus_theme,opportunity_link," +
+  "submitted_at,review_week,alignment_score,scored_at,score_profile_sig," +
+  "decision,donor_decision,progress_status,date_completed,date_of_approval," +
+  "amount_secured,currency_secured,amount_requested,submissions,applicant_role," +
+  "proposal_lead,donor_program_officer,kickoff_date,project_duration," +
+  "is_duplicate,duplicate_of_uid";
 
 /**
  * Wider than the decision vocabulary on purpose, and not a drifted copy of it.
@@ -367,6 +384,44 @@ export function submittedOn(r: Json): string | null {
   return null;
 }
 
+/**
+ * The proposals the funder has answered — the end of the line.
+ *
+ * Exactly the complement of `selectSubmittedRows` within the submitted set, which is what
+ * keeps the last two stages from either double-counting an application or losing one: both
+ * test `is_submitted`, and `is_outcome` is the only thing that decides which side a row
+ * falls on. "Under Review" is not an outcome, so a row carrying it stays on Submitted.
+ *
+ * `is_submitted` is still required rather than assumed. A funder cannot answer a proposal it
+ * never received, so a row with an outcome and nothing else recording a submission is
+ * contradictory — but `is_submitted` reads the decision itself as proof, so every answered
+ * row passes it anyway. Writing the test out keeps the pair symmetrical, and if the rule
+ * ever narrows, this stage narrows with it rather than quietly becoming the wider one.
+ */
+export function selectOutcomeRows(rows: Json[]): Json[] {
+  return rows.filter((r) =>
+    r.is_duplicate !== true && isSubmitted(r) && isOutcome(r.donor_decision));
+}
+
+/**
+ * The date an outcome counts under, best evidence first:
+ *   date_of_approval   the day the funder answered — stamped for a decline too
+ *   date_completed     the day it went in; the answer came after, never before
+ *   submitted_at       the row's own date, so an answer is never undated
+ *
+ * `date_of_approval` is the column the Streamlit Summary windows both its approved and its
+ * secured-value figures on, and it is NOT approvals-only despite the name: one live
+ * Not-Approved row carries it. Measured 2026-11-03, 4 of the 8 answered rows have it, so
+ * the fallback is doing real work rather than guarding a corner.
+ */
+export function outcomeOn(r: Json): string | null {
+  for (const k of ["date_of_approval", "date_completed", "submitted_at"]) {
+    const v = str(r[k]).trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  }
+  return null;
+}
+
 /** The leads on a duplicate group belong to the canonical row: a colleague who picked up
  * the duplicate is still the lead. Blanks and non-strings are dropped, then the set is
  * deduplicated and sorted, as the Python does. */
@@ -535,6 +590,13 @@ export function createPipelineRoutes(db: Db) {
    * these six in query syntax would trade exact, readable fidelity for nothing. Days to
    * deadline, deadline status and the USD value stay in the browser, which already holds
    * the FX rates from /scoring/snapshot; a second rate source here would drift from it.
+   *
+   * `/pipelines/outcome` below converts SERVER-SIDE instead, and that is a reversal rather
+   * than an inconsistency. The rule above is about not introducing a second rate source;
+   * `ratesFor` is the same function the snapshot calls, so calling it one step earlier adds
+   * no source. What it buys is a money total that does not depend on the Pyodide scoring
+   * seam the migration is retiring. This route keeps the browser conversion because its
+   * money is incidental to it, and changing it would be churn.
    */
   async function track(req: Request, ctx: Ctx): Promise<Response> {
     const url = new URL(req.url);
@@ -815,7 +877,107 @@ export function createPipelineRoutes(db: Db) {
     }));
   }
 
-  return { weeks, screen, summary, track, reviewed, submitted, rfp, meetingNotes };
+  /**
+   * Outcome: what the funder decided, what it was worth, and what the ledger makes of it.
+   *
+   * Windowed like Reviewed, because an answer IS an event — it happened on a day — where a
+   * wait is a state. `total` still counts every answered application regardless of date, so
+   * a narrow period can say what it is leaving out.
+   *
+   * COUNTS ARE SUBMISSION-WEIGHTED, which is the one thing about this route that is not
+   * obvious from the column names. A row submitted to a funder twice is TWO applications
+   * (`core/records.py::submission_weight`), and one live Not-Approved row carries
+   * `submissions = 2` — so counting rows would show 4 losses here against the Streamlit
+   * Applied Funding page's 5. Both `rows` and the totals carry the weight so a reader can
+   * reconstruct either.
+   *
+   * THE WIN RATE HERE IS NOT THE FUNDING PAGE'S, deliberately, and both are returned so
+   * neither can be mistaken for the other. `app_pages/grants.py` divides approved by
+   * EVERYTHING submitted including what is still pending — 17% live — which answers "how
+   * much of what we have sent has been won so far". This stage shows only answered
+   * applications, so its denominator is the decided ones — 44% live — which answers "when a
+   * funder answers, how often is it yes". `pending` is returned as well, so the Funding
+   * page's figure is recomputable from this response rather than being a second number
+   * nobody can tie back.
+   */
+  async function outcome(req: Request, ctx: Ctx): Promise<Response> {
+    const url = new URL(req.url);
+    const year = new Date().getUTCFullYear();
+    const from = str(url.searchParams.get("from")).trim() || `${year}-01-01`;
+    const to = str(url.searchParams.get("to")).trim() || `${year + 1}-01-01`;
+    if (!/^\d{4}-\d{2}-\d{2}/.test(from) || !/^\d{4}-\d{2}-\d{2}/.test(to)) {
+      return json({ error: "from and to must be ISO dates" }, 400);
+    }
+    if (to <= from) return json({ error: "to must be after from" }, 400);
+
+    const all = await db.as(ctx.scope).getAll(
+      "rfp_submissions", `select=${OUTCOME_FIELDS}`, "uid");
+    const answered = selectOutcomeRows(all);
+
+    // One fetch for every currency on the page, then every conversion reads the same map.
+    // Both columns, because the request and the award can be in different units and
+    // `requestedCurrency` prefers `currency_secured` for the request as well.
+    //
+    // `table` is the DEPLOYMENT's currency list, not the checked-in YAML's: a deployment
+    // can replace it wholesale from Admin → Settings, and this one has (it carries an SEK
+    // the file has never heard of). It is only the fallback — the live rate wins — but the
+    // fallback is what answers when the network does not, which is exactly when a silently
+    // wrong money total would be worst.
+    const [rates, table] = await Promise.all([
+      ratesFor(answered.flatMap((r) => [r.currency_secured, r.currency])),
+      loadCurrencies(db),
+    ]);
+
+    const rows = answered.map((r) => ({
+      ...r,
+      outcome_on: outcomeOn(r),
+      applications: submissionWeight(r),
+      usd_requested: usdValue(r.amount_requested, requestedCurrency(r), rates, table),
+      usd_secured: usdValue(r.amount_secured, r.currency_secured, rates, table),
+    }));
+    const dated = rows.filter((r) => r.outcome_on);
+    const inWindow = dated
+      .filter((r) => r.outcome_on! >= from && r.outcome_on! < to)
+      .sort((a, b) => (a.outcome_on! < b.outcome_on! ? 1 : -1));   // newest first
+
+    const won = (r: Json) => norm(r.donor_decision) === "approved";
+    const sum = (list: typeof rows, f: (r: typeof rows[number]) => number) =>
+      list.reduce((t, r) => t + f(r), 0);
+    const approved = inWindow.filter(won);
+    const declined = inWindow.filter((r) => !won(r));
+
+    // Pending is NOT in `rows` — those are on the Submitted stage — and is counted here
+    // only so the Funding page's win rate stays recomputable from this one response.
+    const pending = selectSubmittedRows(all).reduce((t, r) => t + submissionWeight(r), 0);
+
+    return gzipped(req, json({
+      from, to,
+      rows: inWindow,
+      counts: {
+        applications: sum(inWindow, (r) => r.applications),
+        approved: sum(approved, (r) => r.applications),
+        notApproved: sum(declined, (r) => r.applications),
+        pending,
+      },
+      money: {
+        requested: sum(inWindow, (r) => r.usd_requested),
+        secured: sum(approved, (r) => r.usd_secured),
+        // `core/records.py`'s Unsecured: what was asked for on applications that were
+        // turned down. Funding lost, not funding not yet won.
+        unsecured: sum(declined, (r) => r.usd_requested),
+        rates,
+      },
+      // Answered, yet worth zero applications because `progress_status` never reached
+      // Completed. Reported rather than repaired — see money.ts::ledgerGap.
+      ledgerGap: ledgerGap(inWindow).map((r) => r.uid),
+      total: dated.length,
+      undated: rows.length - dated.length,
+      latest: dated.reduce<string | null>(
+        (best, r) => (!best || r.outcome_on! > best ? r.outcome_on! : best), null),
+    }));
+  }
+
+  return { weeks, screen, summary, track, reviewed, submitted, outcome, rfp, meetingNotes };
 }
 
 /**

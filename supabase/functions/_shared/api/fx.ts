@@ -28,10 +28,27 @@ export type Rate = [number | null, string | null];
 // Per function instance, like the module-level cache in Python.
 const cache = new Map<string, { at: number; rate: Rate }>();
 
-/** The key core/fx.py would look the rate up under, or null when it would not even try. */
+/**
+ * The key core/fx.py would look the rate up under, or null when it would not even try.
+ *
+ * THE FIRST-TOKEN SPLIT IS NOT A TIDY-UP. `core/dropdowns.py::usd_rate` calls the live
+ * lookup with `cur.split()[0].upper()`, and this did not, so every currency cell carrying a
+ * symbol — "GBP £", "Euro €", "CAD $" — failed the ISO test here, returned null, and fell
+ * back to the static table while the Python used the live rate. That is 13 live rows, and
+ * the two tables disagree: static GBP 1.33 against a live 1.340956, static EUR 1.16 against
+ * 1.119485, static CAD 0.73 against 0.715262 — up to about 3.6%, which `fx.ts`'s own header
+ * says is "enough to move an amount into a different scoring band".
+ *
+ * The alias lookup runs twice on purpose: once on the whole string, so a multi-word name
+ * the table knows ("F CFA") still resolves, and once on the first token for the rest.
+ */
 export function normaliseCurrency(raw: unknown): string | null {
-  let cur = String(raw ?? "").trim().toUpperCase();
-  cur = ALIAS[cur] ?? cur;
+  const whole = String(raw ?? "").trim().toUpperCase();
+  let cur = ALIAS[whole] ?? whole;
+  if (!/^[A-Z]{3}$/.test(cur)) {
+    const first = cur.split(/\s+/)[0] ?? "";
+    cur = ALIAS[first] ?? first;
+  }
   if (!cur || cur === "USD") return null;          // USD needs no rate
   if (!/^[A-Z]{3}$/.test(cur)) return null;        // not an ISO code — never worth a call
   return cur;

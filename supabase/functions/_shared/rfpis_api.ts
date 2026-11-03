@@ -101,6 +101,7 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/pipelines/reviewed" && m === "GET") return pipelines.reviewed(req, ctx);
     if (path === "/pipelines/track" && m === "GET") return pipelines.track(req, ctx);
     if (path === "/pipelines/submitted" && m === "GET") return pipelines.submitted(req, ctx);
+    if (path === "/pipelines/outcome" && m === "GET") return pipelines.outcome(req, ctx);
     if (path.startsWith("/pipelines/rfp/") && m === "GET") {
       const rest = path.slice("/pipelines/rfp/".length);
       const notes = rest.endsWith("/meeting-notes");
