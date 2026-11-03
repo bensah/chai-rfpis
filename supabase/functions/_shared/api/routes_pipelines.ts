@@ -414,6 +414,18 @@ export function selectOutcomeRows(rows: Json[]): Json[] {
  * Not-Approved row carries it. Measured 2026-11-03, 4 of the 8 answered rows have it, so
  * the fallback is doing real work rather than guarding a corner.
  */
+/**
+ * One answered application, as the Outcome route serves it: the stored row plus the four
+ * values this route derives. Named rather than inferred because the inferred type is wrong
+ * in a way that compiles elsewhere — see the annotation on `rows` in `outcome()`.
+ */
+type AnsweredRow = Json & {
+  outcome_on: string | null;
+  applications: number;
+  usd_requested: number;
+  usd_secured: number;
+};
+
 export function outcomeOn(r: Json): string | null {
   for (const k of ["date_of_approval", "date_completed", "submitted_at"]) {
     const v = str(r[k]).trim().slice(0, 10);
@@ -928,7 +940,12 @@ export function createPipelineRoutes(db: Db) {
       loadCurrencies(db),
     ]);
 
-    const rows = answered.map((r) => ({
+    // ANNOTATED, and it has to be. `Json` is `Record<string, unknown>`, and TypeScript
+    // drops an index signature when the value is spread into an object literal — so
+    // `{ ...r, outcome_on }` infers as JUST the four added fields, with no `uid` and no
+    // `progress_status`. `ledgerGap` then has nothing in common with its parameter and
+    // `r.uid` does not exist. Saying the type out loud keeps the row's own columns.
+    const rows: AnsweredRow[] = answered.map((r) => ({
       ...r,
       outcome_on: outcomeOn(r),
       applications: submissionWeight(r),
@@ -969,7 +986,7 @@ export function createPipelineRoutes(db: Db) {
       },
       // Answered, yet worth zero applications because `progress_status` never reached
       // Completed. Reported rather than repaired — see money.ts::ledgerGap.
-      ledgerGap: ledgerGap(inWindow).map((r) => r.uid),
+      ledgerGap: ledgerGap(inWindow).map((r) => str(r.uid)),
       total: dated.length,
       undated: rows.length - dated.length,
       latest: dated.reduce<string | null>(
