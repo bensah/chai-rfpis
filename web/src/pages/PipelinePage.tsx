@@ -17,6 +17,7 @@ import PeriodPicker from "../pipeline/PeriodPicker";
 import BiddingStage from "../pipeline/BiddingStage";
 import ReviewedStage from "../pipeline/ReviewedStage";
 import ScreenedStage from "../pipeline/ScreenedStage";
+import SubmittedStage from "../pipeline/SubmittedStage";
 import { Card, EmptyState, PageHeader, Select } from "../ui";
 
 /**
@@ -44,9 +45,9 @@ const STAGES: {
   { key: "bidding", label: "Bidding", icon: Layers, built: true,
     hint: "Decided to bid, application under way",
     rule: "proceeding, not yet submitted, not completed or discontinued, deadline not past" },
-  { key: "submitted", label: "Submitted", icon: Send, built: false,
+  { key: "submitted", label: "Submitted", icon: Send, built: true,
     hint: "With the funder, awaiting their answer",
-    rule: "progress complete, no funder decision yet" },
+    rule: "something records it going in, and the funder has not approved or declined it" },
   { key: "outcome", label: "Outcome", icon: Trophy, built: false,
     hint: "The funder has answered",
     rule: "approved or not approved — today's Funding page" },
@@ -93,8 +94,8 @@ export default function PipelinePage({ user }: { user: User }) {
         {stage === "screened" && <ScreenedStage week={week} weeks={weeks} onPickWeek={setWeek} />}
         {stage === "reviewed" && <ReviewedStage period={period} onPickPeriod={setPeriod} />}
         {stage === "bidding" && <BiddingStage period={period} />}
-        {stage !== "screened" && stage !== "reviewed" && stage !== "bidding"
-          && <StageNotBuilt stage={stage} />}
+        {stage === "submitted" && <SubmittedStage period={period} onPickPeriod={setPeriod} />}
+        {stage === "outcome" && <StageNotBuilt stage={stage} />}
       </div>
     </section>
   );

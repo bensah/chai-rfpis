@@ -29,6 +29,7 @@
  * rule rather than an artefact.
  */
 import { q, type Db } from "./db.ts";
+import { isOutcome, isSubmitted } from "./donor_decision.ts";
 import { gzipped, json, str } from "./http.ts";
 import type { Json } from "./jwt.ts";
 import type { Ctx } from "./session.ts";
@@ -85,15 +86,38 @@ const TRACK_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,curr
   "stage,applicant_role,assigned_to,next_action,action_deadline," +
   "progress_status,proposal_lead,is_duplicate,duplicate_of_uid";
 
+/** What the Submitted stage draws: the proposal that went in, when, and everything needed
+ *  to record the funder's answer without opening the editor.
+ *
+ *  Wider than Bidding's because this stage has to SHOW the gaps as well as the facts —
+ *  `date_completed` is how long we have been waiting, `submissions` is how many times it
+ *  went in, and `stage` is here only so the page can notice that a submitted row's
+ *  application stage still says it was never started (9 of 14, measured 2026-11-03).
+ *  `date_of_approval`, `amount_secured` and `currency_secured` are drawn because recording
+ *  an Approved answer writes all three and the form has to open on what is already there. */
+const SUBMITTED_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,currency," +
+  "call_submission_deadline,call_geographic_scope,focus_theme,opportunity_link," +
+  "submitted_at,review_week,alignment_score,scored_at,score_profile_sig," +
+  "decision,decision_overridden_at,donor_decision,progress_status,date_completed," +
+  "date_of_approval,amount_secured,currency_secured,amount_requested,submissions," +
+  "stage,applicant_role,proposal_lead,assigned_to,donor_program_officer," +
+  "expected_award_date,next_action,is_duplicate,duplicate_of_uid";
+
 /**
  * Wider than the decision vocabulary on purpose, and not a drifted copy of it.
+ *
+ * `core/pipeline.py::is_active_proceed` tests `_txt(decision).startswith("proceed")`, and
+ * `tracking_rfp._fetch` narrows the same way in SQL (`.ilike("decision", "Proceed%")`), so
+ * this is a PREFIX match rather than membership of a list. It used to be a two-item set
+ * here — {"Proceed", "Proceed as sub"} — which admits exactly the same 40 live rows today
+ * and would have quietly dropped any other Proceed wording the Python still shows.
+ *
  * "Proceed as sub" was retired on 2026-06-06 — the sub signal moved to `applicant_role`
  * (Prime / Sub / Technical) and the decision stays "Proceed" — so nothing writes it any
  * more and `POST /pipelines/decision` refuses it. Rows decided before that date still
  * carry it, and they are still live work, so the READ stays wide enough to include them.
- * Mirrors views/tracking_rfp.py and views/meetings.py, which filter the same pair.
  */
-const TRACK_DECISIONS = new Set(["Proceed", "Proceed as sub"]);
+const isProceed = (v: unknown) => norm(v).startsWith("proceed");
 
 const norm = (v: unknown) => str(v).trim().toLowerCase();
 
@@ -219,14 +243,15 @@ export function selectTrackRows(
   window?: { from: string; to: string },
 ): Json[] {
   return rows.filter((r) => {
-    // 2. The STORED decision, matched EXACTLY against the two strings.
+    // 2. The STORED decision, and only the stored one.
     //
     // THIS DELIBERATELY DISAGREES WITH SCREENED, which uses the effective decision —
-    // stored falling back to auto_recommendation, Proceed matched by startswith. A
-    // freshly scanned row whose auto-recommendation is Proceed belongs on Screened and
-    // NOT here, until a person has actually decided. Harmonising the two would fill
-    // Track with work nobody committed to, which is the opposite of the page's purpose.
-    if (!TRACK_DECISIONS.has(str(r.decision).trim())) return false;
+    // stored falling back to auto_recommendation. A freshly scanned row whose
+    // auto-recommendation is Proceed belongs on Screened and NOT here, until a person has
+    // actually decided. Harmonising the two would fill Track with work nobody committed
+    // to, which is the opposite of the page's purpose. The prefix match is the same one
+    // both pages use; the difference is which column it is applied to.
+    if (!isProceed(r.decision)) return false;
 
     // 3. When the row arrived. Either the year of submitted_at, or an explicit half-open
     // range when the period control supplies one. Read off the ISO prefix rather than
@@ -240,16 +265,22 @@ export function selectTrackRows(
       return false;
     }
 
-    // 4. donor_decision is lower-cased but NOT stripped, unlike progress_status below.
-    // That asymmetry is the Python's, and it differs from records.drop_concluded, which
-    // strips both. Matched as written rather than tidied: tidying it would silently
-    // admit rows the Streamlit page excludes.
-    const dd = str(r.donor_decision).toLowerCase();
-    if (dd !== "" && dd !== "not submitted") return false;
+    // 4. ANYTHING that records the proposal reaching the funder, which is the shared
+    // `is_submitted` and not a test spelled out again here.
+    //
+    // This line used to be `donor_decision not in {"", "not submitted"}` alone, and that
+    // dropped the third of the Python's three branches: a recorded `date_completed` also
+    // proves a submission. The effect was a bid that stayed on the board as "in flight"
+    // after somebody wrote down the day it went in — and it disagreed with this file's
+    // own `awaiting()`, which did test the date. No live row was in that state when the
+    // gap was found, so nothing was ever shown wrongly; the test asserting that Bidding's
+    // exit and Submitted's entry are one rule is what caught it.
+    if (isSubmitted(r)) return false;
 
     // 5. progress_status OVERRIDES the decision: a Completed or Discontinued row drops
     // out entirely even though its decision is still Proceed, and must not appear in the
-    // card, the dropdown or the table.
+    // card, the dropdown or the table. Completed is also one of `is_submitted`'s
+    // branches; Discontinued is this rule's alone.
     const ps = norm(r.progress_status);
     if (ps === "completed" || ps === "discontinued") return false;
 
@@ -277,15 +308,63 @@ export function selectTrackRows(
  */
 export function awaiting(rows: Json[], today: string): Json[] {
   return rows.filter((r) => {
-    if (!TRACK_DECISIONS.has(str(r.decision).trim())) return false;
-    const dd = str(r.donor_decision).toLowerCase();
-    if (dd !== "" && dd !== "not submitted") return false;
+    if (!isProceed(r.decision)) return false;
+    if (isSubmitted(r)) return false;                    // rule 4, including date_completed
     const ps = norm(r.progress_status);
     if (ps === "completed" || ps === "discontinued") return false;
-    if (str(r.date_completed).trim()) return false;      // a recorded submission date counts
     const dl = str(r.call_submission_deadline).slice(0, 10);
     return dl !== "" && dl < today;                      // fails rule 6, and only rule 6
   });
+}
+
+/**
+ * The proposals that are with a funder and have no answer back.
+ *
+ * MEMBERSHIP IS BIDDING'S EXIT, NOT A SECOND OPINION ABOUT IT. `is_submitted` is one of the
+ * six tests in `core/pipeline.is_active_proceed`, so the moment it goes true a row leaves
+ * Bidding — and this is the only thing that catches it. Expressing "submitted" any other
+ * way here would open a gap between the two stages that a row falls through silently,
+ * which is the Reviewed bug in a new place. views/report.py::_submitted_mask is exactly
+ * that other way: see ./donor_decision.ts for the two live rows it would lose.
+ *
+ * The funder answering is what ends the wait, so `isOutcome` is the exit — Approved and
+ * Not Approved belong on Outcome. "Under Review" is NOT an outcome: it is somebody
+ * recording that we are still waiting, which is this stage exactly.
+ *
+ * THERE IS NO CLAUSE FOR Discontinued OR Missed, and that is measured rather than
+ * overlooked: no canonical row reaches this filter in either state (2026-11-03), because
+ * dropping a bid clears none of the three things that prove a submission and setting one
+ * is what the Bidding panel's "we dropped it" writes INSTEAD of a submission. If one ever
+ * does appear, the row contradicts itself — dropped, yet with the funder — and showing it
+ * where somebody can fix it beats hiding it behind a rule nobody could have checked.
+ */
+export function selectSubmittedRows(rows: Json[]): Json[] {
+  return rows.filter((r) =>
+    r.is_duplicate !== true && isSubmitted(r) && !isOutcome(r.donor_decision));
+}
+
+/**
+ * The date a submission counts under, best evidence first:
+ *   date_completed   the day somebody recorded it going in — the real thing
+ *   submitted_at     the row's own intake date, so a proposal is never undated
+ *
+ * `decision_overridden_at` IS DELIBERATELY NOT IN THIS LIST, which is where it differs
+ * from `decidedOn` above. There, a save stamp is decent evidence of when a verdict was
+ * reached. Here it is evidence of when somebody did bookkeeping: the owner is working
+ * through the Bidding backlog today, marking proposals from June and July as submitted, so
+ * every one of those rows carries today's stamp. Using it would file a July submission
+ * under November and make "submitted this month" a count of data entry.
+ *
+ * `submitted_at` is the better fallback for the same population: a backdated intake row was
+ * entered close to when the proposal actually went to the funder, which is why
+ * `criteria_derive.needs_submission_check` exists at all.
+ */
+export function submittedOn(r: Json): string | null {
+  for (const k of ["date_completed", "submitted_at"]) {
+    const v = str(r[k]).trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  }
+  return null;
 }
 
 /** The leads on a duplicate group belong to the canonical row: a colleague who picked up
@@ -668,7 +747,75 @@ export function createPipelineRoutes(db: Db) {
     }));
   }
 
-  return { weeks, screen, summary, track, reviewed, rfp, meetingNotes };
+  /**
+   * Submitted: the proposals sitting with a funder, and how long each has been there.
+   *
+   * THE WINDOW IS NOT THE WHOLE STAGE, and this route is shaped around that. Reviewed and
+   * Bidding are windowed because a decision is an event and a bid has a deadline inside
+   * the period. Waiting is a STATE: a proposal submitted last March and still unanswered
+   * is not less relevant for being old, it is the one most worth chasing. So the period
+   * still filters `rows`, because the Pipeline has one period control and a stage that
+   * ignored it would be the odd one out — but `total` counts every proposal still waiting
+   * whatever its date, and `oldest` is the longest wait anywhere. A page that shows 2 of
+   * 14 can then say so and offer to widen, instead of quietly being wrong about how much
+   * is outstanding.
+   *
+   * `undated` is rows with neither a submission date nor an intake date. It is 0 today and
+   * counted anyway, for the reason Reviewed counts its own: a dropped row is invisible,
+   * and invisible is how that stage shipped broken.
+   */
+  async function submitted(req: Request, ctx: Ctx): Promise<Response> {
+    const url = new URL(req.url);
+    const year = new Date().getUTCFullYear();
+    const from = str(url.searchParams.get("from")).trim() || `${year}-01-01`;
+    const to = str(url.searchParams.get("to")).trim() || `${year + 1}-01-01`;
+    if (!/^\d{4}-\d{2}-\d{2}/.test(from) || !/^\d{4}-\d{2}-\d{2}/.test(to)) {
+      return json({ error: "from and to must be ISO dates" }, 400);
+    }
+    if (to <= from) return json({ error: "to must be after from" }, 400);
+
+    // NO PostgREST filter at all, deliberately. `is_submitted` is three columns OR-ed with
+    // one of them tested against an inverse list, which query syntax expresses badly and
+    // would express it DIFFERENTLY from the shared function — the one thing this stage
+    // must not do. Not even `is_duplicate=is.false`, which /pipelines/track does use: in
+    // Postgres that matches false and NOT null, while the rule below is `!== true`, so the
+    // day a row arrives with the column unset the two would disagree about whether it
+    // exists. There are none today (11 true, 263 false, 0 null) and the whole read is ~270
+    // rows, so the filter would buy nothing and cost a trap.
+    //
+    // getAll, not get: `total` is a count, and a silently truncated read would report a
+    // fact about 1000 rows as a fact about the whole history.
+    const all = await db.as(ctx.scope).getAll(
+      "rfp_submissions", `select=${SUBMITTED_FIELDS}`, "uid");
+    const waiting = selectSubmittedRows(all)
+      .map((r) => ({
+        ...r,
+        submitted_on: submittedOn(r),
+        // So the page can mark a wait as approximate rather than presenting an intake date
+        // as the day it went to the funder. 8 of 14 are approximate today.
+        submitted_on_exact: /^\d{4}-\d{2}-\d{2}$/.test(str(r.date_completed).trim().slice(0, 10)),
+      }));
+    const dated = waiting.filter((r) => r.submitted_on);
+
+    const rows = dated
+      .filter((r) => r.submitted_on! >= from && r.submitted_on! < to)
+      // Longest wait first: the stage's whole question is who has not heard back, and the
+      // answer is read from the top.
+      .sort((a, b) => (a.submitted_on! < b.submitted_on! ? -1 : 1));
+
+    const oldest = dated.reduce<string | null>(
+      (best, r) => (!best || r.submitted_on! < best ? r.submitted_on! : best), null);
+    const latest = dated.reduce<string | null>(
+      (best, r) => (!best || r.submitted_on! > best ? r.submitted_on! : best), null);
+
+    return gzipped(req, json({
+      from, to, rows, oldest, latest,
+      total: waiting.length,
+      undated: waiting.length - dated.length,
+    }));
+  }
+
+  return { weeks, screen, summary, track, reviewed, submitted, rfp, meetingNotes };
 }
 
 /**

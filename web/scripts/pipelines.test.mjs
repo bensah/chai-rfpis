@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const mod = await import(pathToFileURL(
   path.join(root, "supabase/functions/_shared/api/routes_pipelines.ts")).href);
-const { selectTrackRows, leadsFor, allWeeksForYear, reviewWeekLabel,
+const { selectTrackRows, selectSubmittedRows, leadsFor, allWeeksForYear, reviewWeekLabel,
         mondayFromWeekLabel, weekMondays } = mod;
 
 const TODAY = "2026-10-27";
@@ -34,9 +34,9 @@ const ok = (over = {}) => ({
 
 const uids = (rows) => rows.map((r) => r.uid);
 
-// ── Condition 2: the stored decision, exactly ────────────────────────────────
+// ── Condition 2: the stored decision ─────────────────────────────────────────
 
-test("track takes Proceed and Proceed as sub, and nothing else", () => {
+test("track takes any Proceed, and nothing else", () => {
   const rows = [ok({ uid: "A", decision: "Proceed" }),
                 ok({ uid: "B", decision: "Proceed as sub" }),
                 ok({ uid: "C", decision: "Park" }),
@@ -52,10 +52,26 @@ test("track does NOT fall back to auto_recommendation, unlike Screened", () => {
   assert.deepEqual(selectTrackRows([row], 2026, TODAY), []);
 });
 
-test("track matches the decision exactly, not by prefix, unlike Screened", () => {
-  // Screened uses startswith("proceed"), which would admit this. Track must not.
-  const row = ok({ decision: "Proceeding with caution" });
-  assert.deepEqual(selectTrackRows([row], 2026, TODAY), []);
+test("track matches the decision by prefix, as the Python does", () => {
+  // This test used to assert the opposite — exact match against {Proceed, Proceed as
+  // sub}, on the reasoning that prefix matching was Screened's alone. It is not.
+  // core/pipeline.py::is_active_proceed tests `.startswith("proceed")`, and
+  // tracking_rfp._fetch narrows with `.ilike("decision", "Proceed%")` before that, so the
+  // Streamlit page shows every one of these. Verified by running the real function:
+  // 'Proceeding with caution' and 'Proceed (as co-applicant)' both come back True.
+  //
+  // The real difference between the two pages is WHICH COLUMN the prefix is applied to —
+  // Screened falls back to auto_recommendation, this reads the stored decision only —
+  // and the test below is the one that guards it.
+  //
+  // No live row turns on this (40 decisions start with "Proceed", and 40 are exactly one
+  // of the two), so it is the failure direction that decides: matching narrowly loses a
+  // bid that the Streamlit page still shows, and work vanishing silently is the fault
+  // this whole stage line exists to stop. Matching widely shows an odd decision string to
+  // somebody who can fix it.
+  for (const d of ["Proceeding with caution", "Proceed (as co-applicant)", "proceed"]) {
+    assert.equal(selectTrackRows([ok({ decision: d })], 2026, TODAY).length, 1, d);
+  }
 });
 
 // ── Condition 3: the year of submitted_at ────────────────────────────────────
@@ -88,13 +104,29 @@ test("only a blank or Not submitted donor decision stays active", () => {
   assert.deepEqual(uids(selectTrackRows(rows, 2026, TODAY)), ["A", "B", "C", "E"]);
 });
 
-test("donor_decision is NOT stripped, matching the Python's asymmetry", () => {
-  // tracking_rfp.py lower-cases donor_decision without stripping it, while stripping
-  // progress_status. records.drop_concluded strips both. Tidying this would admit a row
-  // the Streamlit page excludes, so the asymmetry is kept deliberately.
-  assert.deepEqual(selectTrackRows([ok({ donor_decision: " not submitted " })],
-                                   2026, TODAY), []);
+test("donor_decision IS stripped, like every other column the rule reads", () => {
+  // This test used to assert the opposite — an "asymmetry" where tracking_rfp.py
+  // lower-cased donor_decision without stripping it. There is no such asymmetry.
+  // `_fetch` does none of this comparing itself; it hands each row to
+  // core/pipeline.py::is_active_proceed, which reads every column through `_txt`
+  // (strip, lower, and the Excel "nan" treated as blank). Checked by running the real
+  // function on this exact row: is_active_proceed(...) is True, so the Streamlit page
+  // keeps it, and the old rule here dropped a bid the Python still shows.
+  assert.equal(selectTrackRows([ok({ donor_decision: " not submitted " })],
+                               2026, TODAY).length, 1);
+  // The same treatment of the import's empty cell, for the same reason.
+  assert.equal(selectTrackRows([ok({ donor_decision: "nan" })], 2026, TODAY).length, 1);
 });
+
+test("a recorded submission date takes a bid off the board", () => {
+  // The third branch of is_submitted, and the one this port was missing. A person who
+  // writes down the day a proposal went in has said it went in, whatever `progress_status`
+  // still says — core/pipeline.py::is_active_proceed is False for this row.
+  assert.deepEqual(selectTrackRows([ok({ date_completed: "2026-05-01" })], 2026, TODAY), []);
+  // And it is the same rule that puts the row on the next stage, so it does not vanish.
+  assert.equal(selectSubmittedRows([ok({ date_completed: "2026-05-01" })]).length, 1);
+});
+
 
 // ── Condition 5: progress status overrides the decision ──────────────────────
 

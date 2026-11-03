@@ -255,6 +255,51 @@ export type Track = {
   awaitingSubmission: TrackRow[];
 };
 
+/** A proposal sitting with a funder, as `/pipelines/submitted` projects it. */
+export type SubmittedRow = ScreenRow & {
+  date_completed: string | null;
+  date_of_approval: string | null;
+  amount_secured: number | null;
+  currency_secured: string | null;
+  amount_requested: number | null;
+  submissions: number | null;
+  stage: string | null;
+  proposal_lead: string | null;
+  assigned_to: string | null;
+  donor_program_officer: string | null;
+  expected_award_date: string | null;
+  next_action: string | null;
+  decision_overridden_at?: string | null;
+  /** The date the wait is measured from: `date_completed`, else `submitted_at`. Resolved
+   *  by the API so the page does not own a second opinion about it. */
+  submitted_on: string | null;
+  /** False when `submitted_on` fell back to the intake date, so the page can say the wait
+   *  is approximate instead of presenting a guess as the day it went to the funder. */
+  submitted_on_exact: boolean;
+};
+
+export type Submitted = {
+  from: string; to: string;
+  rows: SubmittedRow[];
+  /**
+   * Every proposal still waiting, whatever its date — NOT just the ones in the window.
+   * Waiting is a state rather than an event, so a submission from last March still counts
+   * as outstanding; `rows.length < total` is how the page knows to offer a wider period
+   * rather than quietly understating what is owed to the team.
+   */
+  total: number;
+  /** The longest wait anywhere, and the most recent submission. Both outside the window. */
+  oldest: string | null;
+  latest: string | null;
+  /** Waiting proposals with no usable date at all — counted, never dropped. */
+  undated: number;
+};
+
+/** The window is when the proposal WENT IN, not when the call was found. */
+export const fetchSubmitted = (from: string, to: string) =>
+  call<Submitted>(
+    `/pipelines/submitted?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+
 export const fetchTrack = (from?: string, to?: string) =>
   call<Track>("/pipelines/track" + (from && to
     ? `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` : ""));

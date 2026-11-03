@@ -145,10 +145,11 @@ worth that. If the payload ever does become the problem, the answer is a
 server-computed `confidence` held to the Python by the parity harness, not an
 untested port done to save 24 KB.
 
-### `GET /pipelines/track?year=<yyyy>` or `?from=&to=` — agreed
+### `GET /pipelines/track?year=<yyyy>` or `?from=&to=` — built
 
 ```
-{ year | from+to, rows, leads: { uid, proposalLeads[] }[] }
+{ year | from+to, rows, leads: { uid, proposalLeads[] }[],
+  awaitingSubmission: RfpSubmission[] }
 ```
 
 A range replaces condition 3 below and nothing else: the other five are about
@@ -163,23 +164,54 @@ Six conditions from `tracking_rfp.py::_fetch`, all load-bearing, applied
 server-side:
 
 1. `is_duplicate` is false
-2. `decision` is exactly `"Proceed"` or `"Proceed as sub"`
+2. `decision`, lower-cased, starts with `"proceed"`
 3. the year of `submitted_at` equals `year` (not `review_week`)
-4. `donor_decision`, lower-cased, is `""` or `"not submitted"`
+4. nothing records a submission — `core/pipeline.py::is_submitted`
 5. `progress_status`, lower-cased, is not `"completed"` or `"discontinued"`
 6. `call_submission_deadline` is null, or on or after today
 
-**Condition 2 contradicts Screen, deliberately.** Screen uses the EFFECTIVE
-decision: stored falling back to `auto_recommendation`, Proceed matched by
-`startswith`. Track uses the STORED column only, matched exactly against those
-two strings. So a freshly scanned row whose auto-recommendation is Proceed
-appears on Screen and must NOT appear on Track until a person has actually
-decided. Harmonising the two "for consistency" would fill Track with work
-nobody has committed to, which is the opposite of what the page is for.
+**Condition 2 contradicts Screen, deliberately, but not in the way an earlier
+version of this document said.** Screen uses the EFFECTIVE decision: stored
+falling back to `auto_recommendation`. Track uses the STORED column only. That
+is the whole difference — WHICH COLUMN, not how it is matched. Both prefix-match,
+because `is_active_proceed` tests `startswith("proceed")` and `_fetch` narrows
+with `.ilike("decision", "Proceed%")` before it. This route matched exactly
+against `{"Proceed", "Proceed as sub"}` until 2026-11-03, which admits the same
+40 live rows and would have silently dropped any other Proceed wording the
+Streamlit page still shows.
+
+So a freshly scanned row whose auto-recommendation is Proceed appears on Screen
+and must NOT appear on Track until a person has actually decided. Harmonising
+*that* "for consistency" would fill Track with work nobody has committed to,
+which is the opposite of what the page is for.
+
+**Condition 4 is three columns, not one.** It was `donor_decision not in {"",
+"not submitted"}` alone until 2026-11-03, which is two thirds of
+`is_submitted`: a recorded `date_completed` proves a submission as well, and
+that branch was missing, so a bid stayed on the board as "in flight" after
+somebody wrote down the day it went in. It also disagreed with this route's own
+`awaitingSubmission`, which did test the date. No live row was in that state
+when the gap was found, so nothing was ever shown wrongly — it was caught by
+the test that asserts Bidding's exit and Submitted's entry are one rule.
+
+Every column is read through `_txt`: stripped, lower-cased, with the Excel
+import's literal `"nan"` treated as blank. An earlier note here claimed
+`donor_decision` was lower-cased but not stripped. It is stripped; `_fetch`
+does none of this comparing itself, it hands each row to `is_active_proceed`.
 
 **Condition 5 overrides condition 2.** A Completed or Discontinued row drops
 out entirely even though its decision is still Proceed, and must not appear in
-the card, the dropdown or the table.
+the card, the dropdown or the table. Completed is also one of `is_submitted`'s
+branches; Discontinued is condition 5's alone.
+
+**`awaitingSubmission` — the Proceeds that fail ONLY condition 6.** Measured on
+the live table, condition 6 removed 15 of 16 Proceeds, so a stage that applied
+it silently would have shown one bid and looked like a year of work had
+vanished. These are the `criteria_derive.needs_submission_check` population:
+backdated intake, where a proposal entered from Excel months after it went to
+the funder arrives with the deadline already past. Returned so the page can ask
+rather than drop them. The owner has since answered 13 of the 15 through that
+panel.
 
 ### `GET /pipelines/rfp/:uid/meeting-notes?year=<yyyy>` — agreed
 
@@ -291,6 +323,84 @@ counted.
 **Duplicates are NOT dropped.** Deciding on a row is something that happened to
 that row, and hiding it would make a decision vanish from the stage whose whole
 job is to show decisions. The page groups them instead.
+
+### `GET /pipelines/submitted?from=<iso>&to=<iso>` — built
+
+```
+{ rows: (RfpSubmission & { submitted_on: string,
+                           submitted_on_exact: boolean })[],
+  from: string, to: string,
+  total: number,             // every proposal still waiting, ANY date
+  oldest: string | null,     // the longest wait anywhere
+  latest: string | null,
+  undated: number }          // waiting, but with no usable date at all
+```
+
+The proposals sitting with a funder and no answer back, longest wait first.
+Defaults to the current calendar year.
+
+**Membership is Bidding's exit, not a second opinion about it.** `is_submitted`
+is one of the six tests in `is_active_proceed`, so the moment it goes true a row
+leaves `/pipelines/track` — and this is the only thing that catches it. Both
+routes call one function (`api/donor_decision.ts`, ported from
+`core/pipeline.py`), and one test drives both routes over one fixture, because a
+gap between them is a row that falls off the line silently. That is the Reviewed
+bug in a new place.
+
+The exit is `is_outcome`: Approved or Not Approved belong on Outcome. **"Under
+Review" is NOT an outcome** — somebody put it there to record that we are
+waiting, which is this stage exactly.
+
+**The inverse list is load-bearing.** `is_submitted` treats ANY `donor_decision`
+outside `{"", "not submitted"}` as proof of submission, because a funder can only
+decide on a proposal it received. `views/report.py::_submitted_mask` names the
+three decisions it accepts instead, which is right for a historical total but
+reads a value it has never seen as unsubmitted. Two live rows carry
+`"Submitted"`, which is not one of `config/dropdowns.yaml`'s four values at all.
+This route counts them; that mask would not.
+
+**No clause for Discontinued or Missed**, and that is measured rather than
+overlooked: no canonical row reaches the filter in either state. Dropping a bid
+clears none of the three things that prove a submission, and setting
+Discontinued is what the Bidding panel writes INSTEAD of a submission. If one
+ever appears, the row contradicts itself — dropped, yet with the funder — and
+showing it where somebody can fix it beats hiding it behind a rule nobody could
+have checked.
+
+**Which date the wait is measured from**, best evidence first:
+
+| column | meaning |
+|---|---|
+| `date_completed` | the day somebody recorded it going in — the real thing |
+| `submitted_at` | the row's own intake date, so a proposal is never undated |
+
+**`decision_overridden_at` is deliberately absent, unlike `decided_on`.** For
+Reviewed, a save stamp is decent evidence of when a verdict was reached. Here it
+is evidence of when somebody did bookkeeping: the owner spent 2026-11-03 working
+through the Bidding backlog, marking June and July submissions, so every one of
+those rows carries today's stamp. Using it would file a July submission under
+November and turn "submitted this month" into a count of data entry.
+`submitted_on_exact` is false whenever the fallback was used — **8 of 14 rows**
+— so the page marks the wait approximate instead of presenting a guess as the
+day it reached the funder.
+
+**`total` is not `rows.length`, and that is the point.** Reviewed and Bidding
+are windowed because a decision and a deadline are events. Waiting is a STATE: a
+proposal submitted last March and still unanswered is the one most worth
+chasing, not the least. The period still filters `rows`, because the Pipeline
+has one period control — but `total` counts every waiting proposal whatever its
+date, and `oldest` points at the longest wait, so a page showing 2 of 14 can say
+so and offer to widen rather than quietly understating what is outstanding.
+
+**There is no `POST /pipelines/outcome`.** Recording a funder's answer is a plain
+`PATCH /pipelines/rfp/:uid`, unlike a go/no-go, which has its own route because
+it writes a training label and the scan's tombstone. Nothing in
+`core/decision_log.py` logs a funder outcome, so a dedicated route would carry no
+rule — only symmetry.
+
+Live, 2026-11-03: 14 waiting, all in one tenant; longest wait 292 days; 7 with
+no answer recorded; 9 whose `stage` still says the application was never
+started.
 
 ### `GET /pipelines/rfp/:uid?reporting=1` — agreed
 
@@ -500,7 +610,9 @@ it is there. Read it as "we know exactly when", never as "a person decided".
 ### Track versus Screened — carried, and not a trap to fix
 
 The disagreement documented under `/pipelines/track` is deliberate and stays:
-Screened reads the effective decision, Track reads the stored one exactly.
+Screened reads the effective decision — stored falling back to
+`auto_recommendation` — and Track reads the stored column only. Both match the
+value by prefix; the column is the difference, not the matching.
 
 ## Behaviours pinned so they are not improved by accident
 
