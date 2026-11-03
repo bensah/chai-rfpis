@@ -14,6 +14,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const W = await import(pathToFileURL(
   path.join(root, "supabase/functions/_shared/api/pipeline_writes.ts")).href);
+// The shared donor-decision rules, and the read side that now depends on them. Imported
+// directly because the thing worth asserting is that ONE function decides whether a
+// proposal has gone to the funder — the write route's warning and the stage a row lands
+// on both hang off it.
+const D = await import(pathToFileURL(
+  path.join(root, "supabase/functions/_shared/api/donor_decision.ts")).href);
+const P = await import(pathToFileURL(
+  path.join(root, "supabase/functions/_shared/api/routes_pipelines.ts")).href);
 
 // ── core/donor_decision.py ───────────────────────────────────────────────────
 
@@ -242,4 +250,74 @@ test("an existing grant is updated even when the tab is emptied", () => {
   const a = W.reportingAction({ status: "", owner: "" }, "G-RFP-1");
   assert.equal(a.kind, "update");
   assert.equal(a.payload.status, "");
+});
+
+test("the donor-decision vocabulary matches config/dropdowns.yaml", () => {
+  // The funder's answer, which is a different column and a different act from `decisions`.
+  // Unlike that one it is NOT validated by the PATCH route — live rows carry values the
+  // vocabulary never had — so this list is only what the Submitted stage OFFERS. It still
+  // has to match the YAML: an app that offers one spelling while the Report counts
+  // another is how "Approved" stops being counted as approved.
+  const want = yamlList("donor_decision");
+  assert.ok(want, "config/dropdowns.yaml no longer declares `donor_decision`");
+  assert.deepEqual([...W.DONOR_DECISIONS], want);
+});
+
+test("the two outcomes are the exit from Submitted, and Under Review is not one", () => {
+  // The Submitted stage's membership is `is_submitted && !isOutcome`, so anything this
+  // call reads as an outcome leaves the stage. Treating "Under Review" as one would make
+  // saying "we are still waiting" look like the funder had answered — and the row would
+  // vanish into Outcome with nothing recorded there.
+  for (const v of D.OUTCOMES) assert.equal(D.isOutcome(v), true, `${v} is an outcome`);
+  assert.equal(D.isOutcome("Under Review"), false);
+  assert.equal(D.isOutcome("Not submitted"), false);
+  assert.equal(D.isOutcome("Submitted"), false, "not an outcome, whoever typed it");
+  // Every outcome must be a value the app offers, or recording one would put a row in a
+  // state the dropdown cannot express.
+  for (const v of D.OUTCOMES) assert.ok(W.DONOR_DECISIONS.includes(v));
+});
+
+test("anything but blank or Not submitted proves the proposal went in", () => {
+  // core/pipeline.py::is_submitted, and the INVERSE LIST is the point: a funder can only
+  // decide on a proposal it received. views/report.py::_submitted_mask names the three
+  // decisions it accepts instead, and would read a word added to the dropdown next year —
+  // or one somebody typed — as unsubmitted. Two live rows say "Submitted".
+  assert.equal(D.isSubmitted({ donor_decision: "Submitted" }), true);
+  assert.equal(D.isSubmitted({ donor_decision: "Under Review" }), true);
+  assert.equal(D.isSubmitted({ donor_decision: "Approved" }), true);
+  assert.equal(D.isSubmitted({ progress_status: "Completed" }), true);
+  assert.equal(D.isSubmitted({ date_completed: "2026-07-31" }), true);
+
+  // And the states that prove nothing.
+  assert.equal(D.isSubmitted({}), false);
+  assert.equal(D.isSubmitted({ donor_decision: "Not submitted" }), false);
+  assert.equal(D.isSubmitted({ progress_status: "In Progress" }), false);
+  // The Excel import's empty cell, which arrives as the literal string. Reading it as a
+  // value would mark every migrated row as submitted.
+  assert.equal(D.isSubmitted({ donor_decision: "nan", date_completed: "nan" }), false);
+  assert.equal(D.isSubmitted({ donor_decision: "  Not submitted  " }), false, "stripped");
+});
+
+test("is_submitted is the one test both Bidding and Submitted use", () => {
+  // Bidding's exit and Submitted's entry have to be the same rule or a row falls off the
+  // line. This asserts they are literally the same function rather than two that agree
+  // today: routes_pipelines.ts imports it from the shared module, and the HTTP pair test
+  // in api-flows.test.mjs drives both routes over one fixture.
+  assert.equal(P.selectSubmittedRows([
+    { uid: "a", progress_status: "Completed" },
+    { uid: "b", progress_status: "In Progress", donor_decision: "Not submitted" },
+    { uid: "c", date_completed: "2026-01-01" },
+    { uid: "d", donor_decision: "Approved" },
+    { uid: "e", progress_status: "Completed", is_duplicate: true },
+  ]).map((r) => r.uid).join(","), "a,c");
+
+  // The date chain, which is NOT decidedOn's: a save stamp says when somebody did the
+  // bookkeeping, not when the proposal went in.
+  assert.equal(P.submittedOn({ date_completed: "2026-07-31", submitted_at: "2026-02-01" }),
+    "2026-07-31");
+  assert.equal(P.submittedOn({
+    submitted_at: "2026-06-25T00:00:00+00:00",
+    decision_overridden_at: "2026-11-03T08:00:00+00:00",
+  }), "2026-06-25");
+  assert.equal(P.submittedOn({ decision_overridden_at: "2026-11-03T08:00:00+00:00" }), null);
 });

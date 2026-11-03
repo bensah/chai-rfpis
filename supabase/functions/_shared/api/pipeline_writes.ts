@@ -107,6 +107,24 @@ export const STAGES = [
 ] as const;
 
 /**
+ * `config/dropdowns.yaml`'s `donor_decision` — what the FUNDER said, which is a different
+ * column and a different act from `decisions` above. Offered by the Submitted stage when
+ * somebody records an answer.
+ *
+ * NOT validated by the PATCH route, unlike `decision`, and that is deliberate rather than
+ * an omission. Live rows carry values this list does not contain — measured 2026-11-03,
+ * two of them say "Submitted" — and PATCH is the general editor save, so refusing anything
+ * outside the vocabulary would make an existing row uneditable until somebody fixed a
+ * column they were not trying to change. The list is what the UI OFFERS; the stored value
+ * is shown as it is. The test "the donor-decision vocabulary matches config/dropdowns.yaml"
+ * keeps this copy honest for the same reason the other two have one: this module also runs
+ * as a Deno Edge Function with no filesystem to read the YAML from.
+ */
+export const DONOR_DECISIONS = [
+  "Approved", "Not Approved", "Under Review", "Not submitted",
+] as const;
+
+/**
  * Columns a save may change WITHOUT the score moving — what the team records about its own
  * work on a bid, after the system has judged the call.
  *
@@ -149,13 +167,16 @@ export const workflowOnlyColumns = (): string[] => [...WORKFLOW_ONLY];
 const REPORTING = ["status", "report_type", "report_due_date", "owner", "remarks"] as const;
 
 // ── core/donor_decision.py, ported ───────────────────────────────────────────
-// Three places had their own copy of this test and they have to agree. Same here: the
-// warning below, and the stage a row reads as, both depend on it.
-const NO_ANSWER = new Set(["", "none", "nan", "nat", "null", "not submitted"]);
+// MOVED OUT, to ./donor_decision.ts, when the Submitted stage became its second caller.
+// Three places had their own copy of this test in the Streamlit app and they drifted,
+// which is why the Python extracted a module; the same thing was starting here, and a read
+// route and a write route disagreeing about whether the funder has answered would put a
+// row on a stage the save thinks it left. Re-exported so this module stays the one import
+// for the Pipeline's write rules.
+export { isNoAnswer, isOutcome } from "./donor_decision.ts";
+import { isNoAnswer } from "./donor_decision.ts";
+
 const norm = (v: unknown) => str(v).trim().toLowerCase();
-export const isNoAnswer = (v: unknown) => NO_ANSWER.has(norm(v));
-/** "Under Review" is deliberately NOT an outcome: it records that we are waiting. */
-export const isOutcome = (v: unknown) => norm(v) === "approved" || norm(v) === "not approved";
 
 // ── The rules, as pure functions ─────────────────────────────────────────────
 // Exported so tests and the parity harness can drive them directly rather than through

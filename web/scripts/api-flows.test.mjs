@@ -62,14 +62,29 @@ function fakeDb(tables) {
   function filtered(rows, params) {
     return rows.filter((r) => [...params].every(([k, v]) => RESERVED.has(k) || match(r, k, v)));
   }
+  // A real projection, not a passthrough. PostgREST returns EVERY column named in
+  // `select`, null where the row has no value — so a page can rely on a key being there.
+  // The fake used to hand back whatever happened to be on the object, which made the
+  // difference invisible both ways: a route that forgot to project a column passed
+  // whenever the fixture happened to set it, and a correct projection failed whenever the
+  // fixture did not. The routes here are nearly all projections (see the header of
+  // routes_pipelines.ts), so that is the thing most worth getting right.
   function project(row, select) {
-    const out = { ...row };
-    const m = (select || "").match(/tenants\(([^)]*)\)/);
-    if (m) {
-      const t = (tables.tenants || []).find((x) => x.id === row.tenant_id);
-      out.tenants = t ? Object.fromEntries(m[1].split(",").map((c) => [c, t[c]])) : null;
-    }
-    return out;
+    const sel = (select || "").trim();
+    const m = sel.match(/tenants\(([^)]*)\)/);
+    const embed = m
+      ? (() => {
+        const t = (tables.tenants || []).find((x) => x.id === row.tenant_id);
+        return { tenants: t ? Object.fromEntries(m[1].split(",").map((c) => [c, t[c]])) : null };
+      })()
+      : {};
+    // `select=*` and an absent select both mean the whole row.
+    const cols = sel.replace(/tenants\([^)]*\)/g, "").split(",")
+      .map((c) => c.trim()).filter((c) => c && c !== "*");
+    if (!cols.length || sel.includes("*")) return { ...row, ...embed };
+    const out = {};
+    for (const c of cols) out[c] = row[c] ?? null;
+    return { ...out, ...embed };
   }
   async function fetch(url, init = {}) {
     const u = new URL(url);
@@ -945,4 +960,186 @@ test("saving an RFP queues the re-score that owns its score", async () => {
   assert.equal(w.status, 200);
   assert.equal(w.body.rescore, null);
   assert.equal(db.tables.web_jobs.filter((j) => j.kind === "rescore").length, 1);
+});
+
+test("Submitted is exactly what Bidding's submission rule lets out", async () => {
+  // The two stages share ONE test — core/pipeline.py::is_submitted, ported to
+  // api/donor_decision.ts — so the moment a row leaves Bidding it arrives here. Asserted
+  // as a pair rather than separately: a gap between them is a row that falls off the line
+  // silently, which is how the Reviewed stage shipped hiding 61 of 83 decisions.
+  const { db, call, signIn } = setup();
+  const year = new Date().getUTCFullYear();
+  const base = {
+    tenant_id: T1, decision: "Proceed", is_duplicate: false, progress_status: "In Progress",
+    donor_decision: "Not submitted", submitted_at: `${year}-03-01T00:00:00+00:00`,
+    call_submission_deadline: "2099-01-01",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "S-LIVE", ...base },
+    // The three things that prove a submission, one each.
+    { uid: "S-PROGRESS", ...base, progress_status: "Completed" },
+    { uid: "S-DATE", ...base, date_completed: `${year}-04-02` },
+    { uid: "S-REVIEW", ...base, donor_decision: "Under Review" },
+    // Not in config/dropdowns.yaml at all, and two live rows carry it. The inverse list
+    // reads it as submitted; views/report.py's allowlist would not.
+    { uid: "S-UNKNOWN", ...base, donor_decision: "Submitted" },
+    // Answered: these belong on Outcome, not here.
+    { uid: "S-WON", ...base, donor_decision: "Approved" },
+    { uid: "S-LOST", ...base, donor_decision: "Not Approved" },
+    // A duplicate is not a second proposal.
+    { uid: "S-DUP", ...base, is_duplicate: true, progress_status: "Completed" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const bids = (await call("GET", "/pipelines/track", null, col.token)).body.rows
+    .map((r) => r.uid);
+  assert.deepEqual(bids, ["S-LIVE"], "everything else has left Bidding");
+
+  const sub = await call("GET",
+    `/pipelines/submitted?from=${year}-01-01&to=${year + 1}-01-01`, null, col.token);
+  assert.deepEqual([...sub.body.rows.map((r) => r.uid)].sort(),
+    ["S-DATE", "S-PROGRESS", "S-REVIEW", "S-UNKNOWN"],
+    "every row Bidding let out for being submitted, and nothing the funder has answered");
+});
+
+test("the wait is measured from the submission date, and says when it is a guess", async () => {
+  // 8 of the 14 live rows have no date_completed, so the fallback is the common case
+  // rather than the edge one. `decision_overridden_at` is deliberately NOT in the chain:
+  // the owner is marking June submissions today, and using a save stamp would file them
+  // all under November.
+  const { db, call, signIn } = setup();
+  const base = {
+    tenant_id: T1, decision: "Proceed", is_duplicate: false, progress_status: "Completed",
+    donor_decision: "Not submitted",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "W-EXACT", ...base, date_completed: "2026-07-31",
+      submitted_at: "2026-02-01T00:00:00+00:00",
+      decision_overridden_at: "2026-11-03T08:00:00+00:00" },
+    { uid: "W-APPROX", ...base, submitted_at: "2026-06-25T00:00:00+00:00",
+      decision_overridden_at: "2026-11-03T08:00:00+00:00" },
+    { uid: "W-NODATE", ...base },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const r = await call("GET", "/pipelines/submitted?from=2026-01-01&to=2027-01-01",
+    null, col.token);
+  const by = Object.fromEntries(r.body.rows.map((x) => [x.uid, x]));
+  assert.equal(by["W-EXACT"].submitted_on, "2026-07-31");
+  assert.equal(by["W-EXACT"].submitted_on_exact, true);
+  assert.equal(by["W-APPROX"].submitted_on, "2026-06-25", "the intake date, not today's save");
+  assert.equal(by["W-APPROX"].submitted_on_exact, false);
+  assert.ok(!("W-NODATE" in by), "a row with no date at all cannot be placed in a period");
+  assert.equal(r.body.undated, 1, "but it is counted, never dropped");
+  assert.equal(r.body.total, 3, "total is every proposal still waiting");
+  // Longest wait first: the stage is read from the top.
+  assert.deepEqual(r.body.rows.map((x) => x.uid), ["W-APPROX", "W-EXACT"]);
+  assert.equal(r.body.oldest, "2026-06-25");
+  assert.equal(r.body.latest, "2026-07-31");
+});
+
+test("a wait outside the period is still a wait, and the stage says how many", async () => {
+  // Reviewed and Bidding are windowed because a decision and a deadline are events.
+  // Waiting is a STATE, so a narrow period must not let the page understate what is
+  // outstanding — `total` counts every waiting proposal whatever its date.
+  const { db, call, signIn } = setup();
+  const base = {
+    tenant_id: T1, decision: "Proceed", is_duplicate: false, progress_status: "Completed",
+    donor_decision: "Under Review",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "OLD", ...base, date_completed: "2024-03-10" },
+    { uid: "NEW", ...base, date_completed: "2026-10-02" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const r = await call("GET", "/pipelines/submitted?from=2026-10-01&to=2026-11-01",
+    null, col.token);
+  assert.deepEqual(r.body.rows.map((x) => x.uid), ["NEW"]);
+  assert.equal(r.body.total, 2, "the 2024 proposal has not stopped waiting");
+  assert.equal(r.body.oldest, "2024-03-10", "and the page can point at it");
+});
+
+test("recording the funder's answer moves the proposal off the stage", async () => {
+  // The act that ends the wait. A plain PATCH rather than a route of its own: unlike a
+  // go/no-go, a funder's answer writes no training label and no scan tombstone — nothing
+  // in core/decision_log.py logs one — so a dedicated route would carry no rule.
+  const { db, call, signIn } = setup();
+  db.tables.rfp_submissions.push({
+    uid: "ANS-1", tenant_id: T1, decision: "Proceed", is_duplicate: false,
+    progress_status: "Completed", donor_decision: "Not submitted",
+    date_completed: "2026-05-01", currency: "USD",
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+  const list = () => call("GET", "/pipelines/submitted?from=2026-01-01&to=2027-01-01",
+    null, col.token).then((r) => r.body.rows.map((x) => x.uid));
+
+  assert.deepEqual(await list(), ["ANS-1"]);
+
+  // "Under Review" is NOT an outcome — it records that we are still waiting — so the row
+  // stays. Getting this wrong would make saying "we are waiting" look like an answer.
+  await call("PATCH", "/pipelines/rfp/ANS-1",
+    { fields: { donor_decision: "Under Review" } }, col.token);
+  assert.deepEqual(await list(), ["ANS-1"], "still waiting, just acknowledged");
+
+  const won = await call("PATCH", "/pipelines/rfp/ANS-1", {
+    fields: {
+      donor_decision: "Approved", date_of_approval: "2026-11-03",
+      amount_secured: 420551, currency_secured: "USD",
+    },
+  }, col.token);
+  assert.equal(won.status, 200);
+  assert.equal(won.body.row.amount_secured, 420551);
+  assert.deepEqual(await list(), [], "answered, so it belongs to Outcome now");
+});
+
+test("marking a bid submitted carries it straight from Bidding to Submitted", async () => {
+  // The owner's actual path through the app: the Bidding panel asks "did this go in?",
+  // and the one field it writes has to be enough to land the row on the next stage. If it
+  // were not, clicking the button would make the proposal disappear.
+  const { db, call, signIn } = setup();
+  const year = new Date().getUTCFullYear();
+  db.tables.rfp_submissions.push({
+    uid: "HAND-1", tenant_id: T1, decision: "Proceed", is_duplicate: false,
+    progress_status: "Not Started", donor_decision: "Not submitted",
+    submitted_at: `${year}-06-25T00:00:00+00:00`, call_submission_deadline: "2020-01-01",
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const before = await call("GET", "/pipelines/track", null, col.token);
+  assert.deepEqual(before.body.awaitingSubmission.map((x) => x.uid), ["HAND-1"]);
+
+  await call("PATCH", "/pipelines/rfp/HAND-1",
+    { fields: { progress_status: "Completed" } }, col.token);
+
+  const after = await call("GET",
+    `/pipelines/submitted?from=${year}-01-01&to=${year + 1}-01-01`, null, col.token);
+  const row = after.body.rows.find((x) => x.uid === "HAND-1");
+  assert.ok(row, "the answer to Bidding's question is this stage's membership");
+  assert.equal(row.submitted_on_exact, false,
+    "and it arrives with no submission date, which is what this stage then asks for");
+  // The columns the stage needs to ask its three questions.
+  for (const k of ["date_completed", "stage", "submissions", "donor_program_officer",
+                   "amount_requested", "date_of_approval"]) {
+    assert.ok(k in row, `${k} must be projected, not missing`);
+  }
+});
+
+test("Submitted counts a tenant with more than 1000 waiting proposals in full", async () => {
+  // PostgREST caps a response at 1000 rows silently, and `total` is presented as a fact
+  // about the whole history. A truncated read would not look short — it would look like
+  // less work is outstanding than there is.
+  const { db, call, signIn } = setup();
+  for (let i = 0; i < 1500; i++) {
+    db.tables.rfp_submissions.push({
+      uid: `BULK-${String(i).padStart(4, "0")}`, tenant_id: T1, decision: "Proceed",
+      is_duplicate: false, progress_status: "Completed", donor_decision: "Not submitted",
+      date_completed: "2026-02-02",
+    });
+  }
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/submitted?from=2026-01-01&to=2027-01-01",
+    null, col.token);
+  assert.equal(r.body.total, 1500);
+  assert.equal(r.body.rows.length, 1500);
 });
