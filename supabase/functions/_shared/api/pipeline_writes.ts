@@ -83,6 +83,30 @@ const STAMPED = new Set(["decision_overridden_by", "decision_overridden_at"]);
 export const DECISIONS = ["Proceed", "Park", "Decline"] as const;
 
 /**
+ * `config/dropdowns.yaml`'s `stages` — where a bid has got to in its application, and the
+ * steps the Bidding stage's progress bar is made of. ORDER IS THE MEANING here in a way it
+ * is not for `decisions`: the bar reads left to right, so a reordered YAML would silently
+ * redraw what "further along" means.
+ *
+ * Seven, not five. `views/tracking_rfp.py` carries a five-item fallback list that drops
+ * "Budgeting development" and "Review, compliance check & approvals" — it only fires if
+ * the YAML has no `stages` at all, and copying the short list here would quietly lose two
+ * steps that live rows are sitting in. The YAML is the source; the test
+ * "the stage vocabulary matches config/dropdowns.yaml" keeps this copy honest, order and
+ * all, for the same reason the decision list has one: this module also runs as a Deno
+ * Edge Function with no filesystem to read the YAML from.
+ */
+export const STAGES = [
+  "Identification & screening",
+  "Go/no-go decision & bid planning",
+  "Proposal development",
+  "Budgeting development",
+  "Review, compliance check & approvals",
+  "Final packaging & submission",
+  "Post-submission follow-up",
+] as const;
+
+/**
  * Columns a save may change WITHOUT the score moving — what the team records about its own
  * work on a bid, after the system has judged the call.
  *

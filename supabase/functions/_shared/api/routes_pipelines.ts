@@ -73,11 +73,16 @@ const REVIEWED_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,c
   "decision_overridden_at,donor_decision,progress_status,applicant_role," +
   "is_duplicate,duplicate_of_uid";
 
-/** views/tracking_rfp.py draws these, plus proposal_lead for the duplicate-group leads. */
+/** views/tracking_rfp.py draws these, plus proposal_lead for the duplicate-group leads.
+ *
+ *  `stage` and the four beside it are what the Bidding stage works on: `stage` is the
+ *  application's own position (config/dropdowns.yaml's `stages`), and a bid without its
+ *  role, lead, next action and due date is a progress bar with nothing under it. */
 const TRACK_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,currency," +
   "call_submission_deadline,call_geographic_scope,focus_theme,opportunity_link," +
   "submitted_at,review_week,alignment_score,scored_at,score_profile_sig," +
-  "decision,donor_decision," +
+  "decision,donor_decision,date_completed," +
+  "stage,applicant_role,assigned_to,next_action,action_deadline," +
   "progress_status,proposal_lead,is_duplicate,duplicate_of_uid";
 
 /**
@@ -251,6 +256,35 @@ export function selectTrackRows(
     // 6. No deadline, or one that has not passed.
     const dl = str(r.call_submission_deadline).slice(0, 10);
     return dl === "" || dl >= today;
+  });
+}
+
+/**
+ * Bids that fail ONLY rule 6 — a Proceed the team never recorded as submitted, whose
+ * deadline has since passed.
+ *
+ * Rule 6 is correct and stays: a call whose deadline has gone is not work you can still
+ * do, and `is_active_proceed` is shared with the Meetings note-taker, so weakening it here
+ * would make two pages disagree. But measured on the live table, it is what removes 15 of
+ * the 16 Proceeds — so a Bidding stage that applied it silently would show one bid and
+ * look broken, which is the same fault the Reviewed stage shipped with.
+ *
+ * These are almost certainly submitted work nobody ticked off. `criteria_derive`'s
+ * `needs_submission_check` exists for exactly this population and says why: proposals
+ * entered from Excel months after they went to the funder arrive with a deadline already
+ * past, and if nothing records the submission they read as missed. Returned so the page
+ * can ask, rather than quietly dropping a team's year of work off the board.
+ */
+export function awaiting(rows: Json[], today: string): Json[] {
+  return rows.filter((r) => {
+    if (!TRACK_DECISIONS.has(str(r.decision).trim())) return false;
+    const dd = str(r.donor_decision).toLowerCase();
+    if (dd !== "" && dd !== "not submitted") return false;
+    const ps = norm(r.progress_status);
+    if (ps === "completed" || ps === "discontinued") return false;
+    if (str(r.date_completed).trim()) return false;      // a recorded submission date counts
+    const dl = str(r.call_submission_deadline).slice(0, 10);
+    return dl !== "" && dl < today;                      // fails rule 6, and only rule 6
   });
 }
 
@@ -474,7 +508,7 @@ export function createPipelineRoutes(db: Db) {
       return { uid, proposalLeads: [...set].sort() };
     });
 
-    return gzipped(req, json({ year, rows, leads }));
+    return gzipped(req, json({ year, rows, leads, awaitingSubmission: awaiting(all, today) }));
   }
 
   /** The editor's record: one RFP, every column, and the linked grant when asked for.

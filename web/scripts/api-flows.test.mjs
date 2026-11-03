@@ -32,6 +32,15 @@ function fakeDb(tables) {
     if (v.startsWith("eq.")) return String(cell) === decodeURIComponent(v.slice(3)) || (cell === true && v === "eq.true");
     if (v === "is.null") return cell == null;
     if (v === "not.is.null") return cell != null;
+    // `is.true` / `is.false` are NOT `eq.`: in Postgres a NULL matches neither, so a row
+    // whose flag was never set is excluded by both. /pipelines/track narrows on
+    // `is_duplicate=is.false`, and treating NULL as false here would quietly widen it.
+    if (v === "is.true" || v === "is.false") {
+      const want = v === "is.true";
+      if (typeof cell === "boolean") return cell === want;
+      if (typeof cell === "string") return cell.trim().toLowerCase() === String(want);
+      return false;
+    }
     if (v.startsWith("in.(")) return v.slice(4, -1).split(",").includes(String(cell));
     // gte/lte alongside gt/lt because the period routes window half-open — `gte.from` and
     // `lt.to` — so consecutive periods tile exactly. A fake that only knew `gt.` would
@@ -787,6 +796,122 @@ test("the Reviewed window is half-open, so periods tile", async () => {
   for (const bad of [`from=${today}&to=${today}`, "from=nope&to=2026-01-01", `from=${tomorrow}&to=${today}`]) {
     assert.equal((await call("GET", `/pipelines/reviewed?${bad}`, null, col.token)).status, 400);
   }
+});
+
+test("Bidding carries the columns its progress bar is made of", async () => {
+  // TRACK_FIELDS is a projection, so a column the stage needs is absent rather than null
+  // if nobody adds it — and an absent `stage` would draw every bid as "not started".
+  const { db, call, signIn } = setup();
+  const year = new Date().getUTCFullYear();
+  db.tables.rfp_submissions.push({
+    uid: "BID-1", tenant_id: T1, opportunity_title: "Open call", decision: "Proceed",
+    is_duplicate: false, progress_status: "In Progress", donor_decision: "Not submitted",
+    submitted_at: `${year}-03-01T00:00:00+00:00`, call_submission_deadline: "2099-01-01",
+    stage: "Proposal development", applicant_role: "Prime", assigned_to: "Ama",
+    next_action: "Draft the budget", action_deadline: "2099-01-05", proposal_lead: "Ada",
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const r = await call("GET", "/pipelines/track", null, col.token);
+  const row = r.body.rows.find((x) => x.uid === "BID-1");
+  assert.ok(row, "an active Proceed bid is in Track");
+  for (const k of ["stage", "applicant_role", "assigned_to", "next_action", "action_deadline"]) {
+    assert.ok(k in row, `${k} must be projected, not missing`);
+  }
+  assert.equal(row.stage, "Proposal development");
+});
+
+test("a bid leaves Bidding the moment it stops being live work", async () => {
+  // The six rules are core/pipeline.py::is_active_proceed and belong to the route. Each
+  // of these is a different way a bid stops being in flight, and each used to need a
+  // person to notice; getting one wrong leaves finished work on the board forever.
+  const year = new Date().getUTCFullYear();
+  const base = {
+    tenant_id: T1, decision: "Proceed", is_duplicate: false, progress_status: "In Progress",
+    donor_decision: "Not submitted", submitted_at: `${year}-03-01T00:00:00+00:00`,
+    call_submission_deadline: "2099-01-01",
+  };
+  const cases = [
+    ["OUT-PARKED", { decision: "Park" }],
+    ["OUT-DUP", { is_duplicate: true }],
+    ["OUT-DONE", { progress_status: "Completed" }],
+    ["OUT-STOPPED", { progress_status: "Discontinued" }],
+    ["OUT-SUBMITTED", { donor_decision: "Under Review" }],
+    ["OUT-LATE", { call_submission_deadline: "2020-01-01" }],
+  ];
+  const { db, call, signIn } = setup();
+  db.tables.rfp_submissions.push({ uid: "IN-1", ...base });
+  for (const [uid, over] of cases) db.tables.rfp_submissions.push({ uid, ...base, ...over });
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const got = (await call("GET", "/pipelines/track", null, col.token)).body.rows.map((r) => r.uid);
+  assert.deepEqual(got, ["IN-1"],
+    `only the live bid belongs; got ${got.join(", ") || "nothing"}`);
+});
+
+test("a Proceed past its deadline is reported, not silently dropped", async () => {
+  // Rule 6 removes 15 of the 16 Proceeds on the live table, so a stage that applied it
+  // without a word would show one bid and look like a year of work had vanished. These
+  // fail ONLY the deadline test — criteria_derive's needs_submission_check population.
+  const { db, call, signIn } = setup();
+  const year = new Date().getUTCFullYear();
+  const base = {
+    tenant_id: T1, decision: "Proceed", is_duplicate: false, progress_status: "Not Started",
+    donor_decision: "Not submitted", submitted_at: `${year}-03-01T00:00:00+00:00`,
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "LIVE", ...base, call_submission_deadline: "2099-01-01" },
+    { uid: "LATE", ...base, call_submission_deadline: "2020-01-01" },
+    // Already answered or finished: these fail other rules too, so they are NOT a
+    // question anybody needs to be asked.
+    { uid: "LATE-ANSWERED", ...base, call_submission_deadline: "2020-01-01",
+      donor_decision: "Approved" },
+    { uid: "LATE-DONE", ...base, call_submission_deadline: "2020-01-01",
+      progress_status: "Completed" },
+    { uid: "LATE-DATED", ...base, call_submission_deadline: "2020-01-01",
+      date_completed: "2020-01-05" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const r = await call("GET", "/pipelines/track", null, col.token);
+  assert.deepEqual(r.body.rows.map((x) => x.uid), ["LIVE"]);
+  assert.deepEqual(r.body.awaitingSubmission.map((x) => x.uid), ["LATE"],
+    "only the one nobody has answered for");
+
+  // Saying it went in takes it out of the question entirely.
+  await call("PATCH", "/pipelines/rfp/LATE",
+    { fields: { progress_status: "Completed" } }, col.token);
+  const after = await call("GET", "/pipelines/track", null, col.token);
+  assert.deepEqual(after.body.awaitingSubmission, []);
+  assert.deepEqual(after.body.rows.map((x) => x.uid), ["LIVE"], "and not back into flight");
+});
+
+test("moving a bid's step is a plain save, and costs no re-score", async () => {
+  // `stage` is on the workflow-only list, so the editor's save does not queue a job for
+  // it. That is the whole reason the stepper can be clicked freely: it is a cheap write,
+  // not a scoring event.
+  const { db, call, signIn } = setup();
+  const year = new Date().getUTCFullYear();
+  db.tables.rfp_submissions.push({
+    uid: "BID-2", tenant_id: T1, decision: "Proceed", is_duplicate: false,
+    progress_status: "In Progress", donor_decision: "Not submitted",
+    submitted_at: `${year}-03-01T00:00:00+00:00`, call_submission_deadline: "2099-01-01",
+    stage: "Go/no-go decision & bid planning",
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const r = await call("PATCH", "/pipelines/rfp/BID-2",
+    { fields: { stage: "Review, compliance check & approvals" } }, col.token);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.row.stage, "Review, compliance check & approvals");
+  assert.equal(r.body.rescore, null, "a step change cannot move the score");
+  assert.equal(db.tables.web_jobs.length, 0);
+
+  // Including one of the two steps tracking_rfp.py's fallback list leaves out.
+  const back = await call("PATCH", "/pipelines/rfp/BID-2",
+    { fields: { stage: "Budgeting development" } }, col.token);
+  assert.equal(back.body.row.stage, "Budgeting development",
+    "a bid can go backwards; the record should say so");
 });
 
 test("saving an RFP queues the re-score that owns its score", async () => {
