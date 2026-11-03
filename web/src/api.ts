@@ -101,6 +101,8 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 const PUBLIC = new Set(["/login", "/tokens/peek", "/tokens/redeem", "/password/reset-request"]);
 const post = <T>(path: string, data: unknown = {}) =>
   call<T>(path, { method: "POST", body: JSON.stringify(data) });
+const patch = <T>(path: string, data: unknown = {}) =>
+  call<T>(path, { method: "PATCH", body: JSON.stringify(data) });
 
 /** Store a session the API just issued, keeping the user fields /me adds. */
 function adopt(res: Stored): User {
@@ -225,6 +227,47 @@ export type Reviewed = {
 export const fetchReviewed = (from: string, to: string) =>
   call<Reviewed>(
     `/pipelines/reviewed?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+
+/** A bid in flight, as `/pipelines/track` projects it. The six membership rules are the
+ *  route's (core/pipeline.py::is_active_proceed), not the page's. */
+export type TrackRow = ScreenRow & {
+  /** Where the application has got to — one of `STAGES`, or null before anyone says. */
+  stage: string | null;
+  applicant_role: string | null;
+  assigned_to: string | null;
+  next_action: string | null;
+  action_deadline: string | null;
+  proposal_lead: string | null;
+};
+
+export type Track = {
+  year: number;
+  rows: TrackRow[];
+  /** Leads gathered across each duplicate group, so a bid led from a duplicate row still
+   *  shows who is on it. */
+  leads: { uid: string; proposalLeads: string[] }[];
+  /**
+   * Proceeds that fail ONLY the deadline rule: nobody recorded a submission and the date
+   * has since passed. Almost always work that went in and was never ticked off — the
+   * Excel-migrated rows arrive this way — so they are returned to be ASKED about rather
+   * than dropped. On the live table this is 15 rows against 1 active bid.
+   */
+  awaitingSubmission: TrackRow[];
+};
+
+export const fetchTrack = (from?: string, to?: string) =>
+  call<Track>("/pipelines/track" + (from && to
+    ? `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` : ""));
+
+/**
+ * Save columns on one RFP. Sparse — only what changed.
+ *
+ * The response's `rescore` is not null whenever the save touched something the score
+ * depends on; a stage change never does, which is why the Bidding stepper costs no job.
+ */
+export const saveRfpFields = (uid: string, fields: Record<string, unknown>) =>
+  patch<{ row: TrackRow; warnings: Warning[]; rescore: { job_id: string } | null }>(
+    `/pipelines/rfp/${encodeURIComponent(uid)}`, { fields });
 
 /** What a write route says about the work it could not finish inline. */
 export type Warning = { code: string; detail: string };

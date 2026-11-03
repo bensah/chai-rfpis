@@ -192,19 +192,47 @@ test("no workflow-only column is a scoring input", () => {
 
 // ── The decision vocabulary ──────────────────────────────────────────────────
 
+/**
+ * One `key:` list out of config/dropdowns.yaml, inline or block form.
+ *
+ * CRLF-aware on purpose: the working tree is checked out with CRLF here, and JS `.` does
+ * not match `\r`, so the obvious `.+\n` block pattern matches nothing and the test reports
+ * "the key is gone" when the key is right there. That cost a debugging detour once.
+ */
+function yamlList(key) {
+  const yaml = readFileSync(path.join(root, "config/dropdowns.yaml"), "utf8")
+    .replace(/\r\n/g, "\n");
+  const inline = yaml.match(new RegExp(String.raw`^${key}:[ \t]*\[([^\]]*)\]`, "m"));
+  if (inline) return splitItems(inline[1].split(","));
+  const block = yaml.match(new RegExp(String.raw`^${key}:[ \t]*\n((?:[ \t]*-[ \t]*.+\n)+)`, "m"));
+  return block ? splitItems(block[1].split("\n").map((l) => l.replace(/^[ \t]*-[ \t]*/, ""))) : null;
+}
+const splitItems = (parts) =>
+  parts.map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+
+test("the stage vocabulary matches config/dropdowns.yaml, in order", () => {
+  // Order carries meaning here: the Bidding progress bar reads left to right, so a
+  // reordered YAML would redraw what "further along" means without anything failing.
+  // deepEqual rather than a set comparison is the whole point.
+  const want = yamlList("stages");
+  assert.ok(want, "config/dropdowns.yaml no longer declares `stages`");
+  assert.deepEqual([...W.STAGES], want);
+
+  // The five-item fallback in views/tracking_rfp.py is NOT the vocabulary. If this ever
+  // matches, somebody has copied the short list over the real one and two steps that live
+  // rows sit in have gone missing.
+  assert.equal(W.STAGES.length, 7);
+  assert.ok(W.STAGES.includes("Budgeting development"));
+  assert.ok(W.STAGES.includes("Review, compliance check & approvals"));
+});
+
 test("the decision vocabulary matches config/dropdowns.yaml", () => {
   // The API copies the list because it also runs as a Deno Edge Function with no
   // filesystem to read the YAML from. This is what keeps the copy honest: `decision`
   // decides who appears in Track and whether the scan tombstones the row, so a value the
   // app offers but the API refuses would be a save that fails for no visible reason.
-  const yaml = readFileSync(path.join(root, "config/dropdowns.yaml"), "utf8");
-  const inline = yaml.match(/^decisions:\s*\[([^\]]*)\]/m);
-  const block = yaml.match(/^decisions:\s*\n((?:\s*-\s*.+\n)+)/m);
-  assert.ok(inline || block, "config/dropdowns.yaml no longer declares `decisions`");
-  const want = inline
-    ? inline[1].split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean)
-    : block[1].split("\n").map((l) => l.replace(/^\s*-\s*/, "").trim()
-      .replace(/^["']|["']$/g, "")).filter(Boolean);
+  const want = yamlList("decisions");
+  assert.ok(want, "config/dropdowns.yaml no longer declares `decisions`");
   assert.deepEqual([...W.DECISIONS], want);
 });
 
