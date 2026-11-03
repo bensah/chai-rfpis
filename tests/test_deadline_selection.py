@@ -17,10 +17,19 @@ extended-deadline behaviour this module has always had ("Deadline: 23 March" ...
 deadline: 30 March" -> 30 March is real). The two cases pull in opposite directions, so
 the rule cannot be a single min/max over all dates. It has to distinguish them:
 
-    LABELLED   the text calls it a deadline. Authoritative, latest wins (extensions).
-    UNLABELLED a bare window. Earliest END wins (later rows are downstream stages).
+    SUPERSEDING "extended" / "revised" / "new" deadline. Replaces an earlier one, so the
+                LATEST wins.
+    ORDINARY    any other deadline wording. The earliest date still AHEAD wins; if none
+                is ahead, the latest, so a closed call reports its real last date.
+    UNLABELLED  a bare window. Earliest END wins (later rows are downstream stages).
 
-A labelled date always outranks an unlabelled one.
+A labelled date always outranks an unlabelled one, and a deadline whose subject is
+QUESTIONS is discarded before any of this.
+
+ORDINARY used to take the latest too, which is the same leak one level up: a staged call
+labels EVERY stage "Deadline for …", so the latest is the furthest away. See
+test_srhr_staged_deadline.py, where that returned a date five months past the only one a
+reader could still act on.
 
 Two further defects fell out of the SAME cause and are covered below: the label's capture
 was a flat 60-character run that included ".", so it read on into the next sentence. It

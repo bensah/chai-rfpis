@@ -214,9 +214,42 @@ _DEADLINE_LABEL_RE = re.compile(
     # The tempered class refuses any position that begins ". <Capital>", which ends the
     # clause without breaking dates that legitimately contain a period ("Mar. 15, 2026",
     # "15.03.2026" — neither is a period + space + capital).
-    r"((?:(?!\.\s+[A-Z])[A-Za-z0-9 ,\-/.]){6,60})",
+    #
+    # A CLOCK TIME IS PART OF THE PHRASE, NOT THE END OF IT. ":" is not in the class, so
+    # FCDO's "The deadline for Expressions of Interest is 17:00 GMT on Monday, 30
+    # November 2026" stopped dead at "is 17" and the page's own plain statement of its
+    # deadline yielded NO date at all. A time is allowed through as a unit — a bare colon
+    # still ends the capture, which is what stops it swallowing the NEXT label
+    # ("… 23 march. extended deadline: 30 march" must leave that second label to match on
+    # its own). The window is 80 rather than 60 because a time plus a weekday pushes the
+    # real date past 60 characters.
+    #
+    # IT ALSO STOPS AT THE NEXT LABEL, not just at a sentence break. A TIMETABLE has no
+    # periods — FCDO prints one row after another:
+    #
+    #   Deadline for submitting questions 6 November 2026
+    #   Deadline for Expressions of Interest 30 November 2026, 17:00 GMT
+    #
+    # so the first row's capture ran straight through the second, and because finditer
+    # does not overlap, the EOI row's own label was never matched. Its date survived only
+    # as a passenger in the questions row's capture — which meant discarding that row (it
+    # is not a submission deadline) silently took the real deadline with it.
+    r"((?:(?!\.\s+[A-Z])(?!\s+(?:extended\s+|revised\s+|new\s+)?deadline\b)"
+    r"(?!\s+closing\s+date\b)(?:\d{1,2}:\d{2}|[A-Za-z0-9 ,\-/.])){6,80})",
     re.IGNORECASE,
 )
+
+# A "deadline" whose SUBJECT is questions, not submissions. An applicant does not submit
+# anything by it, and on a timetable it sits BEFORE the real one, so it is not merely
+# noise — it is the date a reader would act on if it won.
+_QUESTION_DEADLINE_RE = re.compile(
+    r"^\s*(?:for\s+|to\s+)?(?:submitting\s+|submission\s+of\s+|asking\s+|raising\s+)?"
+    r"(?:questions|queries|clarifications?|enquiries|inquiries|q\s*&\s*a)\b",
+    re.IGNORECASE,
+)
+
+# Labels that REPLACE an earlier deadline rather than name a different one.
+_SUPERSEDING_LABEL_RE = re.compile(r"\b(?:extended|revised|new)\b", re.IGNORECASE)
 
 # Year-in-URL/title heuristic. RFP pages typically embed the year in the
 # slug or title — "2020-call-for-projects", "year/2024/alliance-tsc-…".
@@ -314,17 +347,27 @@ _DATE_IN_TEXT_RE = re.compile(
 def _extract_deadline_from_text(text: str) -> date | None:
     """The SUBMISSION deadline in `text`, or None.
 
-    Two kinds of date show up, and they must not compete on equal terms:
+    Three kinds of date show up, and they must not compete on equal terms:
 
-      LABELLED   the text names it a deadline ("Deadline:", "applications close",
-                 "submission deadline", "closing date"). Authoritative. The LATEST wins,
-                 which is deliberate extended-deadline behaviour: donors say
-                 "Deadline: Mar 23" and later "Extended deadline: Mar 30", and Mar 30 is
-                 the real one.
+      SUPERSEDING an "extended" / "revised" / "new" deadline. It REPLACES an earlier one,
+                 so the latest wins: "Deadline: Mar 23" then "Extended deadline: Mar 30"
+                 means Mar 30.
+
+      ORDINARY   any other deadline wording ("Deadline:", "applications close",
+                 "submission deadline", "closing date"). Authoritative, but NOT
+                 interchangeable with the above: a staged call labels every stage, and
+                 the latest is the furthest one away. The earliest date still AHEAD
+                 wins — that is the one an applicant has to meet next. When none is
+                 ahead the call is over, and the latest is reported so it reads as
+                 closed on its real last date.
 
       UNLABELLED a date window with no deadline wording ("9 October to 7 November 2025:
                  applications open"). The range patterns capture the window's END, which
                  is the date an applicant must meet.
+
+    A deadline whose subject is QUESTIONS rather than submissions is discarded outright:
+    an applicant submits nothing by it, and it falls before the real one, so letting it
+    win would quietly shorten the call.
 
     A LABELLED date always beats an unlabelled one. Among UNLABELLED windows the EARLIEST
     end wins, not the latest — because a call that publishes a calendar lists the whole
@@ -341,11 +384,13 @@ def _extract_deadline_from_text(text: str) -> date | None:
     """
     if not text:
         return None
-    # (explicit year in the token, came from a deadline LABEL) -> dates
-    buckets: dict[tuple[bool, bool], list[date]] = {
-        (True, True): [], (True, False): [], (False, True): [], (False, False): []}
+    # (explicit year in the token, kind) -> dates. "superseding" and "ordinary" are both
+    # LABELLED; they are split because they must not be reduced the same way.
+    kinds = ("superseding", "ordinary", "window")
+    buckets: dict[tuple[bool, str], list[date]] = {
+        (y, k): [] for y in (True, False) for k in kinds}
 
-    def _add(raw: str | None, labelled: bool) -> None:
+    def _add(raw: str | None, kind: str) -> None:
         # Scan the captured blob for every date token, not just its prefix — the prefix
         # may be unparseable noise ("Tuesday, 16 December 1700HRS") while the real,
         # year-bearing date sits later in the same capture.
@@ -354,16 +399,21 @@ def _extract_deadline_from_text(text: str) -> date | None:
             if not d:
                 continue
             has_year = bool(re.search(r"(?<!\d)20\d{2}(?!\d)", tok))
-            buckets[(has_year, labelled)].append(d)
+            buckets[(has_year, kind)].append(d)
 
     for m in _DEADLINE_LABEL_RE.finditer(text):
-        _add(m.group(1), True)
+        capture = m.group(1)
+        if _QUESTION_DEADLINE_RE.match(capture or ""):
+            continue                       # a questions deadline is not a submission one
+        label = text[m.start():m.start(1)]
+        _add(capture,
+             "superseding" if _SUPERSEDING_LABEL_RE.search(label) else "ordinary")
     # Unlabelled date ranges — "APPLICATIONS: FROM OCT 9TH TO NOV 7TH 2025"
     for m in _DATE_RANGE_RE.finditer(text):
-        _add(m.group(1), False)
+        _add(m.group(1), "window")
     # Trailing-label windows — "9 october to 7 november 2025: applications open"
     for m in _DATE_RANGE_TRAILING_RE.finditer(text):
-        _add(m.group(1), False)
+        _add(m.group(1), "window")
 
     # Sanity window: drop absurd far-future dates (a stray year in a strategy PDF, or a
     # "36 months" -> 2036 misparse). Real RFP deadlines are within a couple of years.
@@ -377,11 +427,26 @@ def _extract_deadline_from_text(text: str) -> date | None:
     # deadline (the page's "Date Closed Dec 16, 2025") into a spurious FUTURE one and leak
     # an expired call through. Only fall back to year-less dates when no explicit-year
     # date is present at all.
+    today = date.today()
     for has_year in (True, False):
-        labelled = _ok(buckets[(has_year, True)])
-        if labelled:
-            return max(labelled)                 # extended deadline wins
-        windows = _ok(buckets[(has_year, False)])
+        superseding = _ok(buckets[(has_year, "superseding")])
+        if superseding:
+            return max(superseding)              # an extension replaces what came before
+        ordinary = _ok(buckets[(has_year, "ordinary")])
+        if ordinary:
+            # THE NEXT ONE AN APPLICANT MUST MEET, not the last one printed. A staged
+            # call labels every stage "Deadline for …", and taking the latest returned
+            # FCDO's "Deadline for Full Proposals 16 April 2027" on a call whose
+            # Expressions of Interest close 30 November 2026 — five months of false
+            # runway on the only date a reader can still act on. Among dates still
+            # ahead, the earliest is that one.
+            #
+            # Falling back to max when NOTHING is ahead keeps an expired call honest:
+            # its real last date is reported, so it reads as closed rather than
+            # acquiring an older date that would make it look longer dead than it is.
+            ahead = [d for d in ordinary if d >= today]
+            return min(ahead) if ahead else max(ordinary)
+        windows = _ok(buckets[(has_year, "window")])
         if windows:
             return min(windows)                  # earliest window end = submission close
     return None
