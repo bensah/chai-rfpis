@@ -59,6 +59,30 @@ const KINDS: Record<string, JobKind> = {
     allowed: () => true,
     group: (ctx) => `decision-${ctx.scope.viewTenantId ?? ctx.scope.tenantId ?? "none"}`,
   },
+
+  /**
+   * Remove one opportunity from the pipeline: the scan's tombstone, the ML training
+   * label, and THEN the row - `views/rfp_editor.py`'s delete button, in its order.
+   *
+   * Queued by DELETE /pipelines/rfp/:uid, which deletes nothing itself. That route's
+   * docstring says why the row cannot go first; the short version is that both
+   * consequences are read FROM the live row, so a row deleted before the job runs is a
+   * row that can never be tombstoned - the "we keep declining this and it keeps coming
+   * back" bug, with the evidence gone.
+   *
+   * Admin only, matching the Streamlit button (`core/permissions.is_admin`). Checked here
+   * as well as at the route, because `POST /jobs` can start a kind directly and a gate
+   * that lives only on the convenient path is not a gate.
+   *
+   * SHARES THE DECISION GROUP rather than taking one of its own. A delete and a decision
+   * on the same row both write `rfp_seen` and `scan_decisions`, and the delete ends with
+   * the row itself going away: running them at once would have one job tombstoning from a
+   * row the other is removing. Serialised, the loser simply finds no row and says so.
+   */
+  delete_rfp: {
+    allowed: (u) => isAdmin(u),
+    group: (ctx) => `decision-${ctx.scope.viewTenantId ?? ctx.scope.tenantId ?? "none"}`,
+  },
 };
 
 const JOB_COLUMNS = "id,kind,status,progress,message,result,created_at,started_at,finished_at,run_url,created_by,tenant_id";
