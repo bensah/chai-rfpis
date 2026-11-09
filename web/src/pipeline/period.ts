@@ -60,8 +60,27 @@ function startOfWeek(d: Date): Date {
 
 export const today = (): string => iso(new Date());
 
-export const periodOf = (grain: Grain, anchor: string = today()): Period =>
-  ({ kind: "grain", grain, anchor });
+/** The week the team is reviewing right now: the one that ENDED last Sunday.
+ *
+ * A week runs Monday to Sunday. The scan finds calls across that week; the team sits
+ * down on the following Monday and reviews what the week just gone turned up. So on
+ * that Monday the current week is one day old and holds almost nothing, and opening on
+ * it shows an empty screen by construction - every reviewer then changes the selector by
+ * hand before they can start.
+ *
+ * `core/review_week.py::previous_review_week_label` states the same rule for the Python
+ * screens and has done since before this app existed; this is that rule, here.
+ */
+export const previousWeekAnchor = (now = new Date()): string =>
+  iso(addDays(startOfWeek(now), -7));
+
+/** Default anchor for a grain. Only WEEK looks back: a month or a quarter has enough in
+ *  it that the current one is worth opening on, while a week does not. */
+export const defaultAnchor = (grain: Grain): string =>
+  grain === "week" ? previousWeekAnchor() : today();
+
+export const periodOf = (grain: Grain, anchor: string = ""): Period =>
+  ({ kind: "grain", grain, anchor: anchor || defaultAnchor(grain) });
 
 /** The half-open range a period covers. */
 export function rangeOf(p: Period): { from: string; to: string } {

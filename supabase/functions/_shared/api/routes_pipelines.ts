@@ -852,19 +852,22 @@ export function createPipelineRoutes(db: Db) {
     const decided = all.filter((r) => str(r.decision).trim() !== "");
 
     const dated = decided
-      .map((r) => ({ ...r, decided_on: decidedOn(r) }))
-      .filter((r) => r.decided_on);
+      .map((r) => ({ ...r, decided_on: decidedOn(r), found_on: foundOn(r) }))
+      .filter((r) => r.found_on);
     // Half-open, matching web/src/pipeline/period.ts, so consecutive windows tile exactly
-    // and a decision on a boundary date is counted once rather than in both.
+    // and a row on a boundary date is counted once rather than in both.
+    //
+    // Filtered on found_on, NOT decided_on — see foundOn(). A row is reviewed in the week
+    // after the one it was found in, and an edit years later must not move it there.
     const rows = dated
-      .filter((r) => r.decided_on! >= from && r.decided_on! < to)
-      .sort((a, b) => (a.decided_on! < b.decided_on! ? 1 : -1));
+      .filter((r) => r.found_on! >= from && r.found_on! < to)
+      .sort((a, b) => (a.found_on! < b.found_on! ? 1 : -1));
 
     // So an empty window can say "nothing here, but there are decisions in September"
     // instead of looking like the stage is broken — which is how this route's first
     // version presented itself.
     const latest = dated.reduce<string | null>(
-      (best, r) => (!best || r.decided_on! > best ? r.decided_on! : best), null);
+      (best, r) => (!best || r.found_on! > best ? r.found_on! : best), null);
 
     return gzipped(req, json({
       from, to, rows, latest,
@@ -1054,6 +1057,26 @@ export function createPipelineRoutes(db: Db) {
  * the rule — a row whose only date is `submitted_at` still has to land in a period, and
  * getting the order wrong files decisions under the wrong month silently.
  */
+/** The day this row was FOUND — the only date allowed to decide which period it sits in.
+ *
+ * THE PERIOD A ROW BELONGS TO IS FIXED WHEN IT IS FOUND. Editing an old row used to move
+ * it: the window was filtered on `decidedOn`, whose second candidate is
+ * `decision_overridden_at` - an UPDATE timestamp. Touch an RFP found and reviewed in
+ * September and it stamps today, the row re-buckets into the current week, and it turns
+ * up in the review queue of a team who settled it two months ago.
+ *
+ * So the window keys on `submitted_at`, which is written once when the row enters the
+ * pipeline and never rewritten. What a row has since BECOME - proceed, submitted,
+ * approved - is a filter over these weeks, never a new week.
+ *
+ * `decidedOn` is unchanged and still drives the DECIDED column: when a decision was
+ * taken is worth showing, it is just not what the row is filed under.
+ */
+export function foundOn(r: Json): string | null {
+  const v = str(r["submitted_at"]).trim().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
+}
+
 export function decidedOn(r: Json): string | null {
   for (const k of ["decision_date", "decision_overridden_at", "submitted_at"]) {
     const v = str(r[k]).trim().slice(0, 10);

@@ -175,7 +175,23 @@ export default function ReviewedStage({ period, onPickPeriod }: {
 
       <Card className="overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[56rem] text-sm">
+          {/* FIXED LAYOUT, EXPLICIT WIDTHS. With `auto`, the browser shares the width out
+              by content: Rationale is the longest text, so it was squeezed into a narrow
+              column that wrapped to eight lines while "Change to" lost its own control to
+              an ellipsis - "Pr..." where a reader needs to see "Proceed". Stating the
+              proportions lets the long text have the room and keeps the controls whole.
+              The wrapper scrolls horizontally below the min-width, so narrowing the
+              window scrolls rather than crushing a column. */}
+          <table className="w-full min-w-[72rem] table-fixed text-sm">
+            <colgroup>
+              <col className="w-[24%]" />{/* Opportunity — the thing you are reading   */}
+              <col className="w-[15%]" />{/* Funder                                    */}
+              <col className="w-[11%]" />{/* Decided                                   */}
+              <col className="w-[6%]" /> {/* Score                                     */}
+              <col className="w-[9%]" /> {/* Verdict                                   */}
+              <col className="w-[11%]" />{/* Change to — must fit the longest option    */}
+              <col className="w-[24%]" />{/* Rationale — the longest text on the row    */}
+            </colgroup>
             <thead>
               <tr className="border-b border-ink-200 bg-ink-50 text-left text-[0.7rem] font-semibold tracking-[0.06em] text-ink-500 uppercase">
                 <th className="px-4 py-3">Opportunity</th>
@@ -210,7 +226,9 @@ export default function ReviewedStage({ period, onPickPeriod }: {
                         </a>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-ink-600">{r.funding_agency || "—"}</td>
+                    <td className="px-4 py-3 align-top text-ink-600 break-words">
+                      {r.funding_agency || "—"}
+                    </td>
                     <td className="px-4 py-3 text-ink-600">
                       {r.decided_on}
                       {/* A migrated decision has no decision_date of its own, so the date
@@ -244,7 +262,7 @@ export default function ReviewedStage({ period, onPickPeriod }: {
                     <td className="px-4 py-3">
                       <Select
                         aria-label={`Change the decision on ${r.opportunity_title || r.uid}`}
-                        className="w-auto py-1.5" value={r.decision ?? ""}
+                        className="w-full min-w-[6.5rem] py-1.5" value={r.decision ?? ""}
                         disabled={saving === r.uid}
                         onChange={(e) => change(r, e.target.value)}
                       >
@@ -256,8 +274,13 @@ export default function ReviewedStage({ period, onPickPeriod }: {
                         {DECISIONS.map((x) => <option key={x} value={x}>{x}</option>)}
                       </Select>
                     </td>
-                    <td className="max-w-[18rem] px-4 py-3 text-ink-600">
-                      {r.decision_note || "—"}
+                    {/* The full note stays available on hover rather than being cut
+                        off: a rationale is the one column a reviewer actually reads. */}
+                    <td className="px-4 py-3 align-top text-ink-600">
+                      <div className="line-clamp-4 leading-relaxed"
+                        title={r.decision_note || undefined}>
+                        {r.decision_note || "—"}
+                      </div>
                     </td>
                   </tr>
                 );

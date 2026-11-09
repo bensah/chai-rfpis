@@ -45,7 +45,7 @@ const STAGES: {
   { key: "screened", label: "Screened", icon: Search, built: true,
     hint: "Found and scored, nobody has decided yet",
     rule: "no decision recorded — the recommendation shown is the engine's" },
-  { key: "reviewed", label: "Reviewed", icon: ClipboardCheck, built: true,
+  { key: "reviewed", label: "Review", icon: ClipboardCheck, built: true,
     hint: "A person has decided: proceed, park or decline",
     rule: "a decision is recorded — the engine's recommendation alone does not count" },
   { key: "bidding", label: "Bidding", icon: Layers, built: true,
