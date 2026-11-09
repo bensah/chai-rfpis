@@ -366,7 +366,35 @@ def build_record(candidate: dict[str, Any], policies: dict[str, Any], *,
     _unread, _unread_why = discovered_but_never_read(cand)
     if _unread:
         log.info("store synthesis skipped for %s - %s", url, _unread_why)
-    if use_llm and len(text) >= 120 and not _unread:
+
+    # CARRY FIRST, THEN DECIDE WHETHER TO SPEND A CALL. This re-synthesised on EVERY
+    # scan, including for calls whose brief was written weeks ago and has not changed.
+    # The store is re-crawled regularly, so that is the same paid call over and over for
+    # a result already sitting in the row - the single largest recurring cost in a scan,
+    # and it matters on a metered or free tier.
+    #
+    # `_synthesise_in_place` below already works this way for the section-4 fields; this
+    # was the odd one out. Same rule, same reason: a brief we already have is a brief we
+    # do not buy again.
+    #
+    # A row whose brief is MISSING is deliberately NOT excluded here. It costs nothing
+    # extra - this scan was going to make the call anyway - and it is what quietly
+    # repairs a row whose first attempt failed, now that an over-long page retries at a
+    # smaller excerpt instead of returning empty. So a failure stops being permanent
+    # without anyone running a bulk backfill over the whole store.
+    _stored_brief = ""
+    try:
+        _prev = extracted_store.get_extracted(
+            extracted_store.make_uid(url, title)) or {}
+        _stored_brief = str(_prev.get("brief_description") or "").strip()
+    except Exception:
+        _stored_brief = ""                    # never let a lookup cost us the synthesis
+    if _stored_brief:
+        _store_brief = _stored_brief
+        log.debug("store synthesis skipped for %s - brief already stored (%d chars)",
+                  url, len(_stored_brief))
+
+    if use_llm and len(text) >= 120 and not _unread and not _stored_brief:
         try:
             from core import llm_synthesis
             _neutral = llm_synthesis.synthesize_store(cand)
