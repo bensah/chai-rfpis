@@ -68,7 +68,10 @@ export default function PipelinePage({ user }: { user: User }) {
   useEffect(() => {
     fetchWeeks().then((w) => {
       setWeeks(w);
-      setWeek((cur) => cur ?? w.current);
+      // defaultWeek, not current: a review screen opens on the week just GONE, because the
+      // team reviews it on the Monday after, when the current week is a day old and nearly
+      // empty. `?? ` keeps a week the reader already picked — only the first value moves.
+      setWeek((cur) => cur ?? w.defaultWeek);
     }).catch(() => undefined);
   }, [user.tenant?.id, user.view?.id]);
 
@@ -86,7 +89,7 @@ export default function PipelinePage({ user }: { user: User }) {
         right={stage === "screened" && weeks ? (
           <label className="flex items-center gap-2 text-sm text-ink-600">
             Review week
-            <Select value={week ?? weeks.current} onChange={(e) => setWeek(e.target.value)}
+            <Select value={week ?? weeks.defaultWeek} onChange={(e) => setWeek(e.target.value)}
               className="w-auto py-1.5">
               {weeks.weeks.map((w) => <option key={w} value={w}>{w}</option>)}
             </Select>
