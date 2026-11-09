@@ -23,6 +23,7 @@
  */
 import { createDb, q } from "./api/db.ts";
 import { createMailer } from "./api/email.ts";
+import { createFormOptions } from "./api/form_options.ts";
 import { corsHeaders, gzipped, HttpError, json, withCors } from "./api/http.ts";
 import { createAuthRoutes, type AuthDeps } from "./api/routes_auth.ts";
 import { createJobRoutes, type Dispatch } from "./api/routes_jobs.ts";
@@ -66,6 +67,7 @@ export function createApi(env: Env, deps: Deps) {
   // The editor's save queues a re-score through the same path POST /jobs uses, so there is
   // one way a job reaches the runner rather than a second one owned by the write route.
   const pipelineWrites = createPipelineWrites(db, jobs.enqueue);
+  const formOptions = createFormOptions(db);
   const report = createReportRoutes(db);
 
   async function route(req: Request, path: string): Promise<Response> {
@@ -119,6 +121,10 @@ export function createApi(env: Env, deps: Deps) {
         ? pipelines.meetingNotes(req, ctx, uid)
         : pipelines.rfp(req, ctx, uid);
     }
+    // What the RFP editor's dropdowns offer. One route for every screen that opens the
+    // editor, because the roster and the currency table are per-deployment settings rather
+    // than repo data — see api/form_options.ts.
+    if (path === "/pipelines/form-options" && m === "GET") return formOptions.options(req, ctx);
     if (path === "/pipelines/decision" && m === "POST") return pipelineWrites.decide(req, ctx);
     if (path.startsWith("/pipelines/rfp/") && m === "PATCH") {
       const uid = decodeURIComponent(path.slice("/pipelines/rfp/".length)).trim();
