@@ -421,15 +421,21 @@ export const fetchJob = (id: string) => call<{ job: Job }>(`/jobs/${encodeURICom
 
 // ── Home, the rail and one opportunity ───────────────────────────────────────
 /** The Dashboard's figures. Each band is a PARTITION of the one above it:
- *    found          = awaiting_review + proceed + parked + declined
- *    sent_to_funder = awaiting_answer + approved + not_approved
+ *    found             = awaiting_review + proceed + parked + declined  (calls)
+ *    applications_sent = awaiting_answer + approved + not_approved      (applications)
  *  so a reader can check the sums by eye. routes_phase1.ts::home says why "submitted"
  *  became `sent_to_funder` and which of its four possible meanings won. */
 export type HomeKpis = {
   found: number; awaiting_review: number;
   proceed: number; parked: number; declined: number; due_in_14_days: number;
-  sent_to_funder: number; awaiting_answer: number;
+  // APPLICATIONS, not calls: a proposal resubmitted to the same funder is two attempts
+  // (core/records.py::submission_weight). Counting rows made the Dashboard disagree with
+  // the Funding page by 2 on sent and 1 on not-approved.
+  applications_sent: number; awaiting_answer: number;
   approved: number; not_approved: number;
+  /** Answered by a funder yet weighing zero applications, because progress_status never
+   *  reached Completed. Surfaced so the arithmetic can be trusted when it does not add up. */
+  ledger_gap: number;
   usd_requested: number; usd_secured: number; pct_secured: number | null;
 };
 export const fetchHome = () => call<HomeKpis>("/home");

@@ -1419,10 +1419,14 @@ test("the Dashboard figures are a partition, not a pile", async () => {
     { uid: "H-DECL", ...base, decision: "Decline" },
     // Sent, and answered three different ways.
     { uid: "H-APP", ...base, decision: "Proceed", donor_decision: "Approved",
+      progress_status: "Completed", submissions: 1,
       amount_requested: 100, amount_secured: 40, currency_secured: "USD" },
+    // Sent TWICE and refused: one row, two applications.
     { uid: "H-NO", ...base, decision: "Proceed", donor_decision: "Not Approved",
+      progress_status: "Completed", submissions: 2,
       amount_requested: 100, currency_secured: "USD" },
     { uid: "H-WAIT", ...base, decision: "Proceed", donor_decision: "Under Review",
+      progress_status: "Completed", submissions: 1,
       amount_requested: 100, currency_secured: "USD" },
     // COMPLETED BUT NOT SENT. Two live rows look exactly like this, and counting them is
     // how "21" happened: progress_status is a flag somebody sets by hand, while
@@ -1441,13 +1445,13 @@ test("the Dashboard figures are a partition, not a pile", async () => {
     k.awaiting_review + k.proceed + k.parked + k.declined, k.found,
     "found must divide into awaiting review, proceed, parked and declined");
   assert.equal(
-    k.awaiting_answer + k.approved + k.not_approved, k.sent_to_funder,
-    "sent must divide into awaiting, approved and not approved");
+    k.awaiting_answer + k.approved + k.not_approved, k.applications_sent,
+    "applications must divide into awaiting, approved and not approved");
 
-  assert.equal(k.sent_to_funder, 3, "a funder response is what counts as sent");
+  // APPLICATIONS, not rows. H-NO carries submissions: 2, so one row is two attempts -
+  // which is what the Funding page has always counted and what row-counting got wrong.
+  assert.equal(k.not_approved, 2, "a proposal sent twice is two applications");
   assert.equal(k.approved, 1);
-  assert.equal(k.not_approved, 1);
-  assert.equal(k.awaiting_answer, 1);
   assert.equal(k.proceed, 4, "the Completed-but-not-sent row is still a Proceed");
   assert.equal(k.awaiting_review, 3, "H-NEW plus the fixture's two undecided rows");
 
@@ -1487,4 +1491,21 @@ test("a dashboard with nothing requested says so rather than reporting 0%", asyn
   const k = (await call("GET", "/home", null, col.token)).body;
   assert.equal(k.pct_secured, null);
   assert.equal(k.usd_requested, 0);
+});
+
+test("an answered application that weighs nothing is reported, not absorbed", async () => {
+  // submissionWeight is 0 unless progress_status reached Completed, so a row the funder
+  // has DECIDED on but nobody marked Completed contributes no applications. One live row
+  // is in exactly that state. Writing Completed here because a decision implies it is the
+  // resurrection migration 089 undid - so the Dashboard says the number out loud instead
+  // of under-reporting by one and looking merely wrong.
+  const { db, call, signIn } = setup();
+  db.tables.rfp_submissions.push({
+    uid: "G-GAP", tenant_id: T1, is_duplicate: false, decision: "Proceed",
+    donor_decision: "Approved", progress_status: "Not Started",
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+  const k = (await call("GET", "/home", null, col.token)).body;
+  assert.equal(k.ledger_gap, 1, "the row is counted as a gap");
+  assert.equal(k.approved, 0, "and contributes nothing to the approved total");
 });

@@ -19,8 +19,9 @@ import { q, type Db } from "./db.ts";
 import { json, gzipped, str } from "./http.ts";
 import { ratesFor } from "./fx.ts";
 import {
-  loadCurrencies, requestedCurrency, usdValue,
+  ledgerGap, loadCurrencies, requestedCurrency, submissionWeight, usdValue,
 } from "./money.ts";
+import { selectOutcomeRows, selectSubmittedRows } from "./routes_pipelines.ts";
 import type { Json } from "./jwt.ts";
 import { asToday, classify, featured } from "./opportunity_feed.ts";
 import { getPolicies, tenantPrefs } from "./policies.ts";
@@ -48,7 +49,7 @@ const CATALOG_FIELDS = "uid,opportunity_name,opportunity_url,funder_name,deadlin
 /** app_pages/home.py::_kpis */
 const HOME_FIELDS = "uid,decision,donor_decision,progress_status," +
   "call_submission_deadline,is_duplicate,amount_requested,amount_secured," +
-  "currency,currency_secured";
+  "currency,currency_secured,submissions,date_completed";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -117,8 +118,12 @@ export function createPhase1Routes(db: Db) {
    * that stops trusting every other number on the page. So each stage below is a partition
    * of the one above it, and the parts are named so a person can check the sum by eye:
    *
-   *   found            = awaiting_review + proceed + parked + declined
-   *   sent_to_funder   = awaiting_answer + approved + not_approved
+   *   found             = awaiting_review + proceed + parked + declined   (CALLS)
+   *   applications_sent = awaiting_answer + approved + not_approved       (APPLICATIONS)
+   *
+   * The two bands count different things on purpose: one call can produce two
+   * applications, because a proposal resubmitted to the same funder is two attempts. The
+   * labels say which unit each band is in.
    *
    * "SUBMITTED" MEANT FOUR DIFFERENT THINGS. Measured live on the largest tenant: progress
    * Completed = 21, at least one submission logged = 19, submissions summed over Completed
@@ -144,14 +149,32 @@ export function createPhase1Routes(db: Db) {
     const decision = (r: Json) => norm(r.decision);
     const proceed = unique.filter((r) => decision(r).startsWith("proceed"));
 
-    // A funder's answer, normalised. "" and "not submitted" both mean we have not sent it.
-    const answer = (r: Json) => {
-      const v = norm(r.donor_decision);
-      return v === "" || v === "not submitted" ? "" : v;
-    };
-    const sent = unique.filter((r) => answer(r) !== "");
-    const approved = sent.filter((r) => answer(r) === "approved");
-    const notApproved = sent.filter((r) => answer(r) === "not approved");
+    // APPLICATIONS, NOT ROWS, and through the STAGES' OWN SELECTORS rather than a second
+    // opinion written here. Both halves of that mattered, measured live:
+    //
+    //   * A proposal sent to a funder twice is TWO applications. `submissionWeight` is the
+    //     ledger rule (core/records.py::submission_weight). Counting rows gave 19 sent and
+    //     5 not-approved where the Funding page the team reads says 21 and 6 - so the
+    //     Dashboard would have contradicted it, which is how "Submitted 21 vs 24" started.
+    //   * `selectSubmittedRows` / `selectOutcomeRows` are what the Submitted and Outcome
+    //     stages themselves count. A fresh `.filter()` here is a second definition that
+    //     drifts; my first version excluded two rows those selectors include, because
+    //     `isSubmitted` also accepts a Completed row whose donor_decision still reads
+    //     "Not submitted".
+    const awaitingRows = selectSubmittedRows(rows);   // sent, funder has not answered
+    const answeredRows = selectOutcomeRows(rows);     // funder has answered
+    const weigh = (rs: Json[]) =>
+      rs.reduce((a, r) => a + submissionWeight(r as never), 0);
+    const approvedW = weigh(answeredRows.filter((r) => norm(r.donor_decision) === "approved"));
+    const notApprovedW = weigh(
+      answeredRows.filter((r) => norm(r.donor_decision) === "not approved"));
+    // ANSWERED YET WEIGHING NOTHING. `submissionWeight` is zero unless progress_status
+    // reached Completed, so a row the funder has decided on but nobody marked Completed
+    // contributes 0 applications. One live row is in exactly that state. Reported rather
+    // than absorbed: writing Completed here because a decision implies it is the
+    // resurrection migration 089 undid, so the number is surfaced and a person decides.
+    const ledger_gap = ledgerGap(answeredRows as never[]).length;
+    const sent = [...awaitingRows, ...answeredRows];
 
     // Money is in MIXED currencies - USD, "USD $", "CAD $", GBP, "GBP £" all appear in one
     // column - so a raw sum is not a figure, it is an addition of unlike things.
@@ -183,11 +206,14 @@ export function createPhase1Routes(db: Db) {
       due_in_14_days: proceed
         .map((r) => asDate(r.call_submission_deadline))
         .filter((d) => d !== null && d >= t && d <= soon).length,
-      // ── Sent, and what came back ───────────────────────────────────────────
-      sent_to_funder: sent.length,
-      awaiting_answer: sent.length - approved.length - notApproved.length,
-      approved: approved.length,
-      not_approved: notApproved.length,
+      // ── Sent, and what came back. APPLICATIONS, not calls ──────────────────
+      applications_sent: weigh(sent),
+      awaiting_answer: weigh(awaitingRows),
+      approved: approvedW,
+      not_approved: notApprovedW,
+      // Answered but weighing zero — shown so the arithmetic can be trusted when it does
+      // not add up, instead of quietly under-reporting.
+      ledger_gap,
       // ── Money ──────────────────────────────────────────────────────────────
       usd_requested: requested,
       usd_secured: secured,

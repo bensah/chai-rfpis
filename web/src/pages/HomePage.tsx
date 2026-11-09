@@ -105,12 +105,25 @@ export default function HomePage({ user }: { user: User }) {
             title="Show the Proceed calls closing within 14 days" />
         </Band>
 
-        <Band title="With funders" hint="Applications we have sent, and what came back.">
-          <Tile label="Sent to funder" value={k?.sent_to_funder ?? dash} />
+        {/* APPLICATIONS, not calls - a proposal resubmitted to the same funder is two
+            attempts, and the Funding page has always counted it that way. The hint says
+            so, because a reader comparing this band with the one above would otherwise
+            find they do not reconcile and have no way to know that is correct. */}
+        <Band title="With funders"
+          hint="Applications sent, and what came back. One call can be applied for twice.">
+          <Tile label="Applications sent" value={k?.applications_sent ?? dash} />
           <Tile label="Awaiting answer" value={k?.awaiting_answer ?? dash} />
           <Tile label="Approved" value={k?.approved ?? dash} />
           <Tile label="Not approved" value={k?.not_approved ?? dash} />
         </Band>
+        {!!k?.ledger_gap && (
+          <Notice tone="warn" className="mt-3">
+            {k.ledger_gap === 1
+              ? "1 application has a funder's answer but was never marked Completed, so it counts as zero above."
+              : `${k.ledger_gap} applications have a funder's answer but were never marked Completed, so they count as zero above.`}{" "}
+            Open them from <Link to={hrefOf("grants")} className="underline">Funding</Link> and set the progress to Completed.
+          </Notice>
+        )}
 
         <Band title="Funding" hint="Converted to USD; applications we have sent.">
           <Tile label="Requested" value={usd(k?.usd_requested)} />
