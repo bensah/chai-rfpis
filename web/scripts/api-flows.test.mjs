@@ -214,7 +214,11 @@ function fixture() {
   };
 }
 
-function setup() {
+/**
+ * `jobs: false` builds the API with no job dispatcher, as a deployment that has not been
+ * given one. Everything else is unchanged.
+ */
+function setup({ jobs = true } = {}) {
   const db = fakeDb(fixture());
   globalThis.fetch = db.fetch;
   const dispatched = [];
@@ -226,7 +230,7 @@ function setup() {
     {
       bcryptCompare: (p, h) => bcrypt.compare(p, h),
       bcryptHash: (p) => bcrypt.hash(p, 4),
-      dispatchJob: async (id, group) => void dispatched.push({ id, group }),
+      dispatchJob: jobs ? async (id, group) => void dispatched.push({ id, group }) : null,
     },
   );
   async function call(method, route, body, token, headers = {}) {
@@ -656,6 +660,102 @@ test("a decision the app does not offer is refused, and named", async () => {
   const unknown = await call("POST", "/pipelines/decision",
     { uid: "nope", decision: "Park" }, col.token);
   assert.equal(unknown.status, 404);
+});
+
+// ── Deleting an opportunity ──────────────────────────────────────────────────
+// Four tests for one button, because the thing that makes a delete correct is not that
+// the row goes away. `views/rfp_editor.py` tombstones FIRST and its comment says why: a
+// delete that removed the row without recording it took away the only live record the
+// deduplicator matches against, and the next scan found the call and inserted it afresh —
+// the reported "we keep declining this and it keeps coming back".
+
+test("deleting an opportunity queues the removal and removes nothing itself", async () => {
+  const { call, signIn, db, dispatched } = setup();
+  db.tables.rfp_submissions.push({
+    uid: "DEL-1", opportunity_title: "Expired TB call", funding_agency: "Global Fund",
+    tenant_id: T2,
+  });
+  // The admin account's last tenant is T2, which is where this row is.
+  const adm = await signIn("admin@x.org", "correct horse 1");
+
+  const r = await call("DELETE", "/pipelines/rfp/DEL-1", null, adm.token);
+  assert.equal(r.status, 202, "202, not 200 — the row is still there when this answers");
+  assert.ok(r.body.queued.job_id, "and the caller is told what to wait for");
+  assert.equal(r.body.title, "Expired TB call", "named, so the caller can say what went");
+
+  // THE WHOLE POINT. The tombstone is made FROM this row, so the API must not be the one
+  // that removes it: a row deleted here and a job that then fails, or simply runs a minute
+  // later, is an opportunity with no tombstone and nothing left to make one from.
+  assert.ok(db.tables.rfp_submissions.some((x) => x.uid === "DEL-1"),
+    "the route must leave the row for the runner to read, tombstone and then delete");
+
+  const jobs = db.tables.web_jobs.filter((j) => j.kind === "delete_rfp");
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].status, "dispatched");
+  assert.deepEqual(jobs[0].params, { tenant_id: T2, uid: "DEL-1", by: "admin@x.org" },
+    "the runner is given the tenant explicitly — it refuses work it cannot scope");
+  // The decision group, not one of its own: a delete and a decision on the same row both
+  // write rfp_seen, and the delete ends by removing the row the other is reading.
+  assert.deepEqual(dispatched.map((d) => d.group), [`decision-${T2}`]);
+});
+
+test("only an admin can delete, and the refusal reveals nothing", async () => {
+  const { call, signIn, db } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const real = await call("DELETE", "/pipelines/rfp/R1", null, col.token);
+  assert.equal(real.status, 403, "core/permissions.is_admin, as the Streamlit button has it");
+  // Word for word the same answer for a uid that does not exist: the gate is checked
+  // before the lookup, so a contributor cannot use 403-vs-404 to enumerate the table.
+  const ghost = await call("DELETE", "/pipelines/rfp/no-such-uid", null, col.token);
+  assert.deepEqual(ghost, real);
+
+  assert.ok(db.tables.rfp_submissions.some((x) => x.uid === "R1"), "nothing was removed");
+  assert.equal(db.tables.web_jobs.length, 0, "and nothing was queued on the way out");
+
+  // Nor through the back door: POST /jobs can start a kind directly, so the kind carries
+  // the same gate rather than trusting the route to have checked.
+  const direct = await call("POST", "/jobs",
+    { kind: "delete_rfp", params: { tenant_id: T1, uid: "R1" } }, col.token);
+  assert.equal(direct.status, 403);
+  assert.equal(db.tables.web_jobs.length, 0);
+});
+
+test("another tenant's opportunity answers exactly like one that is not there", async () => {
+  const { call, signIn, db } = setup();
+  // Signed in against T2; R1 and R2 belong to T1.
+  const adm = await signIn("admin@x.org", "correct horse 1");
+
+  const elsewhere = await call("DELETE", "/pipelines/rfp/R1", null, adm.token);
+  const missing = await call("DELETE", "/pipelines/rfp/no-such-uid", null, adm.token);
+  assert.equal(elsewhere.status, 404);
+  assert.deepEqual(elsewhere, missing,
+    "same status and same words, so the route cannot be used to discover that a uid " +
+    "exists in somebody else's tenant");
+
+  assert.ok(db.tables.rfp_submissions.some((x) => x.uid === "R1"));
+  assert.equal(db.tables.web_jobs.length, 0);
+});
+
+test("a delete that cannot be queued is refused outright, not half-done", async () => {
+  // A deployment with no job dispatcher. A save in the same state succeeds and warns, and
+  // a decision does too, because both of those leave a row that still carries the truth.
+  // A delete has no such half: either it is recorded and then removed, or it does not
+  // happen. So this is the one write route that refuses rather than warning.
+  const { call, signIn, db } = setup({ jobs: false });
+  db.tables.rfp_submissions.push({
+    uid: "DEL-2", opportunity_title: "Nutrition call", tenant_id: T2,
+  });
+  const adm = await signIn("admin@x.org", "correct horse 1");
+
+  const r = await call("DELETE", "/pipelines/rfp/DEL-2", null, adm.token);
+  assert.equal(r.status, 503);
+  assert.equal(r.body.code, "delete_not_queued");
+  assert.match(r.body.error, /NOT deleted/,
+    "said plainly: an admin who reads 'deleted' and sees it again tomorrow learns the " +
+    "wrong lesson about this button");
+  assert.ok(db.tables.rfp_submissions.some((x) => x.uid === "DEL-2"),
+    "and the row is still editable, which is the honest state");
 });
 
 test("a decision on another tenant's row is a 404, not a 403", async () => {
