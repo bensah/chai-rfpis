@@ -88,9 +88,15 @@ def _name_inline_gaps(rows, view):
                 if b.get("kind") == "prose":
                     continue
                 b["missingInline"] = [
-                    heading.get(f, f.replace("_", " ").capitalize())
+                    name
                     for f in _odl.INLINE_PROSE.get(b.get("title"), ())
                     if not _odl.as_bullets(view.get(f))
+                    # A gap whose name IS the block's own title says nothing the heading
+                    # above it has not already said: "How to apply / How to apply - not
+                    # stated". Only compliance_requirements, under "Eligibility
+                    # requirements", is actually nameless without this.
+                    for name in (heading.get(f, f.replace("_", " ").capitalize()),)
+                    if name != b.get("title")
                 ]
     return rows
 

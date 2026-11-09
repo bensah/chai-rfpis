@@ -158,6 +158,10 @@ class TheBrowserPageDoesNotAddASecondCopy(unittest.TestCase):
         helper = helper[:helper.index("\ndef ", 1)]
         self.assertIn("from core import opportunity_detail", helper,
                       "_name_inline_gaps must import core itself")
+        # And it must not re-announce a gap the block's own heading already names.
+        self.assertIn('name != b.get("title")', helper,
+                      '"How to apply" followed by "How to apply - not stated" says '
+                      "nothing the heading above it has not already said")
 
     def test_the_worker_sends_the_composed_page_and_not_narrative_sections(self):
         src = os.path.join(_ROOT, "web", "src", "scoring", "worker.ts")
