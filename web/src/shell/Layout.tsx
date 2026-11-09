@@ -30,10 +30,14 @@ export const APP_VERSION = "v1.0";
 const COLLAPSE_KEY = "rfpis.rail.collapsed";
 const isAdmin = (u: User) => u.role === "admin" || u.role === "super_user";
 
-/** The rail in two groups: the daily surfaces, then the organisation's own pages. */
+/** The rail in two groups: the daily surfaces, then the organization's own pages.
+ *
+ *  The heading spelling follows the page title the owner set ("My Organization"), because
+ *  a section headed "Organisation" directly above an item called "My Organization" reads
+ *  as a mistake even though both are only labels. */
 const GROUPS: { label: string; pages: PageKey[] }[] = [
   { label: "Workspace", pages: ["home", "pipelines", "grants", "actions", "report", "donors"] },
-  { label: "Organisation", pages: ["organization", "submit-new-rfp", "settings"] },
+  { label: "Organization", pages: ["organization", "submit-new-rfp", "settings"] },
 ];
 
 export default function Layout({ user, page, children }: { user: User; page: PageKey; children: ReactNode }) {
