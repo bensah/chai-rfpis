@@ -32,6 +32,15 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
  *
  * `grants` is the exception and is NOT the Streamlit title. See its own note below.
  *
+ * EVERY TITLE IS TITLE CASE — owner, 2026-11-09, after their own names arrived mixed
+ * ("Submit new notice" beside "Funding Report" as first given). Every word is capitalised,
+ * including the
+ * pages that never appear in the rail, because one vocabulary with two conventions is how
+ * a reader learns that neither is the rule. The rail's label-hide in core/app_header.py
+ * lower-cases before matching, so the hidden pages could be recased safely; a hide that
+ * compared exactly would have made this a functional change rather than a cosmetic one.
+ * `test_every_page_title_is_title_case` holds the line.
+ *
  * ONLY `rail: true` PUTS A PAGE IN THE SIDEBAR. The seven below without it — opportunity,
  * profile, help, search and the three public auth pages — exist so their URLs resolve: an
  * emailed activation link, a feed item's /opportunity deep link, the top-right menu. The
@@ -49,7 +58,7 @@ export const PAGES: Record<PageKey, PageInfo> = {
   // became the "Outcomes" tab of Funding Pipeline; here it stays its own page.
   //
   // ITS TITLE IS ALSO THE EXCEPTION. Every other name below matches the Streamlit rail
-  // word for word; this one is "Proposals submitted" where that app says "Outcomes", and
+  // word for word; this one is "Proposals Submitted" where that app says "Outcomes", and
   // the owner named the difference when they set them: "do not change for streamlit as it
   // is now moved to pipeline screen as a tab". A tab inside the Pipeline can be called
   // Outcomes because the stages around it supply the context; a standalone rail item has
@@ -60,23 +69,23 @@ export const PAGES: Record<PageKey, PageInfo> = {
   // the per-funder breakdown and the reporting tab. Making it a tab today would drop those
   // three rather than move them. Revisit when the Outcome stage can carry them — until
   // then this is a decision, not an oversight. /grants resolves either way.
-  grants: { title: "Proposals submitted", icon: "💼", rail: true },
+  grants: { title: "Proposals Submitted", icon: "💼", rail: true },
   actions: { title: "Meeting Actions", icon: "🗒️", rail: true },
   report: { title: "Funding Report", icon: "📊", rail: true },
   donors: { title: "Donor Intelligence", icon: "🗺️", rail: true },
   organization: { title: "My Organization", icon: "🏢", rail: true },
   // The slug stays `submit-new-rfp`. The page is named for what it takes in now, but a
   // bookmark or an emailed link still has to resolve.
-  "submit-new-rfp": { title: "Submit new notice", icon: "📝", rail: true },
+  "submit-new-rfp": { title: "Submit New Notice", icon: "📝", rail: true },
   opportunity: { title: "Opportunity", icon: "🎯" },
   profile: { title: "Profile", icon: "👤" },
   help: { title: "Help", icon: "❓" },
   search: { title: "Search", icon: "🔍" },
   // Deliberately in the rail: admins get Settings as a first-class item, not a hidden one.
   settings: { title: "Settings", icon: "⚙️", rail: true, adminOnly: true },
-  login: { title: "Sign in", icon: "🔐", public: true },
+  login: { title: "Sign In", icon: "🔐", public: true },
   "activate-account": { title: "Activate", icon: "🔑", public: true },
-  "password-reset": { title: "Reset password", icon: "🔓", public: true },
+  "password-reset": { title: "Reset Password", icon: "🔓", public: true },
 };
 
 export const pageOf = (pathname: string): PageKey | null => {

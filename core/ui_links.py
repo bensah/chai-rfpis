@@ -228,11 +228,11 @@ PAGE_TITLES: dict[str, str] = {
     "": "Dashboard", "home": "Dashboard", "pipelines": "Funding Pipeline",
     # Stays "Outcomes" here: in this app it is a tab inside Funding Pipeline, where the
     # stages around it supply the context. The React app, where it is still a standalone
-    # rail page, calls it "Proposals submitted" — owner, 2026-11-09, naming the difference.
+    # rail page, calls it "Proposals Submitted" — owner, 2026-11-09, naming the difference.
     "grants": "Outcomes", "outcomes": "Outcomes",
     "actions": "Meeting Actions", "report": "Funding Report",
     "donors": "Donor Intelligence", "organization": "My Organization",
-    "submit-new-rfp": "Submit new notice", "opportunity": "Opportunity",
+    "submit-new-rfp": "Submit New Notice", "opportunity": "Opportunity",
     "profile": "Profile", "help": "Help", "search": "Search", "settings": "Settings",
 }
 
