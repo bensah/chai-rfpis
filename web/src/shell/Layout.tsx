@@ -38,12 +38,11 @@ const isAdmin = (u: User) => u.role === "admin" || u.role === "super_user";
  *  as a mistake even though both are only labels. */
 const GROUPS: { label: string; pages: PageKey[] }[] = [
   { label: "Workspace", pages: ["home", "pipelines", "grants", "actions", "report", "donors"] },
-  // The "Organization" group is gone rather than emptied. Settings, My Organization and
-  // Submit New Notice are all menu-only now (owner, 2026-11-09, matching Streamlit), so
-  // every page it listed was one `allowed()` filters out: a group that named pages which
-  // could never render — harmless to run and misleading to read, which is the kind of
-  // line that answers a future question wrongly. All three are reached from the account
-  // menu at the foot of this sidebar.
+  // `settings` was listed here until it left the rail. `allowed()` filtered it out, so
+  // the group named a page that could never render — harmless to run and misleading to
+  // read, which is the kind of line that answers a future question wrongly. Settings is
+  // reached from the account menu at the foot of this sidebar.
+  { label: "Organization", pages: ["organization", "submit-new-rfp"] },
 ];
 
 export default function Layout({ user, page, children }: { user: User; page: PageKey; children: ReactNode }) {
@@ -349,9 +348,6 @@ function TopBar({ shell, page, collapsed, onMenu, onToggleCollapse, onRead }: {
 }
 
 function AccountMenu({ user, close }: { user: User; close: () => void }) {
-  // Bound to a capitalised name because JSX cannot take `NAV_ICON["submit-new-rfp"]` in
-  // element position — a lower-case or subscripted tag is parsed as markup, not a value.
-  const SubmitIcon = NAV_ICON["submit-new-rfp"];
   return (
     <div>
       <div className="flex items-center gap-3 px-1 pb-3">
@@ -368,10 +364,6 @@ function AccountMenu({ user, close }: { user: User; close: () => void }) {
             names in a single app — the thing the title table exists to stop. */}
         <MenuLink to={hrefOf("help")} icon={<HelpCircle className="h-4 w-4" />} label={PAGES.help.title} close={close} />
         <MenuLink to={hrefOf("organization")} icon={<NAV_ICON.organization className="h-4 w-4" />} label={PAGES.organization.title} close={close} />
-        {/* Submit has NO other way in once it leaves the rail — `organization` was already
-            here, this one was not. Without this line the page is reachable only by typing
-            the URL, which is a regression dressed as a tidy-up. */}
-        <MenuLink to={hrefOf("submit-new-rfp")} icon={<SubmitIcon className="h-4 w-4" />} label={PAGES["submit-new-rfp"].title} close={close} />
         <MenuLink to={hrefOf("profile")} icon={<UserIcon className="h-4 w-4" />} label={PAGES.profile.title} close={close} />
         {isAdmin(user) && <MenuLink to={hrefOf("settings")} icon={<Settings className="h-4 w-4" />} label={PAGES.settings.title} close={close} />}
       </div>
