@@ -57,6 +57,42 @@ def _today():
         return date.today()
 
 
+_NARRATIVE_HEADING = {f: h for h, f in _od.NARRATIVE_FIELDS}
+
+
+def _name_inline_gaps(rows, view):
+    """Name the INLINE_PROSE fields this call is silent on, inside their own block.
+
+    THE ONE FIELD THE COMPOSITION CAN LOSE. core/opportunity_detail places a narrative
+    field in one of three ways, and two of them always leave a name on the page even when
+    the field is blank: OVERVIEW_FIELDS renders its heading with the missing marker, and
+    PROSE_ROWS does the same. INLINE_PROSE does not — it appends the field's lines INSIDE
+    another block with no heading of its own, deliberately ("How to apply" followed by
+    "How to apply in detail" was two headings for one subject), so a blank one appends
+    nothing and the field's name is nowhere.
+
+    That is invisible for how_to_apply, whose block is titled "How to apply" anyway. It
+    is not invisible for compliance_requirements, which lives under "Eligibility
+    requirements": on a call that states none, the words never appear, and a reader cannot
+    tell that the app tracks them. The page's own rule says they must
+    (opportunity_detail.sections, 2026-08-11: a dash is a statement).
+
+    So a blank inline field contributes its NAME and nothing else, and a filled one is
+    untouched — the no-second-heading decision still holds wherever there is text.
+    """
+    for row in rows:
+        for col in row:
+            for b in col:
+                if b.get("kind") == "prose":
+                    continue
+                b["missingInline"] = [
+                    _NARRATIVE_HEADING.get(f, f.replace("_", " ").capitalize())
+                    for f in _od.INLINE_PROSE.get(b.get("title"), ())
+                    if not _od.as_bullets(view.get(f))
+                ]
+    return rows
+
+
 def _for_web(a):
     """core.opportunity_scoring.analyse, with its keys renamed for the TypeScript page.
 
@@ -178,7 +214,7 @@ def opportunity(payload):
         "awardHeadline": _od.award_headline(view),
         "overview": _od.overview_blocks(view),
         "overviewTruncated": _od.overview_is_truncated(view),
-        "pageRows": _od.page_rows(view),
+        "pageRows": _name_inline_gaps(_od.page_rows(view), view),
         # NOT narrative_sections. page_rows + overview_blocks already place every
         # NARRATIVE_FIELD (INLINE_PROSE, PROSE_ROWS, OVERVIEW_FIELDS), so sending it too
         # rendered all five of them a second time under their own headings.
