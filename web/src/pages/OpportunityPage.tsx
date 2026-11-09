@@ -18,7 +18,7 @@ import OpportunityRail from "../components/OpportunityRail";
 import RfpEditor from "../opportunity/RfpEditor";
 import { scoreOpportunity, useEngine, warmEngine } from "../scoring/engine";
 import type { Block, OpportunityResult } from "../scoring/protocol";
-import { hrefOf, Link } from "../router";
+import { hrefOf, Link, navigate } from "../router";
 import { Badge, Button, Card, EmptyState, LinkButton, Notice, PageHeader, Spinner, type Tone } from "../ui";
 
 /** opportunity_detail's chip tones, mapped onto the design system's. */
@@ -163,7 +163,17 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
   const [saved, setSaved] = useState(0);
   const engine = useEngine();
 
-  const onSaved = useCallback(() => setSaved((n) => n + 1), []);
+  const onSaved = useCallback((row: Record<string, unknown>) => {
+    // A delete leaves no row for this page to be about. Re-reading the uid would show
+    // "Couldn't load it", which reads like a fault rather than the thing the person just
+    // asked for, so go back to the Pipeline instead — replacing the entry, so Back does
+    // not return to an opportunity that no longer exists.
+    if (row?.deleted) {
+      navigate(hrefOf("pipelines"), { replace: true });
+      return;
+    }
+    setSaved((n) => n + 1);
+  }, []);
 
   // This is the only surface left that needs the Python engine, so it starts it rather
   // than the app shell: nobody downloads a Python runtime until they open an opportunity.

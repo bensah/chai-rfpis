@@ -23,11 +23,14 @@
  *     runs the one `core.auto_scorer.auto_score`, so the score on screen right after a save
  *     is the OLD one and the page says so.
  *
- *   * It does not delete. The Python's delete tombstones the row first (`seen_ledger`) so
- *     the next scan does not re-ingest the call, and that logic is deliberately Python's.
- *     Half a delete — removing the row without the tombstone — is precisely the
- *     "we keep declining this and it keeps coming back" bug, so there is no delete here at
- *     all until the tombstone has a route of its own.
+ *   * It does not delete the row itself, and neither does the route behind the button.
+ *     The Python tombstones the row first (`seen_ledger`) so the next scan does not
+ *     re-ingest the call, and that logic is deliberately Python's. Half a delete — the row
+ *     removed without the tombstone — is precisely the "we keep declining this and it
+ *     keeps coming back" bug. So `DELETE /pipelines/rfp/:uid` queues a job that records
+ *     and then removes, and the dialog WAITS for it rather than claiming an opportunity is
+ *     gone while it is still on the table. That wait is the visible cost of the ordering
+ *     and it is the right way round: see `pipeline_writes.ts::deleteRfp`.
  *
  *   * It does not write a decision through PATCH. Recording a decision carries two
  *     consequences a field edit does not: the ML training label and the scan's tombstone.
@@ -39,11 +42,12 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, X } from "lucide-react";
+import { AlertTriangle, Trash2, X } from "lucide-react";
 import {
-  currentSession, fetchFormOptions, fetchRfp, recordDecision, saveRfp,
+  currentSession, deleteRfp, fetchFormOptions, fetchRfp, recordDecision, saveRfp,
   type FormOptions, type Warning,
 } from "../api";
+import { awaitJob, JOB_STATUS_LABEL } from "../jobs";
 import MultiSelect from "../components/MultiSelect";
 import { Button, IconButton, Notice, Select, Spinner, fieldClass } from "../ui";
 import {
@@ -173,7 +177,15 @@ type TabName = (typeof TABS)[number];
 export type RfpEditorProps = {
   uid: string;
   onClose: () => void;
-  /** The saved row, so the screen behind can update without a refetch. */
+  /**
+   * The saved row, so the screen behind can update without a refetch.
+   *
+   * ALSO CALLED AFTER A DELETE, with `{ uid, deleted: true }` rather than a row, because
+   * there is no row any more and a deleted opportunity must not be left sitting on the
+   * table behind the dialog. Every caller today simply reloads and ignores the argument;
+   * `deleted` is there for the one that should do more than reload — the Opportunity page,
+   * which is a page ABOUT the row that just stopped existing.
+   */
   onSaved?: (row: Record<string, unknown>) => void;
   /** The auto-synthesised Application detail. Shown when reviewing a call; hidden on a
    *  grant, where it belongs on Review — `show_application` in the Python. */
@@ -189,7 +201,16 @@ export default function RfpEditor({
   // Read rather than threaded through a prop: five Pipeline stages open this dialog and
   // none of them is given the user, so a prop would have had four components carrying a
   // value only the footer line below uses.
-  const viewingAs = currentSession()?.user.view ?? null;
+  const session = currentSession();
+  const viewingAs = session?.user.view ?? null;
+  /**
+   * `core/permissions.is_admin` — role admin or super_user — which is the gate the
+   * Streamlit button uses (`disabled=not is_admin`). Hidden rather than disabled here: a
+   * greyed-out Delete tells a contributor the app can do something they may not, which is
+   * noise on a screen they use every day. The route checks the same thing and is what
+   * actually enforces it; this only decides whether to offer it.
+   */
+  const canDelete = session?.user.role === "admin" || session?.user.role === "super_user";
   const [opts, setOpts] = useState<FormOptions | null>(null);
   const [loaded, setLoaded] = useState<Form | null>(null);
   const [form, setForm] = useState<Form | null>(null);
@@ -205,6 +226,11 @@ export default function RfpEditor({
   /** Blank means "today" at the decision route, which is right for a decision recorded as
    *  it is taken and wrong for one recorded weeks later. Only sent when the decision moves. */
   const [decisionDate, setDecisionDate] = useState("");
+  /** The confirmation step, and then what the removal job is doing. Separate, because
+   *  "are you sure" and "it is being removed" are different screens and the second one
+   *  must not be dismissible. */
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -232,10 +258,16 @@ export default function RfpEditor({
 
   // Escape closes, like every other dialog in the app.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // Escape must not walk out of a delete that is already running: the job is away and
+    // closing would leave the person with no idea whether it landed.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || deleting) return;
+      if (confirmingDelete) setConfirmingDelete(false);
+      else onClose();
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, confirmingDelete, deleting]);
 
   const set = useCallback(
     (col: string, v: FormValue) => setForm((f) => (f ? { ...f, [col]: v } : f)), []);
@@ -339,6 +371,61 @@ export default function RfpEditor({
       setError(e instanceof Error ? e.message : "That change could not be saved.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  /**
+   * Delete, which is a different shape from every other action in this dialog: the server
+   * answers 202 with a job and the row is STILL THERE. It is only gone once the runner has
+   * written the scan's tombstone and then removed it, in that order, so this waits for the
+   * job before it says anything is gone — `pipeline_writes.ts::deleteRfp` is where the
+   * ordering is argued, and the wait is its one visible cost.
+   *
+   * Three endings, and they are deliberately not the same sentence:
+   *   done        — it is gone; close, and tell the screen behind so the row leaves the table.
+   *   failed      — nothing was removed; stay open with the reason, and the row is still editable.
+   *   ran out     — still running; do NOT claim either way. Reload the screen behind, because
+   *                 it may land a second from now, and leave the dialog saying so.
+   */
+  const remove = async () => {
+    setError(null);
+    setProblems([]);
+    setWarnings([]);
+    setSavedNote(null);
+    setDeleting("Recording the removal, so the next scan does not find this call again…");
+    try {
+      const res = await deleteRfp(uid);
+      const job = await awaitJob(res.queued.job_id, (j) =>
+        setDeleting(j.progress?.message
+          ? `${j.progress.message}…`
+          : `${JOB_STATUS_LABEL[j.status]}…`));
+
+      if (job?.status === "done") {
+        onSaved?.({ uid, deleted: true });
+        onClose();
+        return;
+      }
+      setConfirmingDelete(false);
+      setDeleting(null);
+      if (job && (job.status === "failed" || job.status === "cancelled")) {
+        setError("The opportunity was NOT deleted. " +
+          (job.message ?? "The removal could not be completed.") +
+          " Nothing has been changed — you can try again.");
+        return;
+      }
+      // Still going. Saying "deleted" would be a guess, and so would "failed".
+      setWarnings([{
+        code: "delete_still_running",
+        detail: "The removal has been recorded and is still running. This opportunity " +
+          "will disappear from the pipeline once it lands — there is nothing more to do.",
+      }]);
+      onSaved?.({ uid, deleted: false });
+    } catch (e) {
+      setConfirmingDelete(false);
+      setDeleting(null);
+      setError(e instanceof Error
+        ? e.message
+        : "The opportunity could not be deleted, and nothing was changed.");
     }
   };
 
@@ -712,6 +799,15 @@ export default function RfpEditor({
             {viewingAs && <> · editing as {viewingAs.name}</>}
           </p>
           <div className="flex gap-2">
+            {/* Where the Python has it, and only for the people the Python offers it to.
+                Leftmost and in the danger variant, well away from the primary button the
+                same hand is about to reach for. */}
+            {canDelete && (
+              <Button variant="danger" icon={<Trash2 className="h-4 w-4" />}
+                onClick={() => setConfirmingDelete(true)} disabled={!form || saving}>
+                Delete this RFP
+              </Button>
+            )}
             <Button variant="secondary" onClick={onClose}>Close</Button>
             <Button variant="primary" onClick={save} busy={saving}
               disabled={!form || (!dirty.length && !reportingDirty)}>
@@ -720,7 +816,92 @@ export default function RfpEditor({
           </div>
         </div>
       </div>
+
+      {confirmingDelete && (
+        <DeleteConfirm
+          uid={uid}
+          title={txt(form?.opportunity_title)}
+          funder={txt(form?.funding_agency)}
+          deleting={deleting}
+          onCancel={() => setConfirmingDelete(false)}
+          onConfirm={remove}
+        />
+      )}
     </div>,
     document.body,
+  );
+}
+
+/**
+ * The one irreversible act in this dialog, so it is asked as a question with the answer
+ * spelled out rather than an "Are you sure?".
+ *
+ * It NAMES the opportunity — title, funder, uid — because this dialog is opened from five
+ * different tables and the row under the cursor is not always the row in the editor. It
+ * says what else happens, because the tombstone is not a detail: the opportunity is also
+ * being recorded as rejected so the scan stops finding it, and somebody who wanted it back
+ * tomorrow should know that now rather than discover it then.
+ *
+ * Once the work has started there is no cancel and no backdrop click. The job is away; an
+ * escape hatch here would close the only screen that can say whether it landed.
+ */
+function DeleteConfirm({ uid, title, funder, deleting, onCancel, onConfirm }: {
+  uid: string; title: string; funder: string;
+  deleting: string | null; onCancel: () => void; onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-brand-950/50 p-4 backdrop-blur-[2px]"
+      onMouseDown={(e) => e.target === e.currentTarget && !deleting && onCancel()}>
+      <div role="alertdialog" aria-modal="true" aria-label="Delete this opportunity"
+        className="dialog-panel w-full max-w-lg rounded-2xl bg-white p-6 shadow-float">
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 rounded-lg bg-bad-50 p-2 text-bad-700">
+            <Trash2 className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-lg leading-tight font-bold text-brand-700">
+              Delete this opportunity?
+            </h3>
+            <p className="mt-2 text-sm text-ink-700">
+              <strong className="text-ink-900">{title || uid}</strong>
+              {funder && <> — {funder}</>}
+              <br />
+              <code className="text-xs text-ink-500">{uid}</code>
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 space-y-3 text-sm text-ink-700">
+          <p>
+            <strong className="text-bad-700">This cannot be undone.</strong> The
+            opportunity and everything recorded against it — the decision, the nine
+            criteria, the team's notes — are removed from the pipeline.
+          </p>
+          <p>
+            It is also recorded as rejected, so the next scan does not find the same call
+            and add it back.
+          </p>
+        </div>
+
+        {deleting
+          ? (
+            <div className="mt-6">
+              <Spinner label={deleting} />
+              <p className="mt-2 text-xs text-ink-500">
+                This runs on the server and can take a minute. Leave this open.
+              </p>
+            </div>
+          )
+          : (
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="secondary" onClick={onCancel}>Keep it</Button>
+              <Button variant="danger" icon={<Trash2 className="h-4 w-4" />}
+                onClick={onConfirm}>
+                Delete permanently
+              </Button>
+            </div>
+          )}
+      </div>
+    </div>
   );
 }

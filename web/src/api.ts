@@ -103,6 +103,7 @@ const post = <T>(path: string, data: unknown = {}) =>
   call<T>(path, { method: "POST", body: JSON.stringify(data) });
 const patch = <T>(path: string, data: unknown = {}) =>
   call<T>(path, { method: "PATCH", body: JSON.stringify(data) });
+const del = <T>(path: string) => call<T>(path, { method: "DELETE" });
 
 /** Store a session the API just issued, keeping the user fields /me adds. */
 function adopt(res: Stored): User {
@@ -569,6 +570,17 @@ export const saveRfp = (
     fields,
     ...(reporting === undefined ? {} : { reporting }),
   });
+
+/**
+ * Delete one opportunity. Admin only, and it does NOT come back deleted: the server
+ * answers 202 with a job, and the row is still there until that job has written the
+ * scan's tombstone and then removed it. The caller waits for the job before it says the
+ * opportunity is gone — see `pipeline_writes.ts::deleteRfp` for why the order cannot be
+ * the other way round. A 503 means nothing was removed at all.
+ */
+export const deleteRfp = (uid: string) =>
+  del<{ uid: string; title: string | null; queued: { job_id: string } }>(
+    `/pipelines/rfp/${encodeURIComponent(uid)}`);
 
 // ── Donors ───────────────────────────────────────────────────────────────────
 export const fetchDonors = () => call<{ donors: Donor[] }>("/donors").then((r) => {
