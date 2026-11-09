@@ -140,3 +140,24 @@ test("only what moved is reported as changed", () => {
   const swapped = { ...reordered, call_domain_areas: ["TB", "Malaria"] };
   assert.deepEqual(changedColumns(swapped, reordered), ["call_domain_areas"]);
 });
+
+// ── The funder's own link ────────────────────────────────────────────────────
+
+test("a placeholder in opportunity_link is not offered as a link", () => {
+  // Measured on CHAI Cameroon's Submitted stage: one row of twelve stores the literal
+  // string "NA". Every stage rendered `{r.opportunity_link && <a href={...}>}`, and a
+  // placeholder is a truthy string — so the arrow icon looked exactly like the eleven
+  // real ones and navigated to the relative path /NA, a dead end claiming to be the call.
+  for (const junk of ["NA", "n/a", "N/A", "none", "None", "TBD", "-", "—", "", "   ",
+                      "to be confirmed", null, undefined]) {
+    assert.equal(V.callHref(junk), null, `${JSON.stringify(junk)} is not a link`);
+  }
+});
+
+test("a real link survives, and a bare host is given its scheme", () => {
+  assert.equal(V.callHref("https://www.cgdev.org/sites/x.pdf"), "https://www.cgdev.org/sites/x.pdf");
+  assert.equal(V.callHref("  http://example.org/call  "), "http://example.org/call");
+  assert.equal(V.callHref("grants.gov/search-results-detail/363649"),
+    "https://grants.gov/search-results-detail/363649");
+  assert.equal(V.callHref("example.org"), "https://example.org");
+});

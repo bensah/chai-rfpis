@@ -23,8 +23,8 @@ import { gzipped, json } from "./http.ts";
 import type { Db } from "./db.ts";
 import type { Ctx } from "./session.ts";
 import {
-  CRITERION_ANSWERS, DROPDOWNS, GEO_OPTIONS, INSTRUMENT_TYPES, OPPORTUNITY_TYPES,
-  PROGRAM_AREAS, SOLICITATION_TYPES,
+  CRITERION_ANSWERS, CRITERION_DEFAULTS, DROPDOWNS, GEO_OPTIONS, INSTRUMENT_TYPES,
+  OPPORTUNITY_TYPES, PROGRAM_AREAS, SOLICITATION_TYPES,
 } from "./form_vocab.ts";
 
 export type FormOptions = {
@@ -32,6 +32,7 @@ export type FormOptions = {
   programAreas: string[];
   geoOptions: string[];
   criterionAnswers: Record<string, string[]>;
+  criterionDefaults: Record<string, Record<string, string>>;
   opportunityTypes: string[];
   solicitationTypes: string[];
   instrumentTypes: string[];
@@ -63,6 +64,7 @@ export function createFormOptions(db: Db) {
       programAreas: PROGRAM_AREAS,
       geoOptions: GEO_OPTIONS,
       criterionAnswers: CRITERION_ANSWERS,
+      criterionDefaults: CRITERION_DEFAULTS,
       opportunityTypes: OPPORTUNITY_TYPES,
       solicitationTypes: SOLICITATION_TYPES,
       instrumentTypes: INSTRUMENT_TYPES,
