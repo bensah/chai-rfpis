@@ -1591,3 +1591,57 @@ test("Closing soon lists the rows behind the count, soonest first", async () => 
     "the list and the count must not be able to disagree");
   assert.equal(k.closing_soon[0].title, "Sooner call");
 });
+
+test("the review week keys on the EARLIEST date, not a preferred column", async () => {
+  // Neither column is right alone, and which one is wrong depends on where the row came
+  // from. Against the date in the uid (stamped once, at creation) over 94 live rows:
+  // search_date matched 21/37 auto and 52/55 migrated; submitted_at 37/37 and 10/55; the
+  // earliest of the two, 92/94 overall. A re-seen scan rewrites search_date; an import
+  // writes submitted_at months late. Both errors run later, so the earliest wins.
+  const { db, call, signIn } = setup();
+  db.tables.rfp_submissions.push(
+    // A migrated row: imported in November, found in June. It belongs to June.
+    { uid: "E-MIG", tenant_id: T1, is_duplicate: false, decision: "Park",
+      source: "migration", search_date: "2026-06-10",
+      submitted_at: "2026-11-06T00:00:00+00:00",
+      call_submission_deadline: "2027-01-01" },
+    // A scanned row seen again in November, first found in September.
+    { uid: "E-AUTO", tenant_id: T1, is_duplicate: false, decision: "Proceed",
+      source: "auto", search_date: "2026-11-06",
+      submitted_at: "2026-09-14T00:00:00+00:00",
+      call_submission_deadline: "2027-01-01" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const june = await call("GET", "/pipelines/reviewed?from=2026-06-01&to=2026-07-01",
+    null, col.token);
+  assert.deepEqual(june.body.rows.map((r) => r.uid), ["E-MIG"],
+    "the import date must not drag a June call into November");
+  const sept = await call("GET", "/pipelines/reviewed?from=2026-09-01&to=2026-10-01",
+    null, col.token);
+  assert.deepEqual(sept.body.rows.map((r) => r.uid), ["E-AUTO"],
+    "nor a re-seen scan a September one");
+  const nov = await call("GET", "/pipelines/reviewed?from=2026-11-02&to=2026-11-09",
+    null, col.token);
+  assert.deepEqual(nov.body.rows, [], "neither belongs to the week they were last touched");
+});
+
+test("Review drops what nobody can still act on", async () => {
+  // Owner, 2026-11-09: a call whose deadline has gone cannot be bid for, and one already
+  // with a funder has moved on to Outcome. Leaving them here put decisions the team
+  // settled months ago back in front of them.
+  const { db, call, signIn } = setup();
+  const base = {
+    tenant_id: T1, is_duplicate: false, decision: "Proceed",
+    search_date: "2026-11-03", submitted_at: "2026-11-03T00:00:00+00:00",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "V-LIVE", ...base, call_submission_deadline: "2099-01-01" },
+    { uid: "V-EXPIRED", ...base, call_submission_deadline: "2020-01-01" },
+    { uid: "V-SENT", ...base, call_submission_deadline: "2099-01-01",
+      donor_decision: "Under Review" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/reviewed?from=2026-11-02&to=2026-11-09",
+    null, col.token);
+  assert.deepEqual(r.body.rows.map((x) => x.uid), ["V-LIVE"]);
+});

@@ -886,11 +886,30 @@ export function createPipelineRoutes(db: Db) {
       "rfp_submissions", `select=${REVIEWED_FIELDS}&decision=not.is.null`, "uid");
     const decided = all.filter((r) => str(r.decision).trim() !== "");
 
+    const reviewToday = new Date().toISOString().slice(0, 10);
     const dated = decided
       // decidedOn is the LAST resort, not a peer: a row with no found date at all (an
       // old migrated one) still belongs on this stage somewhere, and dropping it would
       // quietly shrink the totals rather than misplace one row. Where a found date
       // exists - every live row has one - it wins, and an edit cannot move the row.
+      // WHAT THE REVIEW SCREEN IS FOR. Two exclusions, both the owner's (2026-11-09),
+      // and both about relevance rather than correctness:
+      //
+      //   * A call whose DEADLINE HAS PASSED cannot be bid for, so a decision about it
+      //     is not one anybody can still act on. It belongs to the record, not the week.
+      //   * A call ALREADY WITH A FUNDER has moved on: its next update is an outcome,
+      //     and Submitted and Outcome are where that is read. Leaving it here put a row
+      //     the team settled months ago back in front of them, which is what made the
+      //     screen untrustworthy - "Decided in 2-8 Nov" listing a decision from April.
+      //
+      // BEFORE the map, not after: spreading a `Json` into an object literal drops its
+      // index signature, so `r.call_submission_deadline` stops existing downstream - the
+      // same trap `AnsweredRow` above is annotated to avoid.
+      .filter((r) => {
+        const dl = str(r.call_submission_deadline).slice(0, 10);
+        if (dl !== "" && dl < reviewToday) return false;
+        return !isSubmitted(r);
+      })
       .map((r) => ({ ...r, decided_on: decidedOn(r), found_on: foundOn(r) ?? decidedOn(r) }))
       .filter((r) => r.found_on);
     // Half-open, matching web/src/pipeline/period.ts, so consecutive windows tile exactly
@@ -1117,19 +1136,31 @@ export function foundOn(r: Json): string | null {
   // together, because the three stages only tell a coherent story if they agree about
   // which dates describe the CALL and which describe somebody doing data entry.
   //
-  // search_date FIRST, because it is the row's own found date and it is write-once:
-  // core/scan_pipeline.py stamps it at insert on the same line as `review_week`, and the
-  // re-seen path backfills it only `if _is_blank(existing_row.get("search_date"))`. That
-  // keeps this window agreeing with the Screened tab, which files rows under the
-  // review_week label derived from the very same moment - otherwise one tab could say a
-  // call belongs to week 44 while the other showed it in week 45.
-  // submitted_at and created_at follow for rows that predate it. None of the three is an
-  // update timestamp, which is the whole point.
+  // THE EARLIEST DATE ON THE ROW, not a preferred column. Neither candidate is right on
+  // its own, and which one is wrong depends on where the row came from. Measured against
+  // the date encoded in the uid — stamped once, when the row is created — over 94 live
+  // rows:
+  //
+  //                      auto rows      migrated rows
+  //   search_date        21 of 37       52 of 55
+  //   submitted_at       37 of 37       10 of 55
+  //   EARLIEST of both   37 of 37       53 of 55     (92 of 94 overall, mean gap 0.5d)
+  //
+  // A scanned row's `search_date` is rewritten when the call is seen again; a migrated
+  // row's `submitted_at` is the day the workbook was imported, months after the team
+  // found the call. Both errors run the same direction — a later event can only stamp a
+  // LATER date — so the earliest evidence on the row is the closest thing to when we
+  // first saw it, and that is what a review week should key on.
+  //
+  // This replaced "search_date first", which filed five months-old migrated rows into the
+  // first week of November because one import had stamped them all 2026-11-06, and the
+  // screen then offered a decision taken in April as this week's review.
+  const dates: string[] = [];
   for (const k of ["search_date", "submitted_at", "created_at"]) {
     const v = str(r[k]).trim().slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) dates.push(v);
   }
-  return null;
+  return dates.length ? dates.sort()[0] : null;
 }
 
 export function decidedOn(r: Json): string | null {

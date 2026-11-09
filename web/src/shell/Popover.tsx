@@ -7,12 +7,17 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
  */
 export default function Popover({
   label, title, badge, children, align = "right", width = "w-80", triggerClass = "",
-  placement = "down",
+  placement = "down", onDark = false,
 }: {
   label: ReactNode; title: string; badge?: string | null; align?: "left" | "right";
   /** "up" for a trigger near the bottom of the window - the account menu sits at the
    *  foot of the sidebar, where a downward panel opens off the end of the screen. */
   placement?: "down" | "up";
+  /** The trigger sits on the dark sidebar rather than the white top bar. The
+   *  open state below is a PALE BLUE fill with dark blue text - correct on
+   *  white, and on navy it renders as a washed-out ghost box with the white
+   *  label sitting on top of it, which is what it looked like. */
+  onDark?: boolean;
   width?: string; triggerClass?: string;
   children: (close: () => void) => ReactNode;
 }) {
@@ -38,7 +43,9 @@ export default function Popover({
         type="button" title={title} aria-label={title} aria-expanded={open} aria-haspopup="dialog"
         onClick={() => setOpen((o) => !o)}
         className={`relative inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
-          open ? "bg-brand-50 text-brand-700" : "text-ink-500 hover:bg-ink-100 hover:text-ink-800"
+          onDark
+            ? (open ? "bg-white/15 text-white" : "text-white hover:bg-white/10")
+            : (open ? "bg-brand-50 text-brand-700" : "text-ink-500 hover:bg-ink-100 hover:text-ink-800")
         } ${triggerClass}`}
       >
         {label}

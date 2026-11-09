@@ -228,7 +228,7 @@ function Sidebar({ user, page, collapsed, drawer, onClose, onToggleCollapse, onG
               avatar in the opposite corner held the actions - two places claiming to be
               "you", neither of them obviously the one to click. */}
           <Popover
-            title="Account" width="w-64" placement="up" align="left"
+            title="Account" width="w-64" placement="up" align="left" onDark
             label={
               <span className={`flex w-full items-center gap-2.5 ${collapsed ? "lg:justify-center" : ""}`}>
                 <Avatar user={user} onDark />
@@ -238,7 +238,7 @@ function Sidebar({ user, page, collapsed, drawer, onClose, onToggleCollapse, onG
                 </span>
               </span>
             }
-            triggerClass="h-auto w-full rounded-lg px-2 py-2 text-white hover:bg-white/10"
+            triggerClass="h-auto w-full rounded-lg px-2 py-2"
           >
             {(close) => <AccountMenu user={user} close={close} />}
           </Popover>
