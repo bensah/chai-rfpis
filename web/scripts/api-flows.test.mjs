@@ -1406,3 +1406,85 @@ test("the week picker always offers the week it opens on", async () => {
   }
 });
 
+test("the Dashboard figures are a partition, not a pile", async () => {
+  // /home had NO test at all, so its whole contract could change under 115 green ones.
+  // The property worth pinning is not any single number but that the bands DIVIDE each
+  // other - a reader checks a dashboard by adding it up, and the old cards failed that in
+  // public: the Dashboard said "Submitted 21" while the Summary said 24.
+  const { db, call, signIn } = setup();
+  const base = { tenant_id: T1, is_duplicate: false };
+  db.tables.rfp_submissions.push(
+    { uid: "H-NEW", ...base },                                     // no decision yet
+    { uid: "H-PARK", ...base, decision: "Park" },
+    { uid: "H-DECL", ...base, decision: "Decline" },
+    // Sent, and answered three different ways.
+    { uid: "H-APP", ...base, decision: "Proceed", donor_decision: "Approved",
+      amount_requested: 100, amount_secured: 40, currency_secured: "USD" },
+    { uid: "H-NO", ...base, decision: "Proceed", donor_decision: "Not Approved",
+      amount_requested: 100, currency_secured: "USD" },
+    { uid: "H-WAIT", ...base, decision: "Proceed", donor_decision: "Under Review",
+      amount_requested: 100, currency_secured: "USD" },
+    // COMPLETED BUT NOT SENT. Two live rows look exactly like this, and counting them is
+    // how "21" happened: progress_status is a flag somebody sets by hand, while
+    // donor_decision is evidence of the funder's side.
+    { uid: "H-DONE-NOTSENT", ...base, decision: "Proceed",
+      progress_status: "Completed", donor_decision: "Not submitted" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const k = (await call("GET", "/home", null, col.token)).body;
+
+  // A DELTA, not an absolute: the shared fixture already seeds rows in this tenant, and a
+  // test that hard-codes their number breaks the day somebody adds one - which teaches the
+  // next person to edit the number rather than read the assertion.
+  assert.equal(k.found, 7 + 2, "the seven rows above plus the fixture's own two");
+  assert.equal(
+    k.awaiting_review + k.proceed + k.parked + k.declined, k.found,
+    "found must divide into awaiting review, proceed, parked and declined");
+  assert.equal(
+    k.awaiting_answer + k.approved + k.not_approved, k.sent_to_funder,
+    "sent must divide into awaiting, approved and not approved");
+
+  assert.equal(k.sent_to_funder, 3, "a funder response is what counts as sent");
+  assert.equal(k.approved, 1);
+  assert.equal(k.not_approved, 1);
+  assert.equal(k.awaiting_answer, 1);
+  assert.equal(k.proceed, 4, "the Completed-but-not-sent row is still a Proceed");
+  assert.equal(k.awaiting_review, 3, "H-NEW plus the fixture's two undecided rows");
+
+  // The counters nobody could act on are gone, not merely hidden.
+  assert.equal(k.duplicates, undefined);
+  assert.equal(k.overdue, undefined);
+  assert.equal(k.submitted, undefined, "renamed to sent_to_funder, with one meaning");
+});
+
+test("the Dashboard converts money rather than adding unlike units", async () => {
+  // The column holds USD, "USD $", "CAD $", GBP and "GBP £" together, so a raw sum is an
+  // addition of unlike things. requestedCurrency() is used because currency_secured
+  // governs what WE asked for while currency is what the CALL was advertised in.
+  const { db, call, signIn } = setup();
+  const base = { tenant_id: T1, is_duplicate: false, decision: "Proceed" };
+  db.tables.rfp_submissions.push(
+    { uid: "M-USD", ...base, donor_decision: "Approved",
+      amount_requested: 1000, amount_secured: 1000, currency_secured: "USD" },
+    { uid: "M-GBP", ...base, donor_decision: "Approved",
+      amount_requested: 1000, amount_secured: 0, currency_secured: "GBP" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const k = (await call("GET", "/home", null, col.token)).body;
+  assert.ok(k.usd_requested > 2000,
+    `a GBP request is worth more than its face value in USD, got ${k.usd_requested}`);
+  assert.equal(k.usd_secured, 1000);
+  assert.ok(k.pct_secured !== null && k.pct_secured < 50,
+    "secured is a share of the CONVERTED request");
+});
+
+test("a dashboard with nothing requested says so rather than reporting 0%", async () => {
+  // "0%" reads as failure; an absent figure reads as "not yet", which is the truth.
+  const { db, call, signIn } = setup();
+  db.tables.rfp_submissions.push(
+    { uid: "Z-1", tenant_id: T1, is_duplicate: false, decision: "Proceed" });
+  const col = await signIn("col@x.org", "col pass 1");
+  const k = (await call("GET", "/home", null, col.token)).body;
+  assert.equal(k.pct_secured, null);
+  assert.equal(k.usd_requested, 0);
+});

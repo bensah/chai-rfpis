@@ -103,7 +103,7 @@ export default function Layout({ user, page, children }: { user: User; page: Pag
       {guide && <GuideOverlay onClose={() => setGuide(false)} />}
       <div className={`flex min-h-screen flex-col transition-[padding] duration-200 ${collapsed ? "lg:pl-[4.75rem]" : "lg:pl-64"}`}>
         <TopBar
-          user={user} shell={shell} page={page} collapsed={collapsed}
+          shell={shell} page={page} collapsed={collapsed}
           onMenu={() => setDrawer(true)} onToggleCollapse={toggleCollapsed}
           onRead={(seen) => setShell((s) => (s ? { ...s, seen, unread: 0 } : s))}
         />
@@ -306,8 +306,10 @@ function Avatar({ user, onDark = false }: { user: User; onDark?: boolean }) {
 
 // ── Top bar ──────────────────────────────────────────────────────────────────
 
-function TopBar({ user, shell, page, collapsed, onMenu, onToggleCollapse, onRead }: {
-  user: User; shell: Shell | null; page: PageKey; collapsed: boolean;
+// No `user`: the account menu moved to the foot of the sidebar, so the bar now carries
+// only the brand seam, the breadcrumb, search, the org badge and the bell.
+function TopBar({ shell, page, collapsed, onMenu, onToggleCollapse, onRead }: {
+  shell: Shell | null; page: PageKey; collapsed: boolean;
   onMenu: () => void; onToggleCollapse: () => void; onRead: (seen: number) => void;
 }) {
   const unread = shell?.unread ?? 0;
