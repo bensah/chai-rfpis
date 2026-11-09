@@ -375,6 +375,18 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
    * is stamped), so it is stamped here and nowhere else in this file. UTC, matching the
    * deployment the Python runs in, so a decision taken near midnight lands in the same
    * reporting bucket either way.
+   *
+   * THE CALLER MAY SUPPLY IT, and that is the point. Today's date is a fair default for a
+   * decision recorded as it is taken, and wrong for every other case: a team that settles
+   * a call on the 3rd and records it on the 20th was having its work dated by its data
+   * entry. The owner's rule (2026-11-09) is that a system date may only stand in at a
+   * row's FIRST capture; after that it is audit trail. `decision_overridden_at` below is
+   * that audit trail and nothing files a row by it.
+   *
+   * Rejected rather than silently corrected: a date in the future (a decision cannot have
+   * been taken tomorrow) and anything that is not a real calendar date. Both are mistakes
+   * a person can fix in the field they just typed in, and quietly substituting today
+   * would reintroduce exactly the problem this accepts a date to avoid.
    */
   async function decide(req: Request, ctx: Ctx): Promise<Response> {
     const b = await body(req);
@@ -392,6 +404,25 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
     const before = await sb.get("rfp_submissions", `select=*&uid=eq.${q(uid)}&limit=1`);
     if (!before.length) return json({ error: "No such opportunity." }, 404);
 
+    // An explicit date wins; today is only the fallback.
+    const today = new Date().toISOString().slice(0, 10);
+    const wanted = str(b.decision_date).trim().slice(0, 10);
+    let decisionDate = today;
+    if (wanted) {
+      const real = /^\d{4}-\d{2}-\d{2}$/.test(wanted) &&
+        new Date(wanted + "T00:00:00Z").toISOString().slice(0, 10) === wanted;
+      if (!real) {
+        return json({ error: "That is not a real date.", problems: [wanted] }, 400);
+      }
+      if (wanted > today) {
+        return json({
+          error: "A decision cannot have been taken in the future.",
+          problems: [wanted],
+        }, 400);
+      }
+      decisionDate = wanted;
+    }
+
     const note = str(b.note).trim();
     const saved = await sb.update("rfp_submissions", `uid=eq.${q(uid)}`, {
       decision,
@@ -399,7 +430,7 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
       // who changes their verdict and says nothing should not keep the rationale for the
       // verdict they just abandoned, so the client sends "" to clear it deliberately.
       ...(b.note === undefined ? {} : { decision_note: note || null }),
-      decision_date: new Date().toISOString().slice(0, 10),
+      decision_date: decisionDate,
       decision_overridden_by: ctx.session.email,
       decision_overridden_at: nowIso(),
     });

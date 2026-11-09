@@ -1645,3 +1645,37 @@ test("Review drops what nobody can still act on", async () => {
     null, col.token);
   assert.deepEqual(r.body.rows.map((x) => x.uid), ["V-LIVE"]);
 });
+
+test("a decision can carry the date it was actually taken", async () => {
+  // Owner, 2026-11-09: a system date may only stand in at a row's FIRST capture. A team
+  // that settles a call on the 3rd and records it on the 20th was having its work dated
+  // by its data entry, and nothing in the UI could say otherwise.
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const today = new Date().toISOString().slice(0, 10);
+
+  const back = await call("POST", "/pipelines/decision",
+    { uid: "R1", decision: "Proceed", decision_date: "2026-10-22" }, col.token);
+  assert.equal(back.status, 200);
+  assert.equal(back.body.row.decision_date, "2026-10-22", "the date the team gave");
+
+  // Omitted still means today - right for a decision recorded as it is taken.
+  const now = await call("POST", "/pipelines/decision",
+    { uid: "R2", decision: "Park" }, col.token);
+  assert.equal(now.body.row.decision_date, today);
+});
+
+test("a decision cannot have been taken tomorrow", async () => {
+  // Rejected rather than silently corrected: substituting today would reintroduce exactly
+  // the problem that accepting a date is meant to avoid, and the person can fix the field
+  // they just typed in.
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+  const future = await call("POST", "/pipelines/decision",
+    { uid: "R1", decision: "Proceed", decision_date: tomorrow }, col.token);
+  assert.equal(future.status, 400);
+  const nonsense = await call("POST", "/pipelines/decision",
+    { uid: "R1", decision: "Proceed", decision_date: "2026-02-31" }, col.token);
+  assert.equal(nonsense.status, 400, "31 February is not a date");
+});

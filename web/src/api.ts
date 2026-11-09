@@ -390,10 +390,18 @@ export type Warning = { code: string; detail: string };
  * When it comes back null there is a warning saying so, and it matters: a Decline whose
  * tombstone was never written can be found again by the next scan.
  */
-export const recordDecision = (uid: string, decision: string, note?: string) =>
+export const recordDecision = (
+  uid: string, decision: string, note?: string, decisionDate?: string,
+) =>
   post<{ row: ScreenRow; warnings: Warning[]; recorded: { job_id: string } | null }>(
-    "/pipelines/decision", note === undefined
-      ? { uid, decision } : { uid, decision, note });
+    "/pipelines/decision", {
+      uid, decision,
+      ...(note === undefined ? {} : { note }),
+      // Omitted means "today", which is right for a decision recorded as it is taken and
+      // wrong for one being written up later. The server rejects a future date rather
+      // than quietly substituting today.
+      ...(decisionDate ? { decision_date: decisionDate } : {}),
+    });
 
 // ── App shell ────────────────────────────────────────────────────────────────
 export type FeedItem = { ts: number; icon: string; title: string; detail: string; nav: string; uid: string | null };
