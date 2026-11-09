@@ -1,0 +1,148 @@
+name: Deploy API
+
+# Deploys the `rfpis-api` Supabase Edge Function whenever a push to the default branch
+# changes anything the function bundles.
+#
+# WHY THIS EXISTS. The two deployed halves of this app ship by different mechanisms, and
+# until this workflow only one of them was automatic:
+#
+#   frontend  Cloudflare Pages, connected to this repo. Rebuilds on EVERY push to main,
+#             whether or not anyone asked it to.
+#   API       this Edge Function. Changed only when a person remembered to run the CLI.
+#
+# So any push touching both halves shipped half of itself. On 2026-11-09 that is exactly
+# what happened: the deployed function predated the deployed frontend, the rail called
+# `GET /opportunities/feed` (added in 8898618) against a function whose catch-all answered
+# `{"error":"Not found."}`, and Home asked for the `/home` contract from a09c829..ab28f4d
+# while the function still returned the old keys. The failure mode is the nasty one — not
+# an error page but a page that loads with every tile reading "—" and the funnel reading
+# NaN, which a user reads as "our data is gone", not as "the API is a few commits old".
+#
+# ORDERING AGAINST CLOUDFLARE. Cloudflare builds on its own schedule and nothing here can
+# sequence it, so the only question we get to answer is which way round to be wrong.
+# API-ahead-of-frontend is the safe direction and we bias for it deliberately:
+#
+#   * API ahead: the function serves a route or a response key no deployed page asks for
+#     yet. Inert. Nobody can see it.
+#   * API behind: the frontend calls a route the function does not have. That is the
+#     outage above.
+#
+# We cannot guarantee the order, but we can stack it: this job does the least work that
+# gets the function deployed — no tests, no typecheck, no build — while the Pages build
+# runs npm install, the Pyodide bundle and Vite. In practice the function is live within
+# about a minute and the frontend some minutes later. Resist adding gates here: a check
+# bolted onto this job buys very little (it cannot stop Cloudflare shipping the frontend
+# anyway) and pays for it by pushing the API behind the frontend, which is the one
+# ordering this file exists to avoid. Put checks in tests.yml, where they belong.
+#
+# WHAT IT DOES NOT TOUCH. The function's own secrets — RFPIS_JWT_SECRET,
+# RFPIS_WEB_ORIGINS, RFPIS_GH_DISPATCH_TOKEN, and the optional RESEND_* / APP_PUBLIC_URL —
+# live on the Supabase project, set once with `supabase secrets set`. They are not CI
+# secrets, this workflow neither reads nor rewrites them, and a deploy leaves them exactly
+# as they are. If the function starts 500ing on a route that needs one, the secret is
+# missing on the Supabase project; it is not something this workflow can have clobbered.
+#
+# ONE-TIME SETUP — the one thing a person must do before this works:
+#
+#   Repository secret  SUPABASE_ACCESS_TOKEN
+#   Where              GitHub → this repo → Settings → Secrets and variables → Actions
+#                      → New repository secret (NOT an environment or Dependabot secret)
+#   Value              a Supabase personal access token, from
+#                      https://supabase.com/dashboard/account/tokens
+#   Scope              it inherits the full account access of whoever creates it — Supabase
+#                      access tokens cannot be narrowed to one project, so create it from
+#                      an account that administers only what it needs to, name it for this
+#                      repo so it can be revoked without hunting, and revoke it there if
+#                      this repo is ever handed on.
+#
+# Until that secret exists the job fails loudly on its first step with instructions,
+# rather than reaching the CLI and failing somewhere less legible.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Everything the deployed bundle is made of. `rfpis-api/index.ts` is the entry and
+      # `_shared/**` is the handler it imports; every import in the tree is relative and
+      # stays inside this directory (the only exception is `npm:bcryptjs`, which the CLI
+      # fetches from npm at deploy time and which no repo path can change). There is no
+      # import map, no supabase/config.toml and nothing read off disk at runtime, so this
+      # one glob is the whole surface. If that ever stops being true — a JSON import, a
+      # generated file, a shared module hoisted out of supabase/ — this list has to grow
+      # with it, because a path list that misses a file is the same bug in a new place.
+      - "supabase/functions/**"
+      # The deploy recipe itself, so a fix to this file is exercised by the push that
+      # makes it rather than waiting for the next unrelated API change.
+      - ".github/workflows/deploy-api.yml"
+
+  # Push to main is the only automatic trigger. Deliberately NOT pull_request — a PR, and
+  # certainly a fork's PR, must not be able to deploy over production — and deliberately
+  # NOT schedule: a deploy should always correspond to reviewed, merged code, and a timer
+  # would redeploy whatever happened to be sitting on main at 3am. workflow_dispatch adds
+  # no new source of truth; it runs this same job on main, and exists so a person can
+  # redeploy the current main — after adding the missing secret above, or after a run
+  # failed and is too old to re-run — without faking an empty commit to do it.
+  workflow_dispatch:
+
+concurrency:
+  # Two pushes in quick succession must not race: the later one wins. cancel-in-progress
+  # cancels the older run, so the function never ends up at an older commit than main.
+  group: deploy-api
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Public identifier, not a secret: it is already in the frontend's VITE_API_BASE and
+      # therefore in every browser that loads the app. It lives here rather than in a
+      # secret so a dry read of this file says which project is being deployed to.
+      # Needed because supabase/config.toml is not committed — nothing links this checkout
+      # to a project the way a developer's machine is linked by `supabase link`.
+      SUPABASE_PROJECT_REF: hbpsoslcrasvakbxwkns
+    steps:
+      - name: Check the access token is present
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then
+            echo "::error::SUPABASE_ACCESS_TOKEN is not set, so rfpis-api was NOT deployed."
+            echo "The frontend on Cloudflare Pages has rebuilt itself from this same commit"
+            echo "regardless, so the live site is now running a frontend against an older"
+            echo "API. Add the secret and re-run this workflow:"
+            echo "  1. Create a Supabase personal access token:"
+            echo "     https://supabase.com/dashboard/account/tokens"
+            echo "  2. GitHub -> this repo -> Settings -> Secrets and variables -> Actions"
+            echo "     -> New repository secret, named exactly SUPABASE_ACCESS_TOKEN."
+            echo "  3. Re-run this workflow (Actions -> Deploy API -> Re-run jobs)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Deploy rfpis-api
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        # Character for character the command in web/README.md's "Deploy (free tiers)",
+        # plus --project-ref (see SUPABASE_PROJECT_REF above). Keep the two spellings
+        # identical, @latest included, so the documented manual fallback and what CI
+        # actually runs cannot drift apart.
+        #
+        # --no-verify-jwt is REQUIRED and must never be dropped. The browser sends an RFPIS
+        # session token that is deliberately NOT a Supabase JWT — it is signed with a key
+        # derived from the JWT secret, and the handler verifies it itself. With Supabase's
+        # own JWT gate in front, every request is rejected before the handler sees it and
+        # the whole app fails to sign in.
+        run: |
+          npx supabase@latest functions deploy rfpis-api \
+            --project-ref "$SUPABASE_PROJECT_REF" \
+            --no-verify-jwt \
+            --use-api
