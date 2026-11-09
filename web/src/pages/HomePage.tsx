@@ -22,9 +22,10 @@
  * remove them, not to count them).
  */
 import { useEffect, useState } from "react";
-import { BookOpen, Download } from "lucide-react";
+import { BookOpen, ChevronDown, Download } from "lucide-react";
 import { fetchHome, type HomeKpis, type User } from "../api";
 import OpportunityRail from "../components/OpportunityRail";
+import HowToUse from "../shell/HowToUse";
 import { hrefOf, Link } from "../router";
 import { Card, LinkButton, Notice, PageHeader } from "../ui";
 import {
@@ -238,13 +239,7 @@ export default function HomePage({ user }: { user: User }) {
           </Notice>
         )}
 
-      </div>
-
-      <div className="flex w-full shrink-0 flex-col gap-3 lg:w-80">
-        {/* The manual comes FIRST in the rail and the live feed sits below it (owner,
-            2026-11-09): somebody who needs the manual needs it before they need another
-            opportunity to read. */}
-        <Card className="p-5">
+        <Card className="mt-6 p-5">
           <h3 className="flex items-center gap-2 font-semibold text-brand-700">
             <BookOpen className="h-4.5 w-4.5 text-accent-600" strokeWidth={1.9} />
             New to RFPIS? Start with the manual
@@ -260,6 +255,28 @@ export default function HomePage({ user }: { user: User }) {
           </div>
         </Card>
 
+        {/* The SAME component the sidebar overlay renders, not a second copy of the
+            words. Two ways in - here for somebody reading the Dashboard top to bottom,
+            and from the sidebar on any other page - one place the text lives. */}
+        <Card className="mt-3">
+          <details className="group p-5">
+            <summary className="flex cursor-pointer list-none items-center justify-between font-medium text-ink-800">
+              How to use this app
+              <ChevronDown className="h-4 w-4 text-ink-400 transition-transform group-open:rotate-180" />
+            </summary>
+            <div className="mt-4">
+              <HowToUse />
+            </div>
+          </details>
+        </Card>
+      </div>
+
+      {/* The rail is the feed's again (owner, 2026-11-09). The manual moved here while the
+          centre was a wall of tiles and the page had nowhere else to put it; now that the
+          centre carries the charts and the table, there is room beneath them, which is
+          where both of these read better - a newcomer scrolls past the figures and finds
+          them, instead of them competing with the feed for the narrow column. */}
+      <div className="w-full shrink-0 lg:w-80">
         <OpportunityRail tenantName={user.view?.name ?? user.tenant?.name} dashboard />
       </div>
     </div>

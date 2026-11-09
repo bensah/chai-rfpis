@@ -82,7 +82,11 @@ export const PAGES: Record<PageKey, PageInfo> = {
   help: { title: "Help", icon: "❓" },
   search: { title: "Search", icon: "🔍" },
   // Deliberately in the rail: admins get Settings as a first-class item, not a hidden one.
-  settings: { title: "Settings", icon: "⚙️", rail: true, adminOnly: true },
+  // NOT in the rail (owner, 2026-11-09): it already sits in the account menu at the
+  // foot of the sidebar, so a rail entry was the same destination twice, a few
+  // centimetres apart. `adminOnly` stays - it is the permission, not the placement,
+  // and the menu entry reads it.
+  settings: { title: "Settings", icon: "⚙️", adminOnly: true },
   login: { title: "Sign In", icon: "🔐", public: true },
   "activate-account": { title: "Activate", icon: "🔑", public: true },
   "password-reset": { title: "Reset Password", icon: "🔓", public: true },
