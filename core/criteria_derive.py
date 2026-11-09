@@ -2511,7 +2511,13 @@ def _relationship_factors(org: dict, rfp: dict, donor: dict | None = None,
     # leaves them out of the won/total denominator, the roll-up declines to name the
     # criterion, and the label falls through to "Not sure" — which is what the derivation
     # was saying all along.
-    unknown = _no_relationship_data(org, sc)
+    #
+    # The positive tiers are checked FIRST, exactly as `derive_funder_relationship` checks
+    # them before its own no-data test. A grantee or shared-collaborator fact that reaches
+    # us through the APPLICANT GRAPH — held by the parent org, the Prime or a co-Sub — is
+    # relationship data even when this org's own profile fields are empty, and standing the
+    # components down on the profile alone would have thrown it away.
+    unknown = not grantee and not contact and _no_relationship_data(org, sc)
     # OR-tiers: any one satisfies PREFER 7 (grantee is the strongest). Tagged
     # so the Review panel shows them as alternative routes, not all-required.
     return [
