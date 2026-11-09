@@ -100,9 +100,13 @@ export default function HomePage({ user }: { user: User }) {
           <Tile label="Parked" value={k?.parked ?? dash} />
           <Tile label="Declined" value={k?.declined ?? dash} />
           <Tile label="Due in 14 days" value={k?.due_in_14_days ?? dash}
-            note={dueSoon > 0 ? "Proceed — open the list" : "Proceed deadlines"}
-            to={dueSoon > 0 ? `${hrefOf("pipelines")}?stage=bidding&due=14` : undefined}
-            title="Show the Proceed calls closing within 14 days" />
+            note={dueSoon > 0 ? "Open in Bidding" : "Live bids only"}
+            // `period=all` deliberately: this card counts across all time, while Bidding
+            // filters by WHEN A CALL WAS FOUND. Landing on Bidding's own default would
+            // show fewer rows than the number just clicked, which is the two-pages-
+            // disagree fault in a new place.
+            to={dueSoon > 0 ? `${hrefOf("pipelines")}?stage=bidding&period=all` : undefined}
+            title="Open the live bids, newest deadlines first" />
         </Band>
 
         {/* APPLICATIONS, not calls - a proposal resubmitted to the same funder is two
@@ -125,11 +129,18 @@ export default function HomePage({ user }: { user: User }) {
           </Notice>
         )}
 
-        <Band title="Funding" hint="Converted to USD; applications we have sent.">
-          <Tile label="Requested" value={usd(k?.usd_requested)} />
+        <Band title="Funding" hint="Converted to USD at today's rates.">
+          <Tile label="Requested" value={usd(k?.usd_requested)}
+            note="Everything we have sent" />
           <Tile label="Secured" value={usd(k?.usd_secured)} />
-          <Tile label="Secured of requested"
-            value={k?.pct_secured == null ? dash : `${k.pct_secured}%`} />
+          {/* The ratio states its own population. Over everything sent it would drift
+              down on every submission and jump on every answer - live, the two readings
+              are 28.8% and 62.0%, so an unlabelled share is worse than none. */}
+          <Tile label="Won of decided"
+            value={k?.pct_won_of_decided == null ? dash : `${k.pct_won_of_decided}%`}
+            note={k?.usd_requested_decided
+              ? `of ${usd(k.usd_requested_decided)} answered`
+              : "Of applications answered"} />
         </Band>
       </div>
 

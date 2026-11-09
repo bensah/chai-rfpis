@@ -59,9 +59,36 @@ const STAGES: {
     rule: "approved or not approved — what the Funding page calls applied funding" },
 ];
 
+/** A deep link may name the stage to open and widen the period to reach it.
+ *
+ * The Dashboard's "Due in 14 days" counts across ALL time, while this page filters by when
+ * a call was FOUND. Sending a reader to Bidding's own default would show fewer rows than
+ * the number they just clicked - the two-pages-disagree fault, in a new place. So the link
+ * carries `period=all` and the page honours it.
+ *
+ * Read once, as the initial state, rather than kept in sync: after landing, the period and
+ * stage controls are the reader's, and a URL that kept overriding them would fight the
+ * person using it.
+ */
+function linkIntent(): { stage: StageKey | null; wide: boolean } {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    const s = String(q.get("stage") || "").trim().toLowerCase();
+    const stage = STAGES.some((x) => x.key === s) ? (s as StageKey) : null;
+    return { stage, wide: String(q.get("period") || "").trim().toLowerCase() === "all" };
+  } catch {
+    return { stage: null, wide: false };
+  }
+}
+
 export default function PipelinePage({ user }: { user: User }) {
-  const [stage, setStage] = useState<StageKey>("screened");
-  const [period, setPeriod] = useState<Period>(() => periodOf("week"));
+  const intent = linkIntent();
+  const [stage, setStage] = useState<StageKey>(intent.stage ?? "screened");
+  const [period, setPeriod] = useState<Period>(() =>
+    intent.wide
+      // Wide enough to contain every row the Dashboard counted, whenever it was found.
+      ? { kind: "custom", from: "1900-01-01", to: "2999-01-01" }
+      : periodOf("week"));
   const [weeks, setWeeks] = useState<Weeks | null>(null);
   const [week, setWeek] = useState<string | null>(null);
 

@@ -1478,7 +1478,7 @@ test("the Dashboard converts money rather than adding unlike units", async () =>
   assert.ok(k.usd_requested > 2000,
     `a GBP request is worth more than its face value in USD, got ${k.usd_requested}`);
   assert.equal(k.usd_secured, 1000);
-  assert.ok(k.pct_secured !== null && k.pct_secured < 50,
+  assert.ok(k.pct_won_of_decided !== null && k.pct_won_of_decided < 50,
     "secured is a share of the CONVERTED request");
 });
 
@@ -1489,7 +1489,7 @@ test("a dashboard with nothing requested says so rather than reporting 0%", asyn
     { uid: "Z-1", tenant_id: T1, is_duplicate: false, decision: "Proceed" });
   const col = await signIn("col@x.org", "col pass 1");
   const k = (await call("GET", "/home", null, col.token)).body;
-  assert.equal(k.pct_secured, null);
+  assert.equal(k.pct_won_of_decided, null);
   assert.equal(k.usd_requested, 0);
 });
 
@@ -1508,4 +1508,61 @@ test("an answered application that weighs nothing is reported, not absorbed", as
   const k = (await call("GET", "/home", null, col.token)).body;
   assert.equal(k.ledger_gap, 1, "the row is counted as a gap");
   assert.equal(k.approved, 0, "and contributes nothing to the approved total");
+});
+
+test("Due in 14 days asks Bidding's question, not a looser one", async () => {
+  // An action prompt: a call already with the funder, discontinued, or duplicated needs no
+  // action. It counts liveProceeds - Bidding's own membership - rather than every row whose
+  // decision reads Proceed, which is what a hand-rolled filter here was doing.
+  //
+  // And liveProceeds, NOT selectTrackRows: Bidding's period belongs to Bidding. A call
+  // found long ago with a deadline next week is due next week.
+  const { db, call, signIn } = setup();
+  const soon = new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10);
+  const base = {
+    tenant_id: T1, is_duplicate: false, decision: "Proceed",
+    call_submission_deadline: soon,
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "D-LIVE", ...base, submitted_at: "2026-11-01T00:00:00+00:00" },
+    // Found YEARS ago, due next week. Still due next week.
+    { uid: "D-OLD", ...base, submitted_at: "2019-02-02T00:00:00+00:00" },
+    // Already with the funder — nothing to do.
+    { uid: "D-SENT", ...base, donor_decision: "Under Review",
+      submitted_at: "2026-11-01T00:00:00+00:00" },
+    // Abandoned — nothing to do.
+    { uid: "D-STOP", ...base, progress_status: "Discontinued",
+      submitted_at: "2026-11-01T00:00:00+00:00" },
+    // A duplicate of other work — nothing to do.
+    { uid: "D-DUP", ...base, is_duplicate: true,
+      submitted_at: "2026-11-01T00:00:00+00:00" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const k = (await call("GET", "/home", null, col.token)).body;
+  assert.equal(k.due_in_14_days, 2,
+    "the live bid and the old-but-due one; not the sent, stopped or duplicate rows");
+});
+
+test("the won-of-decided share has a denominator that does not drift", async () => {
+  // Over everything SENT the share falls on every submission and jumps on every answer, so
+  // the same label means something different each week - live, the two readings are 28.8%
+  // and 62.0%. The ratio is over applications a funder has ANSWERED; the absolute
+  // Requested stays over everything sent, because that is the natural reading of the word.
+  const { db, call, signIn } = setup();
+  const base = {
+    tenant_id: T1, is_duplicate: false, decision: "Proceed",
+    progress_status: "Completed", submissions: 1, currency_secured: "USD",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "R-WON", ...base, donor_decision: "Approved",
+      amount_requested: 100, amount_secured: 50 },
+    // Pending: it must move Requested but NOT the ratio.
+    { uid: "R-PEND", ...base, donor_decision: "Under Review", amount_requested: 900 },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const k = (await call("GET", "/home", null, col.token)).body;
+  assert.equal(k.usd_requested, 1000, "everything we have asked for");
+  assert.equal(k.usd_requested_decided, 100, "only what has been answered");
+  assert.equal(k.pct_won_of_decided, 50,
+    "50 of the 100 decided — not 5% of everything outstanding");
 });

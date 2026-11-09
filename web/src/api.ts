@@ -436,7 +436,11 @@ export type HomeKpis = {
   /** Answered by a funder yet weighing zero applications, because progress_status never
    *  reached Completed. Surfaced so the arithmetic can be trusted when it does not add up. */
   ledger_gap: number;
-  usd_requested: number; usd_secured: number; pct_secured: number | null;
+  usd_requested: number; usd_secured: number;
+  /** Requested over applications a funder has ANSWERED - the ratio's own
+   *  denominator. Over everything sent the share drifts down on every
+   *  submission; live, the two readings are 28.8% and 62.0%. */
+  usd_requested_decided: number; pct_won_of_decided: number | null;
 };
 export const fetchHome = () => call<HomeKpis>("/home");
 

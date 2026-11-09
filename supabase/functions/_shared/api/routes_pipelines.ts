@@ -292,12 +292,22 @@ function dropConcluded(rows: Json[]): Json[] {
  *
  * `today` is passed in rather than read, so a test can pin the deadline boundary.
  */
-export function selectTrackRows(
-  rows: Json[],
-  year: number | null,
-  today: string,
-  window?: { from: string; to: string },
-): Json[] {
+/**
+ * Proceeds that are still live work: decided by a person, not yet with the funder, not
+ * completed or discontinued, deadline not passed. Rules 2, 4, 5 and 6 of the Bidding
+ * stage, WITHOUT rule 3's found-date window.
+ *
+ * Split out so the Dashboard's "Due in 14 days" can ask Bidding's question without
+ * inheriting Bidding's period. The period belongs to that stage's own control; a call
+ * found last November with a deadline next Tuesday is due next Tuesday, and a card that
+ * hid it because of when it was found would be answering a question nobody asked.
+ *
+ * One rule, two entry points. The alternative was for the caller to pass a sentinel window
+ * of 1900-2999, and `selectTrackRows(rows, null, today)` does NOT do it: the else-branch
+ * compares against `String(year)`, so a null year becomes the string "null", every row
+ * fails, and the card reads 0 for ever without erroring.
+ */
+export function liveProceeds(rows: Json[], today: string): Json[] {
   return rows.filter((r) => {
     // 2. The STORED decision, and only the stored one.
     //
@@ -308,18 +318,6 @@ export function selectTrackRows(
     // to, which is the opposite of the page's purpose. The prefix match is the same one
     // both pages use; the difference is which column it is applied to.
     if (!isProceed(r.decision)) return false;
-
-    // 3. When the row arrived. Either the year of submitted_at, or an explicit half-open
-    // range when the period control supplies one. Read off the ISO prefix rather than
-    // parsed to an instant, so a row just inside a new year at a positive UTC offset
-    // keeps the year its text says — which is the year the Python reads.
-    const submitted = str(r.submitted_at);
-    if (window) {
-      const d = submitted.slice(0, 10);
-      if (d === "" || d < window.from || d >= window.to) return false;
-    } else if (submitted.slice(0, 4) !== String(year)) {
-      return false;
-    }
 
     // 4. ANYTHING that records the proposal reaching the funder, which is the shared
     // `is_submitted` and not a test spelled out again here.
@@ -343,6 +341,29 @@ export function selectTrackRows(
     // 6. No deadline, or one that has not passed.
     const dl = str(r.call_submission_deadline).slice(0, 10);
     return dl === "" || dl >= today;
+  });
+}
+
+/**
+ * The Bidding stage's rows: `liveProceeds` plus rule 3, when the row arrived — either the
+ * year of `submitted_at`, or an explicit half-open range when the period control supplies
+ * one. Read off the ISO prefix rather than parsed to an instant, so a row just inside a new
+ * year at a positive UTC offset keeps the year its text says, which is the year the Python
+ * reads.
+ */
+export function selectTrackRows(
+  rows: Json[],
+  year: number | null,
+  today: string,
+  window?: { from: string; to: string },
+): Json[] {
+  return liveProceeds(rows, today).filter((r) => {
+    const submitted = str(r.submitted_at);
+    if (window) {
+      const d = submitted.slice(0, 10);
+      return !(d === "" || d < window.from || d >= window.to);
+    }
+    return submitted.slice(0, 4) === String(year);
   });
 }
 

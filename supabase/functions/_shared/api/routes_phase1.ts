@@ -21,7 +21,9 @@ import { ratesFor } from "./fx.ts";
 import {
   ledgerGap, loadCurrencies, requestedCurrency, submissionWeight, usdValue,
 } from "./money.ts";
-import { selectOutcomeRows, selectSubmittedRows } from "./routes_pipelines.ts";
+import {
+  liveProceeds, selectOutcomeRows, selectSubmittedRows,
+} from "./routes_pipelines.ts";
 import type { Json } from "./jwt.ts";
 import { asToday, classify, featured } from "./opportunity_feed.ts";
 import { getPolicies, tenantPrefs } from "./policies.ts";
@@ -191,6 +193,18 @@ export function createPhase1Routes(db: Db) {
       usdValue(r.amount_requested, requestedCurrency(r), rates, table));
     const secured = sum(sent, (r) =>
       usdValue(r.amount_secured, r.currency_secured, rates, table));
+    // THE RATIO NEEDS ITS OWN DENOMINATOR, AND IT IS NOT THIS ONE. Over everything sent,
+    // the share drifts DOWN every time somebody submits and jumps when a funder answers,
+    // so the same label means something different each week. Measured live, the two
+    // readings are 28.8% and 62.0% - a figure that can double depending on an unstated
+    // population is worse than no figure.
+    //
+    // So the ratio is computed over APPLICATIONS A FUNDER HAS ANSWERED: of what has been
+    // decided, how much did we win. That is stable and comparable month to month. The
+    // absolute Requested above stays over everything sent, because "what we have asked
+    // for" is the natural reading of that word - and the card labels say which is which.
+    const requestedDecided = sum(answeredRows, (r) =>
+      usdValue(r.amount_requested, requestedCurrency(r), rates, table));
 
     return json({
       // ── Found ──────────────────────────────────────────────────────────────
@@ -200,12 +214,24 @@ export function createPhase1Routes(db: Db) {
       proceed: proceed.length,
       parked: unique.filter((r) => decision(r) === "park").length,
       declined: unique.filter((r) => decision(r) === "decline").length,
-      // Urgency applies only to Proceed: a parked or declined call has no deadline we are
-      // working to. Clickable on the page when it is 1 or more, because a number nobody can
-      // act on is decoration.
-      due_in_14_days: proceed
-        .map((r) => asDate(r.call_submission_deadline))
-        .filter((d) => d !== null && d >= t && d <= soon).length,
+      // BIDDING'S QUESTION, ASKED BIDDING'S WAY. This card is an action prompt, and a
+      // call already with the funder, discontinued, or duplicated needs no action - so it
+      // counts `liveProceeds`, the Bidding stage's own membership, rather than every row
+      // whose decision reads Proceed. A hand-rolled filter here was a second opinion that
+      // included all three.
+      //
+      // `liveProceeds` and not `selectTrackRows`, because Bidding's period belongs to
+      // Bidding: a call found last November with a deadline next Tuesday is due next
+      // Tuesday, and hiding it because of WHEN IT WAS FOUND would answer a question
+      // nobody asked.
+      // `unique`, not `rows`: liveProceeds starts at rule 2, because the Bidding route
+      // drops duplicates in its QUERY (`is_duplicate=is.false`) before calling it.
+      // Passing every row here counted a duplicate as actionable work and made the
+      // card read one higher than the stage it links to.
+      due_in_14_days: liveProceeds(unique, t).filter((r) => {
+        const d = asDate(r.call_submission_deadline);
+        return d !== null && d >= t && d <= soon;
+      }).length,
       // ── Sent, and what came back. APPLICATIONS, not calls ──────────────────
       applications_sent: weigh(sent),
       awaiting_answer: weigh(awaitingRows),
@@ -217,9 +243,12 @@ export function createPhase1Routes(db: Db) {
       // ── Money ──────────────────────────────────────────────────────────────
       usd_requested: requested,
       usd_secured: secured,
-      // Of what we asked for and have an answer to. Null rather than 0 when nothing has
-      // been requested yet: "0%" reads as failure, an absent figure reads as "not yet".
-      pct_secured: requested > 0 ? Math.round((secured / requested) * 1000) / 10 : null,
+      // Over DECIDED applications only - see above. Null rather than 0 when nothing has
+      // been decided yet: "0%" reads as failure, an absent figure reads as "not yet".
+      usd_requested_decided: requestedDecided,
+      pct_won_of_decided: requestedDecided > 0
+        ? Math.round((secured / requestedDecided) * 1000) / 10
+        : null,
     });
   }
 
