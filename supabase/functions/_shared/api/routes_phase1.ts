@@ -18,6 +18,9 @@
 import { q, type Db } from "./db.ts";
 import { json, gzipped, str } from "./http.ts";
 import { ratesFor } from "./fx.ts";
+import {
+  loadCurrencies, requestedCurrency, usdValue,
+} from "./money.ts";
 import type { Json } from "./jwt.ts";
 import { asToday, classify, featured } from "./opportunity_feed.ts";
 import { getPolicies, tenantPrefs } from "./policies.ts";
@@ -43,7 +46,9 @@ const CATALOG_FIELDS = "uid,opportunity_name,opportunity_url,funder_name,deadlin
   "opportunity_type,date_posted";
 
 /** app_pages/home.py::_kpis */
-const HOME_FIELDS = "uid,decision,donor_decision,progress_status,call_submission_deadline,is_duplicate";
+const HOME_FIELDS = "uid,decision,donor_decision,progress_status," +
+  "call_submission_deadline,is_duplicate,amount_requested,amount_secured," +
+  "currency,currency_secured";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -103,27 +108,92 @@ export function createPhase1Routes(db: Db) {
    *  getAll: every number this returns is a count over the whole table, so a read capped
    *  at 1000 would not make the home page look short — it would make it look wrong, with
    *  no way for a reader to tell. */
+  /**
+   * The Dashboard's figures — one reconciled set for the whole pipeline.
+   *
+   * THESE NUMBERS ADD UP, AND THAT IS THE POINT. The Dashboard and the Streamlit Summary
+   * each grew their own cards and then disagreed in public: the Dashboard said 21
+   * submitted, the Summary said 24, and neither said which it meant. A reader who notices
+   * that stops trusting every other number on the page. So each stage below is a partition
+   * of the one above it, and the parts are named so a person can check the sum by eye:
+   *
+   *   found            = awaiting_review + proceed + parked + declined
+   *   sent_to_funder   = awaiting_answer + approved + not_approved
+   *
+   * "SUBMITTED" MEANT FOUR DIFFERENT THINGS. Measured live on the largest tenant: progress
+   * Completed = 21, at least one submission logged = 19, submissions summed over Completed
+   * rows = 20, a funder response on record = 19. This uses the LAST: a call counts as sent
+   * when its `donor_decision` says something other than "Not submitted". It is the only one
+   * backed by per-row evidence of the funder's side, and it is what makes the outcome split
+   * tile exactly (7 under review + 2 sent + 5 approved + 5 not approved = 19). Progress
+   * status is a workflow flag somebody sets by hand; two rows carry Completed while still
+   * saying "Not submitted", and counting those as sent is how 21 happened.
+   *
+   * DROPPED: `duplicates` and `overdue`. A duplicate is housekeeping, not a result, and the
+   * deduplicator's job is to make it disappear rather than to report it; "past deadline"
+   * counted 79 of 94 calls, which tells a reader only that most calls eventually close.
+   * Neither is something anybody acts on. (owner, 2026-11-09)
+   */
   async function home(ctx: Ctx): Promise<Response> {
-    const rows = await db.as(ctx.scope).getAll("rfp_submissions", `select=${HOME_FIELDS}`, "uid");
+    const sb = db.as(ctx.scope);
+    const rows = await sb.getAll("rfp_submissions", `select=${HOME_FIELDS}`, "uid");
     const t = today();
     const soon = new Date(Date.parse(t) + 14 * 86400_000).toISOString().slice(0, 10);
 
     const unique = rows.filter((r) => !truthy(r.is_duplicate));
     const decision = (r: Json) => norm(r.decision);
     const proceed = unique.filter((r) => decision(r).startsWith("proceed"));
-    const deadlines = proceed.map((r) => asDate(r.call_submission_deadline));
+
+    // A funder's answer, normalised. "" and "not submitted" both mean we have not sent it.
+    const answer = (r: Json) => {
+      const v = norm(r.donor_decision);
+      return v === "" || v === "not submitted" ? "" : v;
+    };
+    const sent = unique.filter((r) => answer(r) !== "");
+    const approved = sent.filter((r) => answer(r) === "approved");
+    const notApproved = sent.filter((r) => answer(r) === "not approved");
+
+    // Money is in MIXED currencies - USD, "USD $", "CAD $", GBP, "GBP £" all appear in one
+    // column - so a raw sum is not a figure, it is an addition of unlike things.
+    // `requestedCurrency` is used rather than `currency` because `currency_secured` governs
+    // what WE asked for while `currency` is what the CALL was advertised in; reading the
+    // wrong one understated a CAD request by 28% on the Grants page, which is a named bug.
+    const [rates, table] = await Promise.all([
+      ratesFor(unique.flatMap((r) => [r.currency_secured, r.currency])),
+      loadCurrencies(db),
+    ]);
+    const sum = (rs: Json[], pick: (r: Json) => number) =>
+      Math.round(rs.reduce((a, r) => a + pick(r), 0));
+    const requested = sum(sent, (r) =>
+      usdValue(r.amount_requested, requestedCurrency(r), rates, table));
+    const secured = sum(sent, (r) =>
+      usdValue(r.amount_secured, r.currency_secured, rates, table));
+
     return json({
-      total_unique: unique.length,
-      total_found: rows.length,
-      duplicates: rows.length - unique.length,
+      // ── Found ──────────────────────────────────────────────────────────────
+      found: unique.length,
+      awaiting_review: unique.filter((r) => decision(r) === "").length,
+      // ── Decided ────────────────────────────────────────────────────────────
       proceed: proceed.length,
-      park: unique.filter((r) => decision(r) === "park").length,
-      decline: unique.filter((r) => decision(r) === "decline").length,
-      // Urgency applies only to Proceed rows: Park and Decline have no actionable deadline.
-      overdue: deadlines.filter((d) => d !== null && d < t).length,
-      due_soon: deadlines.filter((d) => d !== null && d >= t && d <= soon).length,
-      submitted: unique.filter((r) => norm(r.progress_status) === "completed").length,
-      awarded_grants: unique.filter((r) => norm(r.donor_decision) === "approved").length,
+      parked: unique.filter((r) => decision(r) === "park").length,
+      declined: unique.filter((r) => decision(r) === "decline").length,
+      // Urgency applies only to Proceed: a parked or declined call has no deadline we are
+      // working to. Clickable on the page when it is 1 or more, because a number nobody can
+      // act on is decoration.
+      due_in_14_days: proceed
+        .map((r) => asDate(r.call_submission_deadline))
+        .filter((d) => d !== null && d >= t && d <= soon).length,
+      // ── Sent, and what came back ───────────────────────────────────────────
+      sent_to_funder: sent.length,
+      awaiting_answer: sent.length - approved.length - notApproved.length,
+      approved: approved.length,
+      not_approved: notApproved.length,
+      // ── Money ──────────────────────────────────────────────────────────────
+      usd_requested: requested,
+      usd_secured: secured,
+      // Of what we asked for and have an answer to. Null rather than 0 when nothing has
+      // been requested yet: "0%" reads as failure, an absent figure reads as "not yet".
+      pct_secured: requested > 0 ? Math.round((secured / requested) * 1000) / 10 : null,
     });
   }
 

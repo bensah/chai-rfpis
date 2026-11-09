@@ -19,6 +19,7 @@ import { fetchShell, markAllRead, signOut, viewAs, type Shell, type User } from 
 import { goToCrumb, hrefOf, Link, navigate, navTrail, PAGES, type PageKey } from "../router";
 import { NAV_ICON } from "./navIcons";
 import Popover from "./Popover";
+import HowToUse from "./HowToUse";
 import { fmtDay, fmtScan, nextScheduledScan, relativeTime } from "./time";
 import { Badge, Button, IconButton, Notice, fieldClass } from "../ui";
 
@@ -43,6 +44,12 @@ const GROUPS: { label: string; pages: PageKey[] }[] = [
 export default function Layout({ user, page, children }: { user: User; page: PageKey; children: ReactNode }) {
   const [shell, setShell] = useState<Shell | null>(null);
   const [drawer, setDrawer] = useState(false);
+  // STAYS OPEN ACROSS PAGES, on purpose (owner, 2026-11-09). The guide explains the
+  // weekly rhythm, and the point of reading it is to follow it - so it has to survive
+  // the navigation it is describing. Layout is the shell and does not unmount between
+  // routes, so holding the flag here is what makes that true; holding it in a page
+  // would close the guide on the first click it tells you to make.
+  const [guide, setGuide] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(COLLAPSE_KEY) === "1";
@@ -79,12 +86,21 @@ export default function Layout({ user, page, children }: { user: User; page: Pag
     return () => document.removeEventListener("keydown", onKey);
   }, [drawer]);
 
+  useEffect(() => {
+    if (!guide) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setGuide(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [guide]);
+
   return (
     <div className="min-h-screen bg-canvas">
       <Sidebar
         user={user} page={page} collapsed={collapsed} drawer={drawer}
         onClose={() => setDrawer(false)} onToggleCollapse={toggleCollapsed}
+        onGuide={() => setGuide(true)}
       />
+      {guide && <GuideOverlay onClose={() => setGuide(false)} />}
       <div className={`flex min-h-screen flex-col transition-[padding] duration-200 ${collapsed ? "lg:pl-[4.75rem]" : "lg:pl-64"}`}>
         <TopBar
           user={user} shell={shell} page={page} collapsed={collapsed}
@@ -107,11 +123,52 @@ export default function Layout({ user, page, children }: { user: User; page: Pag
   );
 }
 
+/**
+ * The how-to guide, over whatever is on screen.
+ *
+ * Deliberately NOT a page. It used to be a collapsed block at the bottom of the Dashboard,
+ * which is the one screen you need it least on: by the time somebody is lost in Track, going
+ * Home to read about Track has already cost them what they were doing. Sending them to a
+ * /help route would do the same thing more slowly.
+ *
+ * A click anywhere outside closes it, which is the owner's instruction and also the only
+ * behaviour that makes an always-available panel safe to leave open.
+ */
+function GuideOverlay({ onClose }: { onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-start justify-center bg-ink-900/40 p-4 backdrop-blur-[2px] sm:p-8"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="How to use this app"
+        // The panel swallows its own clicks, or reading it would dismiss it.
+        onClick={(e) => e.stopPropagation()}
+        className="mt-8 max-h-[80vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white p-6 shadow-float"
+      >
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <h2 className="text-lg font-semibold text-brand-700">How to use this app</h2>
+          <IconButton label="Close the guide" onClick={onClose}>
+            <X className="h-5 w-5" />
+          </IconButton>
+        </div>
+        <HowToUse />
+        <p className="mt-5 border-t border-ink-100 pt-3 text-xs text-ink-400">
+          Click anywhere outside this panel, or press Escape, to close it.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ── Sidebar ──────────────────────────────────────────────────────────────────
 
-function Sidebar({ user, page, collapsed, drawer, onClose, onToggleCollapse }: {
+function Sidebar({ user, page, collapsed, drawer, onClose, onToggleCollapse, onGuide }: {
   user: User; page: PageKey; collapsed: boolean; drawer: boolean;
-  onClose: () => void; onToggleCollapse: () => void;
+  onClose: () => void; onToggleCollapse: () => void; onGuide: () => void;
 }) {
   const allowed = (k: PageKey) => PAGES[k].rail && (!PAGES[k].adminOnly || isAdmin(user));
   return (
@@ -153,16 +210,38 @@ function Sidebar({ user, page, collapsed, drawer, onClose, onToggleCollapse }: {
               </div>
             );
           })}
+          {/* Below Settings, and a BUTTON rather than a link: it opens over the page
+              you are on instead of navigating away from it. */}
+          <button
+            onClick={() => { onGuide(); onClose(); }}
+            title="How to use this app"
+            className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-brand-100 transition-colors hover:bg-white/10 hover:text-white ${collapsed ? "lg:justify-center lg:px-0" : ""}`}
+          >
+            <HelpCircle className="h-[1.15rem] w-[1.15rem] shrink-0" strokeWidth={1.9} />
+            <span className={collapsed ? "lg:hidden" : ""}>How to use this app</span>
+          </button>
         </nav>
 
         <div className="shrink-0 border-t border-white/10 p-3">
-          <div className={`flex items-center gap-2.5 rounded-lg px-2 py-2 ${collapsed ? "lg:justify-center lg:px-0" : ""}`}>
-            <Avatar user={user} onDark />
-            <div className={`min-w-0 flex-1 leading-tight ${collapsed ? "lg:hidden" : ""}`}>
-              <div className="truncate text-sm font-medium">{user.name || user.email}</div>
-              <div className="truncate text-xs text-brand-200">{user.roleLabel}</div>
-            </div>
-          </div>
+          {/* THE ACCOUNT MENU LIVES HERE NOW, not in the top-right corner (owner,
+              2026-11-09). The name was already printed here and did nothing, while an
+              avatar in the opposite corner held the actions - two places claiming to be
+              "you", neither of them obviously the one to click. */}
+          <Popover
+            title="Account" width="w-64" placement="up" align="left"
+            label={
+              <span className={`flex w-full items-center gap-2.5 ${collapsed ? "lg:justify-center" : ""}`}>
+                <Avatar user={user} onDark />
+                <span className={`min-w-0 flex-1 text-left leading-tight ${collapsed ? "lg:hidden" : ""}`}>
+                  <span className="block truncate text-sm font-medium">{user.name || user.email}</span>
+                  <span className="block truncate text-xs text-brand-200">{user.roleLabel}</span>
+                </span>
+              </span>
+            }
+            triggerClass="h-auto w-full rounded-lg px-2 py-2 text-white hover:bg-white/10"
+          >
+            {(close) => <AccountMenu user={user} close={close} />}
+          </Popover>
           <button
             onClick={onToggleCollapse}
             title={collapsed ? "Expand the sidebar" : "Collapse the sidebar"}
@@ -256,9 +335,6 @@ function TopBar({ user, shell, page, collapsed, onMenu, onToggleCollapse, onRead
           badge={unread ? (unread < 100 ? String(unread) : "99+") : null}
         >
           {(close) => <Notifications shell={shell} onRead={onRead} close={close} />}
-        </Popover>
-        <Popover title="Account" width="w-72" label={<Avatar user={user} />} triggerClass="h-9 w-9 p-0">
-          {(close) => <AccountMenu user={user} close={close} />}
         </Popover>
       </div>
     </header>

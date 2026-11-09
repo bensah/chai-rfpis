@@ -420,10 +420,17 @@ export const startJob = (kind: string, params: Record<string, unknown> = {}) =>
 export const fetchJob = (id: string) => call<{ job: Job }>(`/jobs/${encodeURIComponent(id)}`).then((r) => r.job);
 
 // ── Home, the rail and one opportunity ───────────────────────────────────────
+/** The Dashboard's figures. Each band is a PARTITION of the one above it:
+ *    found          = awaiting_review + proceed + parked + declined
+ *    sent_to_funder = awaiting_answer + approved + not_approved
+ *  so a reader can check the sums by eye. routes_phase1.ts::home says why "submitted"
+ *  became `sent_to_funder` and which of its four possible meanings won. */
 export type HomeKpis = {
-  total_unique: number; total_found: number; duplicates: number;
-  proceed: number; park: number; decline: number;
-  overdue: number; due_soon: number; submitted: number; awarded_grants: number;
+  found: number; awaiting_review: number;
+  proceed: number; parked: number; declined: number; due_in_14_days: number;
+  sent_to_funder: number; awaiting_answer: number;
+  approved: number; not_approved: number;
+  usd_requested: number; usd_secured: number; pct_secured: number | null;
 };
 export const fetchHome = () => call<HomeKpis>("/home");
 

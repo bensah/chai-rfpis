@@ -1,44 +1,72 @@
 /**
- * Home — a port of app_pages/home.py: a welcome, eight live counters, the quick-start
- * cards, the manual, and the how-to guide, with the live opportunity feed alongside.
+ * Dashboard — the whole pipeline in one screen.
  *
- * One thing is deliberately left behind: Streamlit syncs an Excel workbook on every Home
- * load, shelling out to a migration script. That belongs in a background job, not in a page
- * view (see docs/FRONTEND_MIGRATION.md), so it is not here.
+ * This page used to be a welcome, eight counters and a grid of "Where to start" cards that
+ * repeated the left sidebar link for link. The owner's instruction (2026-11-09) was to put
+ * Streamlit's Summary here instead of adding it as a sixth Pipeline tab, and to drop the
+ * quick-start grid: the rail already says where to start, and saying it twice on the one
+ * page that should be showing results is how a dashboard ends up with no data on it.
+ *
+ * THE FIGURES ARE A PARTITION, NOT A PILE. Each band below divides the one above it, so a
+ * reader can check the arithmetic by eye:
+ *
+ *     found          = awaiting review + proceed + parked + declined
+ *     sent to funder = awaiting answer + approved + not approved
+ *
+ * That matters because the old cards did not add up and said so in public: the Dashboard
+ * read "Submitted 21" while the Summary read 24, and the two pages meant different things
+ * by the word. See routes_phase1.ts::home for which meaning won and why.
+ *
+ * Gone with the counters that could not be acted on: "Past deadline" (79 of 94 calls - it
+ * reported that calls close) and "Duplicates" (housekeeping; the deduplicator's job is to
+ * remove them, not to count them).
  */
 import { useEffect, useState } from "react";
-import { BookOpen, ChevronDown, Download } from "lucide-react";
+import { BookOpen, Download } from "lucide-react";
 import { fetchHome, type HomeKpis, type User } from "../api";
 import OpportunityRail from "../components/OpportunityRail";
-import { hrefOf, Link, PAGES, type PageKey } from "../router";
-import { NAV_ICON } from "../shell/navIcons";
+import { hrefOf, Link } from "../router";
 import { Card, LinkButton, Notice, PageHeader } from "../ui";
 
-// Headline comes from PAGES[key].title, never a second copy of it — a card that carried
-// its own label is how "Pipelines" in the rail became "Pipeline" here, and "Grants" became
-// "Applied funding". One name per page, defined once, in the router.
-const CARDS: [PageKey, string][] = [
-  ["pipelines", "Every opportunity across its lifecycle: screened, reviewed, decided, tracked."],
-  ["grants", "What you have applied for — under donor review or awarded, with reporting deadlines."],
-  ["actions", "Weekly meeting notes, donor engagement touchpoints and pending follow-ups."],
-  ["report", "Activity from search and reviews through to funding secured, at a glance."],
-  ["organization", "Your organisation — profile, bid-fitness, eligibility, partners and team."],
-];
+const dash = "—";
 
-const SETTINGS_CARD: [PageKey, string] = ["settings",
-  "Setup, users, data, donor sources, Excel sync, rates and manual scans."];
+const usd = (n: number | null | undefined) =>
+  n == null ? dash : `$${Math.round(n).toLocaleString("en-US")}`;
 
-function Tile({ label, value, note, alarm }: {
-  label: string; value: number | string; note?: string; alarm?: boolean;
+function Tile({ label, value, note, to, title }: {
+  label: string;
+  value: number | string;
+  note?: string;
+  /** Present only when the number is worth acting on — see "Due in 14 days". */
+  to?: string;
+  title?: string;
+}) {
+  const body = (
+    <>
+      <div className="text-xs leading-tight text-ink-500">{label}</div>
+      <div className="mt-1 text-2xl font-bold tabular-nums text-brand-700">{value}</div>
+      {note && <div className="mt-0.5 text-xs text-ink-400">{note}</div>}
+    </>
+  );
+  if (!to) return <Card className="px-4 py-3">{body}</Card>;
+  return (
+    <Card className="px-4 py-3 transition-shadow hover:shadow-float">
+      <Link to={to} title={title} className="block hover:text-accent-700">{body}</Link>
+    </Card>
+  );
+}
+
+function Band({ title, hint, children }: {
+  title: string; hint?: string; children: React.ReactNode;
 }) {
   return (
-    <Card className="px-4 py-3">
-      <div className="text-xs leading-tight text-ink-500">{label}</div>
-      <div className={`mt-1 text-2xl font-bold ${alarm && Number(value) > 0 ? "text-bad-700" : "text-brand-700"}`}>
-        {value}
-      </div>
-      {note && <div className="mt-0.5 text-xs text-ink-400">{note}</div>}
-    </Card>
+    <section className="mt-7 first:mt-0">
+      <h2 className="text-sm font-semibold tracking-[0.04em] text-ink-500 uppercase">
+        {title}
+      </h2>
+      {hint && <p className="mt-0.5 text-xs text-ink-400">{hint}</p>}
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">{children}</div>
+    </section>
   );
 }
 
@@ -51,8 +79,9 @@ export default function HomePage({ user }: { user: User }) {
   }, []);
 
   const firstName = (user.name || user.email || "there").split(" ")[0];
-  const cards = user.role === "admin" || user.role === "super_user" ? [...CARDS, SETTINGS_CARD] : CARDS;
-  const dash = "—";
+  // A deadline you can still act on is the one number here that leads somewhere. Linked
+  // only when there is something to see: a link to an empty list wastes the click.
+  const dueSoon = k?.due_in_14_days ?? 0;
 
   return (
     <div className="flex flex-col gap-7 lg:flex-row">
@@ -60,46 +89,48 @@ export default function HomePage({ user }: { user: User }) {
         <PageHeader title={`Welcome, ${firstName}`} />
         {error && <Notice tone="warn" className="mb-4">{error}</Notice>}
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Tile label="Total Unique RFPs" value={k?.total_unique ?? dash}
-            note={k ? (k.duplicates ? `${k.total_found} found · ${k.duplicates} duplicate`
-              : `${k.total_found} found`) : undefined} />
+        <Band title="Calls found" hint="Everything the scan and the team have brought in.">
+          <Tile label="Calls found" value={k?.found ?? dash} />
+          <Tile label="Awaiting review" value={k?.awaiting_review ?? dash}
+            note="No decision yet" />
+        </Band>
+
+        <Band title="Our decisions" hint="What the team decided to do about them.">
           <Tile label="Proceed" value={k?.proceed ?? dash} />
-          <Tile label="Park" value={k?.park ?? dash} />
-          <Tile label="Decline" value={k?.decline ?? dash} />
-        </div>
-        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Tile label="Due in 14 days" value={k?.due_soon ?? dash} />
-          <Tile label="Submitted" value={k?.submitted ?? dash} />
-          <Tile label="Past deadline" value={k?.overdue ?? dash} alarm />
-          <Tile label="Awarded Grants" value={k?.awarded_grants ?? dash} />
-        </div>
+          <Tile label="Parked" value={k?.parked ?? dash} />
+          <Tile label="Declined" value={k?.declined ?? dash} />
+          <Tile label="Due in 14 days" value={k?.due_in_14_days ?? dash}
+            note={dueSoon > 0 ? "Proceed — open the list" : "Proceed deadlines"}
+            to={dueSoon > 0 ? `${hrefOf("pipelines")}?stage=bidding&due=14` : undefined}
+            title="Show the Proceed calls closing within 14 days" />
+        </Band>
 
-        <h2 className="mt-9 mb-3 text-lg font-semibold text-brand-700">Where to start</h2>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {cards.map(([page, body]) => {
-            const Icon = NAV_ICON[page];
-            const headline = PAGES[page].title;
-            return (
-              <Card key={page} className="p-4 transition-shadow hover:shadow-float">
-                <Link to={hrefOf(page)} title={`Go to ${headline}`}
-                  className="flex items-center gap-2 font-semibold text-brand-700 hover:text-accent-700 hover:underline">
-                  <Icon className="h-4.5 w-4.5 text-accent-600" strokeWidth={1.9} /> {headline}
-                </Link>
-                <p className="mt-2 text-sm leading-relaxed text-ink-600">{body}</p>
-              </Card>
-            );
-          })}
-        </div>
+        <Band title="With funders" hint="Applications we have sent, and what came back.">
+          <Tile label="Sent to funder" value={k?.sent_to_funder ?? dash} />
+          <Tile label="Awaiting answer" value={k?.awaiting_answer ?? dash} />
+          <Tile label="Approved" value={k?.approved ?? dash} />
+          <Tile label="Not approved" value={k?.not_approved ?? dash} />
+        </Band>
 
-        <Card className="mt-6 p-5">
+        <Band title="Funding" hint="Converted to USD; applications we have sent.">
+          <Tile label="Requested" value={usd(k?.usd_requested)} />
+          <Tile label="Secured" value={usd(k?.usd_secured)} />
+          <Tile label="Secured of requested"
+            value={k?.pct_secured == null ? dash : `${k.pct_secured}%`} />
+        </Band>
+      </div>
+
+      <div className="flex w-full shrink-0 flex-col gap-3 lg:w-80">
+        {/* The manual comes FIRST in the rail and the live feed sits below it (owner,
+            2026-11-09): somebody who needs the manual needs it before they need another
+            opportunity to read. */}
+        <Card className="p-5">
           <h3 className="flex items-center gap-2 font-semibold text-brand-700">
             <BookOpen className="h-4.5 w-4.5 text-accent-600" strokeWidth={1.9} />
             New to RFPIS? Start with the manual
           </h3>
           <p className="mt-1.5 text-sm text-ink-600">
-            Step by step through every page, plus the slides from the team training. Both are also
-            under the account menu → <strong>Help</strong>.
+            Step by step through every page, plus the slides from the team training.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <LinkButton href="/help/RFPIS_User_Manual.pdf" download
@@ -109,45 +140,7 @@ export default function HomePage({ user }: { user: User }) {
           </div>
         </Card>
 
-        <Card className="mt-3">
-          <details className="group p-5">
-            <summary className="flex cursor-pointer list-none items-center justify-between font-medium text-ink-800">
-              How to use this app
-              <ChevronDown className="h-4 w-4 text-ink-400 transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="mt-4 space-y-3 text-sm leading-relaxed text-ink-600">
-              <p className="font-semibold text-ink-800">Weekly rhythm</p>
-              <ol className="list-decimal space-y-1.5 pl-5">
-                <li><strong>Friday morning</strong> — the automated scan pulls new opportunities from the
-                  donor sources into the shared store, the bell shows <strong>Scan completed</strong>,
-                  and everyone is emailed any new Proceed / Park calls. Open <strong>Pipeline →
-                  Screened</strong> and click <strong>Eligibility Scan</strong> to screen against your
-                  organisation.</li>
-                <li><strong>Friday → Sunday</strong> — anyone who finds an RFP outside the scan submits it
-                  via <strong>Submit New Funding</strong> on the Screened tab. It is scored and tagged to
-                  the current review week.</li>
-                <li><strong>Monday</strong> — the team call. Walk through <strong>Screened</strong>, open
-                  <strong> Review</strong> for each RFP and record the outcome with <strong>Update
-                  Decision</strong>. Capture notes and agreed actions in <strong>Actions →
-                  Meetings</strong>, linked to the RFP.</li>
-                <li><strong>Mid-week</strong> — proposal teams work the <strong>Track</strong> tab: stage,
-                  progress, next action, deadlines. Log donor calls in <strong>Actions →
-                  Engagements</strong> and close finished items in <strong>Actions → Pending</strong>.</li>
-              </ol>
-              <p className="font-semibold text-ink-800">Roles</p>
-              <ul className="list-disc space-y-1 pl-5">
-                <li><strong>Admin</strong> — everything, plus users, scan preferences and records
-                  (<strong>Settings</strong>).</li>
-                <li><strong>Reviewer / Contributor</strong> — screening, decisions, RFP edits,
-                  submissions, meeting notes and engagements; no delete, no Settings.</li>
-              </ul>
-            </div>
-          </details>
-        </Card>
-      </div>
-
-      <div className="w-full shrink-0 lg:w-80">
-        <OpportunityRail tenantName={user.view?.name ?? user.tenant?.name} />
+        <OpportunityRail tenantName={user.view?.name ?? user.tenant?.name} dashboard />
       </div>
     </div>
   );
