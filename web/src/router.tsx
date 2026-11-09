@@ -13,25 +13,43 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
  * App.py::_pages, in rail order. `rail` = shown in the sidebar.
  *
  * The URL paths are the Streamlit app's `url_path`s and must stay as they are until
- * cut-over, so a link copied from one app opens the same page in the other. The TITLES are
- * what a user reads, and those are ours: one name per page, used in the rail, on Home and
- * in the page heading alike. "Pipelines"/"Pipeline" and "Grants"/"Applied funding" were
- * the same page under two names, which reads as two products.
+ * cut-over, so a link copied from one app opens the same page in the other. Keep the keys
+ * when a title changes: they ARE the slugs, and bookmarks and emailed links resolve
+ * through them.
+ *
+ * THE TITLES ARE THE OWNER'S, as of 2026-11-09, renamed on the Streamlit side first and
+ * carried across verbatim rather than re-derived. One page under two names across two apps
+ * reads as two products, which is what "Pipelines"/"Pipeline" and "Grants"/"Applied
+ * funding" used to do.
+ *
+ * ONLY `rail: true` PUTS A PAGE IN THE SIDEBAR. The seven below without it — opportunity,
+ * profile, help, search and the three public auth pages — exist so their URLs resolve: an
+ * emailed activation link, a feed item's /opportunity deep link, the top-right menu. The
+ * Streamlit app registers the same set and then HIDES them with CSS, which failed in the
+ * COLLAPSED rail, where the icons are still painted: the owner saw a column of unexplained
+ * glyphs. Rendering from this flag cannot fail that way — a page without it never reaches
+ * the DOM, collapsed or not. Do not reintroduce a hide.
  */
 export const PAGES: Record<PageKey, PageInfo> = {
   home: { title: "Home", icon: "🏠", rail: true },
-  pipelines: { title: "Pipeline", icon: "📚", rail: true },
+  pipelines: { title: "Funding Pipeline", icon: "📚", rail: true },
+  // STILL A RAIL ITEM HERE, where on the Streamlit side it no longer is — there it became
+  // the "Outcomes" tab of Funding Pipeline. The React Pipeline does have an Outcome stage,
+  // but that covers only what a funder has ANSWERED, while this page also holds the
+  // pending applications, the per-funder breakdown and the reporting tab. Folding it in
+  // would drop function rather than move it, so it is the owner's call. /grants resolves
+  // either way.
   grants: { title: "Funding", icon: "💼", rail: true },
-  actions: { title: "Actions", icon: "🗒️", rail: true },
-  report: { title: "Report", icon: "📊", rail: true },
-  donors: { title: "Donors", icon: "🗺️", rail: true },
-  // Organization and Submit are registered in the rail and not hidden by the header CSS.
-  organization: { title: "Organisation", icon: "🏢", rail: true },
-  "submit-new-rfp": { title: "Submit", icon: "📝", rail: true },
+  actions: { title: "Meeting Actions", icon: "🗒️", rail: true },
+  report: { title: "Fundraising Report", icon: "📊", rail: true },
+  donors: { title: "Donor Intelligence", icon: "🗺️", rail: true },
+  organization: { title: "My Organization", icon: "🏢", rail: true },
+  "submit-new-rfp": { title: "Submit New RFP", icon: "📝", rail: true },
   opportunity: { title: "Opportunity", icon: "🎯" },
   profile: { title: "Profile", icon: "👤" },
   help: { title: "Help", icon: "❓" },
   search: { title: "Search", icon: "🔍" },
+  // Deliberately in the rail: admins get Settings as a first-class item, not a hidden one.
   settings: { title: "Settings", icon: "⚙️", rail: true, adminOnly: true },
   login: { title: "Sign in", icon: "🔐", public: true },
   "activate-account": { title: "Activate", icon: "🔑", public: true },
