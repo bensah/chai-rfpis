@@ -246,13 +246,53 @@ def alignment_score(values: Mapping[str, Any]) -> float:
     return max(0.0, min(100.0, round(score, 1)))
 
 
+# The five MUSTs and four PREFERs, in the order `CRITERIA` declares them. The Review
+# page labels them "MUST 1 · …" through "PREFER 9 · …" off these same slices.
+MUST_KEYS = CRITERIA[:5]
+PREFER_KEYS = CRITERIA[5:]
+
+
+def decline_flags(values: Mapping[str, Any]) -> bool:
+    """The OWNER'S RULE (2026-08-17) for whether a call carries a decline flag:
+
+        any ONE failing MUST                        -> True
+        all MUSTs pass, but >= 2 failing PREFERs    -> True
+        otherwise                                   -> False
+
+    The flag is about FAILURE, not the absence of success: only a measured 0 counts.
+    "Not sure" and "Partial" are not failures, the same principle the rest of the model
+    follows. See tests/test_decline_flags_rule.py for the reasoning and the measurement.
+
+    THE CALLER CHOOSES THE VALUES, AND THAT IS THE WHOLE POINT. Scan-time scoring passes
+    what it derived that day; a screen showing the LIVE derivation must pass the live
+    values, or it prints a flag that contradicts the criteria directly above it. That is
+    exactly what the Review page did: every MUST green on screen beside "Decline flags:
+    Yes", because the grid was live and the flag was a column written at scan time.
+    """
+    musts_failed = sum(1 for m in MUST_KEYS if criterion_score(values.get(m)) == 0)
+    if musts_failed:
+        return True
+    prefers_failed = sum(1 for p in PREFER_KEYS if criterion_score(values.get(p)) == 0)
+    return prefers_failed >= 2
+
+
 def auto_recommendation(score: float, decline_flags_present: bool) -> str:
-    """Decline-flag override beats score; thresholds from scoring_weights.yaml."""
+    """Decline-flag override beats score; thresholds from scoring_weights.yaml.
+
+    The defaults match the YAML and auto_scorer.recommend_from_composite deliberately: a
+    missing or partial config must not quietly restore the old 70/45 banding, which is the
+    discrepancy this function was half of. See the note in config/scoring_weights.yaml.
+
+    This remains a COARSER rule than the canonical one — it has no fatal-factor gate and no
+    below-award-floor cap, because it is not given the inputs those need. Both of those only
+    ever downgrade, so with the thresholds aligned this answer is an upper bound on the
+    canonical one rather than a contradiction of it.
+    """
     if decline_flags_present:
         return "Decline"
     th = _load_config().get("thresholds", {}) or {}
-    proceed = float(th.get("proceed", 70))
-    park = float(th.get("park", 45))
+    proceed = float(th.get("proceed", 90))
+    park = float(th.get("park", 70))
     if score >= proceed:
         return "Proceed"
     if score >= park:

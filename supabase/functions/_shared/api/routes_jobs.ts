@@ -28,19 +28,54 @@ const KINDS: Record<string, JobKind> = {
   // A no-op that proves the loop end to end: queue → Actions → runner → row → browser.
   // Lives on Settings → Accounts → Deployment, which only a super_user sees.
   ping: { allowed: (u) => isSuperUser(u), group: (_c, id) => `web-job-${id}` },
+
+  /**
+   * Recompute this tenant's stored scores — one row after a save, or the whole table after
+   * a profile edit. The server owning the score (owner, 2026-10-28) is this job: the same
+   * Python the scan runs, on Actions, writing alignment_score and auto_recommendation
+   * back where every reader already looks.
+   *
+   * Anyone who can edit an RFP can cause a re-score of what they edited, so the gate is
+   * simply a signed-in member — the same reach the edit itself has. One group per tenant,
+   * so a save queued while a full re-score is running waits rather than racing it to the
+   * same rows.
+   */
+  rescore: {
+    allowed: () => true,
+    group: (ctx) => `rescore-${ctx.scope.viewTenantId ?? ctx.scope.tenantId ?? "none"}`,
+  },
+
+  /**
+   * The two consequences of a human decision that live in Python: the ML training label
+   * (`core/decision_log.py`) and the scan's tombstone (`core/seen_ledger.py`, whose
+   * column map is probed from the live table and so cannot be guessed at from here).
+   *
+   * Queued by POST /pipelines/decision, with the same gate as the decision itself.
+   * Its own group rather than the re-score's: these are an append-only log and an upsert
+   * keyed by uid, so they race nothing, and sharing a group would have a decision wait
+   * behind a whole-tenant re-score for no reason.
+   */
+  record_decision: {
+    allowed: () => true,
+    group: (ctx) => `decision-${ctx.scope.viewTenantId ?? ctx.scope.tenantId ?? "none"}`,
+  },
 };
 
 const JOB_COLUMNS = "id,kind,status,progress,message,result,created_at,started_at,finished_at,run_url,created_by,tenant_id";
 
 export function createJobRoutes(db: Db, dispatch: Dispatch | null) {
-  async function create(req: Request, ctx: Ctx): Promise<Response> {
-    const b = await body(req);
-    const kind = str(b.kind);
+  /**
+   * Write the row and ask Actions to run it. Shared by the public route below and by any
+   * route that queues work as a SIDE EFFECT of something else — the editor's save queues a
+   * rescore — so there is one place that knows how a job reaches the runner.
+   *
+   * Never throws. A job that could not be dispatched is recorded as failed rather than
+   * lost, and the caller decides whether that matters: it is fatal to `POST /jobs`, whose
+   * whole purpose was to start it, and not to a save, which succeeded.
+   */
+  async function enqueue(kind: string, params: Json, ctx: Ctx): Promise<string | null> {
     const spec = KINDS[kind];
-    if (!spec) return json({ error: `Unknown job kind '${kind}'.` }, 400);
-    const u = ctx.user as PermUser;
-    if (!(await spec.allowed(u, ctx))) return json({ error: "You don't have access to this action." }, 403);
-    const params = b.params && typeof b.params === "object" && !Array.isArray(b.params) ? b.params : {};
+    if (!spec) return null;
     const tenantId = db.scopeTid(ctx.scope);
     const [row] = await db.service.insert("web_jobs", {
       kind, params, status: "queued", created_by: ctx.session.sub,
@@ -52,18 +87,31 @@ export function createJobRoutes(db: Db, dispatch: Dispatch | null) {
         status: "failed", message: "Background jobs are not configured on this server.",
         finished_at: new Date().toISOString(),
       });
-    } else {
-      try {
-        await dispatch(id, spec.group(ctx, id));
-        await db.service.update("web_jobs", `id=eq.${q(id)}&status=eq.queued`, { status: "dispatched" });
-      } catch (e) {
-        console.error("job dispatch failed", id, e);
-        await db.service.update("web_jobs", `id=eq.${q(id)}`, {
-          status: "failed", message: "Could not start the background job. Try again.",
-          finished_at: new Date().toISOString(),
-        });
-      }
+      return id;
     }
+    try {
+      await dispatch(id, spec.group(ctx, id));
+      await db.service.update("web_jobs", `id=eq.${q(id)}&status=eq.queued`, { status: "dispatched" });
+    } catch (e) {
+      console.error("job dispatch failed", id, e);
+      await db.service.update("web_jobs", `id=eq.${q(id)}`, {
+        status: "failed", message: "Could not start the background job. Try again.",
+        finished_at: new Date().toISOString(),
+      });
+    }
+    return id;
+  }
+
+  async function create(req: Request, ctx: Ctx): Promise<Response> {
+    const b = await body(req);
+    const kind = str(b.kind);
+    const spec = KINDS[kind];
+    if (!spec) return json({ error: `Unknown job kind '${kind}'.` }, 400);
+    const u = ctx.user as PermUser;
+    if (!(await spec.allowed(u, ctx))) return json({ error: "You don't have access to this action." }, 403);
+    const params = b.params && typeof b.params === "object" && !Array.isArray(b.params) ? b.params : {};
+    const id = await enqueue(kind, params as Json, ctx);
+    if (!id) return json({ error: `Unknown job kind '${kind}'.` }, 400);
     return json({ job: await read(id) }, 202);
   }
 
@@ -83,7 +131,7 @@ export function createJobRoutes(db: Db, dispatch: Dispatch | null) {
     return json({ job });
   }
 
-  return { create, get };
+  return { create, get, enqueue };
 }
 
 /** Dispatch through the GitHub REST API (production). */

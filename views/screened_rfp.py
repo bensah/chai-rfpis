@@ -18,7 +18,7 @@ import streamlit as st
 
 from core import dropdowns, settings
 from core.currency import format_money
-from core.review_week import all_weeks_for_year, review_week_label, upcoming_review_week_label
+from core.review_week import all_weeks_for_year, previous_review_week_label
 from core.records import clean_df, drop_concluded
 from db.supabase_client import get_client
 
@@ -63,7 +63,9 @@ with _h_scan:
         run_screening_now(triggered_by=f"match:{_who}")
         st.rerun()
 all_weeks = all_weeks_for_year(year)
-default_week = review_week_label()
+# Opens on the week that ENDED last Sunday, not the one running now — Monday's review
+# goes through what the week just gone turned up. See review_week.previous_review_week_label.
+default_week = previous_review_week_label()
 if default_week not in all_weeks:
     all_weeks = [default_week] + all_weeks
 

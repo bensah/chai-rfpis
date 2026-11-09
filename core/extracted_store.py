@@ -14,7 +14,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from db.supabase_client import get_client
+from db.supabase_client import fetch_all, get_client
 
 log = logging.getLogger(__name__)
 
@@ -116,16 +116,21 @@ def recent_uids(days: int) -> set[str]:
     try:
         cutoff = (datetime.now(timezone.utc)
                   - timedelta(days=max(0, int(days or 0)))).isoformat()
-        rows = (get_client().table(_TABLE).select("uid,updated_at,scraped_at")
-                .gte("updated_at", cutoff).execute().data or [])
+        # Every fresh row, in pages. This set decides what NOT to re-extract, so a uid
+        # missing from it is re-extracted at full LLM cost. An unpaged read caps at 1000
+        # whatever the window holds.
+        rows = fetch_all(lambda: get_client().table(_TABLE)
+                         .select("uid,updated_at,scraped_at")
+                         .gte("updated_at", cutoff), order="uid")
         out = {r["uid"] for r in rows if r.get("uid")}
         # Rows whose updated_at is NULL are excluded by the server-side .gte above;
         # sweep those in with a scraped_at fallback so a freshly-inserted row that
         # never got an updated_at stamp still counts as fresh.
         try:
-            more = (get_client().table(_TABLE).select("uid,updated_at,scraped_at")
-                    .is_("updated_at", "null").gte("scraped_at", cutoff)
-                    .execute().data or [])
+            more = fetch_all(lambda: get_client().table(_TABLE)
+                             .select("uid,updated_at,scraped_at")
+                             .is_("updated_at", "null").gte("scraped_at", cutoff),
+                             order="uid")
             out |= {r["uid"] for r in more if r.get("uid")}
         except Exception:
             pass
@@ -140,12 +145,25 @@ def list_extracted(*, status: str | None = None, source: str | None = None,
     """List raw extracted rows (newest first), optionally filtered by funding_status
     / source. The per-tenant scorer consumes this."""
     try:
-        q = get_client().table(_TABLE).select("*")
-        if status:
-            q = q.eq("funding_status", status)
-        if source:
-            q = q.eq("source", source)
-        return (q.order("scraped_at", desc=True).limit(limit).execute().data or [])
+        def _q():
+            # A FRESH builder per page. `.range()` cannot be re-applied to a used one, so
+            # closing over a single query would re-read the same window forever.
+            q = get_client().table(_TABLE).select("*")
+            if status:
+                q = q.eq("funding_status", status)
+            if source:
+                q = q.eq("source", source)
+            return q
+
+        # EVERY row, then newest-first, then the caller's cap — in that order, and the
+        # order matters. A caller asking for 5000 was handed 1000 by PostgREST, a third of
+        # `extracted_solicitations` missing. But paging cannot itself be stopped at `limit`:
+        # fetch_all walks the table by uid, so the first N by uid are not the newest N, and
+        # trimming during the walk would quietly change WHICH rows come back. Reading the
+        # whole table is ~1,600 rows and two requests.
+        rows = fetch_all(_q, order="uid")
+        rows.sort(key=lambda r: str(r.get("scraped_at") or ""), reverse=True)
+        return rows[:int(limit)] if limit else rows
     except Exception as exc:
         log.debug("extracted_store.list failed: %s", exc)
         return []

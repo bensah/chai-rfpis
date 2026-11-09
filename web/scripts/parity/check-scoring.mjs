@@ -17,6 +17,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadEnv, requireEnv } from "./_env.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
@@ -24,15 +25,6 @@ const web = path.resolve(root, "web");
 const art = path.join(web, ".parity");
 mkdirSync(art, { recursive: true });
 
-const env = {};
-for (const dir of [process.cwd(), root]) {
-  const f = path.join(dir, ".env");
-  if (!existsSync(f)) continue;
-  for (const line of readFileSync(f, "utf8").split(/\r?\n/)) {
-    const m = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m && !(m[1] in env)) env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, "$2");
-  }
-}
 const venv = path.join(root, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
 const python = process.env.RFPIS_PYTHON || (existsSync(venv) ? venv : "python");
 const py = (args, opts = {}) => execFileSync(python, args, { encoding: "utf8", maxBuffer: 1 << 28, ...opts });
@@ -41,6 +33,7 @@ const mod = (p) => import(pathToFileURL(path.join(root, p)).href);
 const { createDb } = await mod("supabase/functions/_shared/api/db.ts");
 const { createPhase1Routes } = await mod("supabase/functions/_shared/api/routes_phase1.ts");
 
+const env = requireEnv(root, "check-scoring");
 const db = createDb({ supabaseUrl: env.SUPABASE_URL, supabaseKey: env.SUPABASE_KEY, jwtSecret: env.SUPABASE_JWT_SECRET });
 const routes = createPhase1Routes(db);
 
@@ -153,6 +146,65 @@ for (const t of tenants) {
     console.log(`${t.slug ?? tid}: rail + ${n} opportunities agree (inputs differ only in ` +
       "list order, which featured_score normalises away)");
   }
+}
+
+// ── 3. The rail, ranked in TypeScript, against the Python that owns the rules ─
+//
+// The two checks above compare Python to Python across the snapshot seam. This one
+// compares the TypeScript that now RANKS the rail
+// (supabase/functions/_shared/api/opportunity_feed.ts) against core/opportunity_feed.py
+// over the same live rows — the only thing standing between a faithful port and a card
+// that quietly orders itself differently.
+//
+// It re-runs the Python per tenant rather than reusing result-app.json, because that file
+// is overwritten by each tenant in the loop above and only the last one survives.
+console.log("");
+for (const t of tenants) {
+  const tid = String(t.id);
+  const ctx = ctxFor(tid);
+  const snapshot = await body(await routes.snapshot(new Request("https://x"), ctx));
+  const feedRows = await body(await routes.feed(new Request("https://x"), ctx));
+  writeFileSync(path.join(art, "snapshot.json"), JSON.stringify(snapshot));
+  writeFileSync(path.join(art, "feed.json"), JSON.stringify(feedRows));
+  for (let i = 0; i < 10; i++) {
+    const p = path.join(art, `opportunity-${i}.json`);
+    if (existsSync(p)) rmSync(p);
+  }
+  py([path.join(here, "scoring_py.py"), art], { cwd: root, stdio: "pipe" });
+  const want = JSON.parse(readFileSync(path.join(art, "result-app.json"), "utf8")).feed;
+  const got = await body(await routes.opportunitiesFeed(new Request("https://x"), ctx));
+
+  // Floats are compared with a tolerance. _prominence and _score are sums of log10 and
+  // division in both languages, and the last ulp can differ without changing any order —
+  // which is why the ORDER is compared exactly, below, and the value only loosely.
+  const near = (x, y) => typeof x === "number" && typeof y === "number"
+    ? Math.abs(x - y) < 1e-9 : JSON.stringify(x) === JSON.stringify(y);
+
+  for (const card of ["featured", "top_matches", "top_funding", "other"]) {
+    const w = want[card] ?? [], g = got[card] ?? [];
+    if (w.length !== g.length) {
+      fail(`${t.slug ?? tid} ts-rail.${card}: python=${w.length} ts=${g.length} items`);
+      continue;
+    }
+    // Order first: the cards ARE a ranking, so a right set in a wrong order is wrong.
+    const wu = w.map((i) => String(i.uid ?? i.title)).join("|");
+    const gu = g.map((i) => String(i.uid ?? i.title)).join("|");
+    if (wu !== gu) {
+      fail(`${t.slug ?? tid} ts-rail.${card} order: python=${wu.slice(0, 160)} ts=${gu.slice(0, 160)}`);
+      continue;
+    }
+    for (let i = 0; i < w.length; i++) {
+      for (const k of new Set([...Object.keys(w[i]), ...Object.keys(g[i])])) {
+        if (!near(w[i][k], g[i][k])) {
+          fail(`${t.slug ?? tid} ts-rail.${card}[${i}].${k}: ` +
+            `python=${JSON.stringify(w[i][k])} ts=${JSON.stringify(g[i][k])}`);
+        }
+      }
+    }
+  }
+  const counts = ["featured", "top_matches", "top_funding", "other"]
+    .map((c) => `${c}=${(got[c] ?? []).length}`).join(" ");
+  console.log(`${t.slug ?? tid}: TypeScript rail matches Python (${counts})`);
 }
 
 console.log(diffs

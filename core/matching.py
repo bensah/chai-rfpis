@@ -31,8 +31,12 @@ from core.scorer import alignment_score, criterion_score
 
 CRITERIA_WEIGHT = 1.00      # Bid Strength = the 9 weighted criteria (100%)
 EXTRAS_WEIGHT = 0.00        # donor-org extras dropped (duplicated the criteria)
-PROCEED_AT = 70.0          # composite ≥ → Proceed
-PARK_AT = 45.0             # composite ≥ → Park, else Decline
+# 90/70, matching auto_scorer.recommend_from_composite and config/scoring_weights.yaml.
+# These were 70/45, tuned when `composite` still carried the 20% donor-org extras above.
+# Dropping the extras (EXTRAS_WEIGHT = 0.00) changed what the number means and these were
+# never retuned, so the same score was banded two ways. See scoring_weights.yaml.
+PROCEED_AT = 90.0          # composite ≥ → Proceed
+PARK_AT = 70.0             # composite ≥ → Park, else Decline
 
 CRITERIA = (
     "qualification", "strategic_fit", "capacity", "geographic_fit", "cofinancing",

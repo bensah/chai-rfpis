@@ -111,8 +111,15 @@ def _usd(rfp: dict) -> float | None:
     if not val:
         return None
     try:
-        from core.dropdowns import usd_rate
-        return val * float(usd_rate(rfp.get("currency") or "USD"))
+        from core.dropdowns import usd_rate_known
+        _rate = usd_rate_known(rfp.get("currency") or "USD")
+        if _rate is None:
+            # An unplaceable currency is an unknown award SIZE, not a USD one. Converting
+            # at 1.0 here would hand PREFER-6 a confident wrong number to measure against
+            # the org's band; returning None leaves the size components "Not sure" and
+            # excluded, which is what the criteria already do with a missing value.
+            return None
+        return val * float(_rate)
     except Exception:
         return val
 

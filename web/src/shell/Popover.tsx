@@ -7,8 +7,12 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
  */
 export default function Popover({
   label, title, badge, children, align = "right", width = "w-80", triggerClass = "",
+  placement = "down",
 }: {
   label: ReactNode; title: string; badge?: string | null; align?: "left" | "right";
+  /** "up" for a trigger near the bottom of the window - the account menu sits at the
+   *  foot of the sidebar, where a downward panel opens off the end of the screen. */
+  placement?: "down" | "up";
   width?: string; triggerClass?: string;
   children: (close: () => void) => ReactNode;
 }) {
@@ -47,7 +51,9 @@ export default function Popover({
       {open && (
         <div
           role="dialog" aria-label={title}
-          className={`absolute top-[calc(100%+0.5rem)] z-50 ${align === "right" ? "right-0" : "left-0"} ${width} max-w-[calc(100vw-2rem)] rounded-xl border border-ink-200 bg-white p-4 text-ink-800 shadow-float`}
+          className={`absolute z-50 ${
+            placement === "up" ? "bottom-[calc(100%+0.5rem)]" : "top-[calc(100%+0.5rem)]"
+          } ${align === "right" ? "right-0" : "left-0"} ${width} max-w-[calc(100vw-2rem)] rounded-xl border border-ink-200 bg-white p-4 text-ink-800 shadow-float`}
         >
           {children(() => setOpen(false))}
         </div>

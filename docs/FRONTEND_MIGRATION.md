@@ -445,6 +445,55 @@ Once it is off, only Cloudflare Pages and Actions read the repo. Two things to d
 - Watch Actions minutes for the first month — the free allowance drops from unlimited to
   2,000 a month. Trim `tests.yml` first if it gets close.
 
+## The scan and the re-score disagree — contained, not closed
+
+**Diagnosed 2026-10-29.** `auto_score` runs `_apply_criteria_keywords` after
+`derive_criteria`; `scripts/rescore_existing._evaluate` stops at `derive_criteria`. The two
+therefore read different criteria off the same row, and everything downstream follows.
+
+It was caught before it could matter. The server-side scoring job was about to use
+`_evaluate` — it is what the CLI runs, and its comment promises parity with a fresh scan.
+Measured across all 266 scored rows: the path the job now uses (`assess_row`) disagrees with
+the screens on **0**; the path it nearly used disagreed on **30**. One row in nine would have
+been given a score contradicting the number on its own screen, silently.
+
+So the job goes through `assess_row`, the same call Review, Screen, Records and the View
+modal already make. `tests/test_rescore_job_matches_the_screens.py` pins that.
+
+What remains is the CLI re-score, which still takes the diverging path. Nothing the server
+writes goes through it. Fixing `_evaluate` means porting the keyword pass — real work with
+its own risk, to be done deliberately rather than as a side effect. **Standing difference,
+owner informed.**
+
+## Open: the scan and the re-score disagree
+
+`web/scripts/parity/check-rescore.mjs` (2026-10-28) compares the two paths that can write a
+row's `alignment_score` and `auto_recommendation`:
+
+- `core.auto_scorer.auto_score` — the scan, and what every live screen recomputes;
+- `scripts.rescore_existing._evaluate` — what a re-score runs over stored rows, whose comment
+  promises "Parity with auto_score's post-rules so a re-score never diverges from a fresh scan".
+
+Over 98 live rows across 6 tenants, **with the criteria re-derived on both sides so only the
+code differs**: 10 rows get a different recommendation (6 Park→Decline, 3 Proceed→Park,
+1 Decline→Park) and 19 a different score, some by more than 20 points.
+
+The check is now aimed at the seam the scoring move actually introduces, and reports the CLI
+difference without failing on it:
+
+- **It does not compare the job's path with the screens' path.** Both call `assess_row`, so
+  that comparison is a function against itself — green by construction and worth nothing. The
+  Python test above pins it structurally instead.
+- **It does not fail on staleness.** A stored score older than the current profile is stale,
+  not wrong, and running the job cures it.
+- **It fails on a stored score that claims to be current and is not** — tagged with the profile
+  signature in force, yet disagreeing with a fresh computation. That is what can go wrong once
+  nothing recomputes at read time. It needs migration 101's `scored_at` / `score_profile_sig`,
+  which are **written but not yet applied**, so the section says it cannot run rather than
+  passing silently.
+- **It reports the CLI difference** (10 of 98 rows) without failing. A check that is always red
+  stops being read, which is the same disease as one that is green and lying.
+
 ## Parity evidence, per phase
 
 - A comparison script per logic area under `web/scripts/parity/`. Each pulls live rows

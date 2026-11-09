@@ -16,7 +16,8 @@ import streamlit as st
 from core import dropdowns, settings
 from core.review_week import all_weeks_for_year, week_bounds
 from core.records import clean_df
-from db.supabase_client import get_client
+from core.pipeline import is_active_proceed
+from db.supabase_client import get_client, fetch_all
 from core.cache_scope import scope_key
 
 # auth handled by wrapper page
@@ -128,16 +129,34 @@ r4.metric("Chair", _short_name((rota_row or {}).get("meeting_chair")))
 # -----------------------------------------------------------------------------
 # Pre-fetch options used by both the modal and the table below
 # -----------------------------------------------------------------------------
-proceed_rfps = (
-    sb.table("rfp_submissions")
-    .select("uid,opportunity_title,funding_agency")
-    .in_("decision", ["Proceed", "Proceed as sub"])
-    .eq("is_duplicate", False)
-    .order("call_submission_deadline")
-    .execute()
-    .data
-    or []
-)
+# A note is an action item on something the team can still do something about, so the
+# dropdown offers the ACTIVE pipeline — the same set the Tracking page shows, via the
+# shared rule in core.pipeline. This read used to filter on decision + is_duplicate
+# alone, which left every Proceed RFP ever screened in the list: on 2026-11-02 that was
+# 36 options of which 1 was live, sorted by deadline ascending so the oldest came first
+# and the single active call sat at the bottom. The default selection was a proposal
+# submitted in November 2025 and already Approved.
+#
+# Fetched unfiltered on the three state columns and narrowed in Python rather than in
+# PostgREST: "not submitted" spans three columns and "no deadline counts as not passed"
+# needs an OR against NULL, and expressing that as a query string would put a second,
+# differently-worded copy of the rule in this file — the drift this is fixing.
+proceed_rfps = [
+    r for r in fetch_all(
+        lambda: sb.table("rfp_submissions")
+        .select("uid,opportunity_title,funding_agency,decision,is_duplicate,"
+                "call_submission_deadline,progress_status,donor_decision,date_completed")
+        .ilike("decision", "Proceed%"),
+        order="uid",
+    )
+    if is_active_proceed(r)
+]
+# Soonest deadline first — a meeting works through what is closing, and this is the
+# order the Tracking table uses. Nulls last: an undated call is not urgent, but the
+# rule above deliberately keeps it in the list.
+proceed_rfps.sort(key=lambda r: (
+    str(r.get("call_submission_deadline") or "9999-12-31")[:10], r.get("uid") or ""))
+
 rfp_options = {"(none)": None}
 for r in proceed_rfps:
     label = f"{r['uid']} — {(r.get('opportunity_title') or '')[:70]}"
@@ -154,10 +173,25 @@ def add_note_dialog() -> None:
     st.caption("All fields are required.")
     # Drop the "(none)" option — Linked RFP is required.
     rfp_choices = [k for k in rfp_options.keys() if k != "(none)"]
+    if not rfp_choices:
+        # An empty selectbox would otherwise render as a blank, clickable control and the
+        # note would fail validation with "Linked RFP is required" and no way to satisfy
+        # it. Say where the list comes from instead, so an empty one reads as a true
+        # statement about the pipeline rather than a broken dropdown.
+        st.warning(
+            "No active funding opportunity to link a note to. A note can only be taken "
+            "against an RFP that is marked **Proceed**, has not been submitted, and "
+            "whose deadline has not passed — the same pipeline the Tracking page shows. "
+            "Record the decision or deadline on the Data page and it will appear here."
+        )
+        if st.button("Close", width='stretch', key="add_note_no_rfps"):
+            st.rerun()
+        return
     rfp_pick = st.selectbox(
         "Linked RFP (Proceed) *",
         rfp_choices,
-        help="Only RFPs the team has agreed to pursue are shown.",
+        help="Active opportunities only: decision Proceed, not yet submitted, and the "
+             "deadline still ahead. Soonest deadline first. Matches the Tracking page.",
     )
     remarks = st.text_area("Issues *", height=90)
     actions = st.text_area("Actions / recommendations *", height=110)
@@ -214,13 +248,18 @@ def add_note_dialog() -> None:
 @st.dialog("Edit meeting note", width="large")
 def edit_note_dialog(note: dict) -> None:
     """Same fields as Add, prefilled. The linked RFP keeps its current value even when that
-    RFP has since left Proceed, so editing an old note never silently relinks it."""
+    RFP has since left the active pipeline, so editing an old note never silently
+    relinks it — most historical notes point at an RFP that has since been submitted or
+    run past its deadline, and their link must survive an edit to the owner or the text."""
     st.caption(f"Note from the meeting of {note.get('meeting_date') or '—'}.")
     choices = [k for k in rfp_options.keys() if k != "(none)"]
     cur_uid = note.get("rfp_uid")
     cur_label = next((k for k, v in rfp_options.items() if v and v == cur_uid), None)
     if cur_uid and not cur_label:
-        cur_label = f"{cur_uid} — (no longer Proceed)"
+        # Submitted, past deadline, discontinued or no longer Proceed — the dropdown
+        # carries only the active set, so say "no longer active" rather than naming one
+        # of the four reasons and being wrong about which.
+        cur_label = f"{cur_uid} — (no longer active)"
         rfp_options[cur_label] = cur_uid
         choices = [cur_label] + choices
     rfp_pick = st.selectbox("Linked RFP (Proceed) *", choices,

@@ -5,14 +5,15 @@
  * catalogue, so it can surface a call screening never reached), then Top Matches, Top
  * Funding and Also Interesting from the tenant's own pipeline.
  *
- * The ranking is not re-implemented here. The rows come from the API and go straight to the
- * Python engine (core/opportunity_feed.py), which is what Streamlit runs.
+ * The ranking is not re-implemented here, and it no longer runs in the browser either: the
+ * server ranks the cards (supabase/functions/_shared/api/opportunity_feed.ts, a port of
+ * core/opportunity_feed.py) and this renders what it returns. That is possible because the
+ * ranking needs no scoring — it orders values already stored on each row — so the rail
+ * costs a single request instead of a Python runtime boot.
  */
 import { useEffect, useState } from "react";
 import { ExternalLink, Loader2, Radio } from "lucide-react";
-import { fetchFeedRows } from "../api";
-import { scoreFeed, useEngine } from "../scoring/engine";
-import type { FeedItem, FeedResult } from "../scoring/protocol";
+import { fetchOpportunityFeed, type OpportunityFeed, type OpportunityFeedItem } from "../api";
 import { hrefOf, Link } from "../router";
 import { Card, Eyebrow } from "../ui";
 
@@ -36,7 +37,7 @@ export function deadlineChip(days: number | null): { text: string; className: st
   return { text: `${days}d`, className: "text-ink-500" };
 }
 
-function Item({ item }: { item: FeedItem }) {
+function Item({ item }: { item: OpportunityFeedItem }) {
   const title = item.title.length > 70 ? `${item.title.slice(0, 70)}…` : item.title;
   const uid = String(item.uid ?? "").trim();
   const amount = fmtAmount(item.amount, item.currency);
@@ -72,7 +73,7 @@ function Item({ item }: { item: FeedItem }) {
 }
 
 function FeedCard({ title, help, items, empty }: {
-  title: string; help: string; items: FeedItem[] | undefined; empty: string;
+  title: string; help: string; items: OpportunityFeedItem[] | undefined; empty: string;
 }) {
   return (
     <Card className="mb-3 p-4">
@@ -91,16 +92,22 @@ function FeedCard({ title, help, items, empty }: {
   );
 }
 
-export default function OpportunityRail({ tenantName }: { tenantName?: string | null }) {
-  const [feed, setFeed] = useState<FeedResult | null>(null);
+/** `dashboard` drops "Featured for you" and leads with Top Matches (owner,
+ *  2026-11-09). Featured ranks the WHOLE catalogue, including calls screening never
+ *  reached, which is the right thing to offer while browsing and the wrong thing to put
+ *  at the top of the page somebody opens to see where their own work stands. Every other
+ *  page keeps it as it was. */
+export default function OpportunityRail(
+  { tenantName, dashboard = false }:
+  { tenantName?: string | null; dashboard?: boolean },
+) {
+  const [feed, setFeed] = useState<OpportunityFeed | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const engine = useEngine();
   const who = tenantName?.trim() || "your organisation";
 
   useEffect(() => {
     let live = true;
-    fetchFeedRows()
-      .then((rows) => scoreFeed(rows))
+    fetchOpportunityFeed()
       .then((r) => live && setFeed(r))
       .catch((e: unknown) => live && setError(e instanceof Error ? e.message : "Feed unavailable."));
     return () => {
@@ -119,14 +126,16 @@ export default function OpportunityRail({ tenantName }: { tenantName?: string | 
       {!feed && !error && (
         <p className="mb-3 flex items-center gap-1.5 text-xs text-ink-500">
           <Loader2 className="h-3 w-3 animate-spin text-accent-600" />
-          {engine.state === "starting" ? engine.detail : "Ranking opportunities…"}
+          Ranking opportunities…
         </p>
       )}
       {error && <p className="mb-3 text-xs text-ink-500 italic">Opportunity feed unavailable: {error}</p>}
-      <FeedCard title="🎯 Featured for you"
-        help={"Ranked from the whole catalogue against your geography, programme areas and the funders you " +
-          "work with — including calls your screening didn't pick up."}
-        items={feed?.featured} empty="Nothing to feature yet — run an extraction." />
+      {!dashboard && (
+        <FeedCard title="🎯 Featured for you"
+          help={"Ranked from the whole catalogue against your geography, programme areas and the funders you " +
+            "work with — including calls your screening didn't pick up."}
+          items={feed?.featured} empty="Nothing to feature yet — run an extraction." />
+      )}
       <FeedCard title="✅ Top Matches" help={`Strong fit for ${who} (Proceed / Park / high alignment).`}
         items={feed?.top_matches} empty="No strong matches yet." />
       <FeedCard title="💰 Top Funding" help={`Biggest / most-urgent calls ${who} is geographically eligible for.`}

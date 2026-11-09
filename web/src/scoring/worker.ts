@@ -1,11 +1,14 @@
 /**
  * The scoring engine, in a Web Worker.
  *
- * Screening, the opportunity rail and the decision aid are about 6,500 lines of Python that
- * every RFPIS surface depends on agreeing about. Rather than re-implement that in TypeScript
- * and let the two drift, this runs the repo's OWN `core/` modules under Pyodide: the code
- * that scores here is the code that scores in Streamlit, and
- * `web/scripts/parity/check-scoring.mjs` keeps proving it.
+ * The decision aid is several thousand lines of Python that every RFPIS surface depends on
+ * agreeing about. Rather than re-implement that in TypeScript and let the two drift, this
+ * runs the repo's OWN `core/` modules under Pyodide: the code that scores here is the code
+ * that scores in Streamlit, and `web/scripts/parity/check-scoring.mjs` keeps proving it.
+ *
+ * The opportunity rail used to be served from here too. It is ranked by the server now —
+ * measured to need no scoring at all, only an ordering of values already on the row — so
+ * this runtime is downloaded only when someone opens an opportunity.
  *
  * Only the data layer differs. `web/python/*_stub.py` replaces `db/supabase_client.py` and
  * `auth/tenant_context.py` with stand-ins that serve a snapshot the API has already fetched
@@ -17,7 +20,7 @@
  */
 /// <reference lib="webworker" />
 import type {
-  FeedRequest, OpportunityRequest, ScoringSnapshot, WorkerRequest, WorkerResponse,
+  OpportunityRequest, ScoringSnapshot, WorkerRequest, WorkerResponse,
 } from "./protocol";
 
 // Pinned: the engine must not change under us between deploys.
@@ -52,72 +55,6 @@ def _today():
         return datetime.strptime(str(_sc.SNAPSHOT.get("today"))[:10], "%Y-%m-%d").date()
     except Exception:
         return date.today()
-
-
-def _geo_reject():
-    """The org's hard geographic gate, exactly as views/opportunity_rail.py binds it."""
-    try:
-        from core.auto_scorer import geographic_exclusion_reject as _rej
-        from core.policies import get_policies
-        pol = get_policies()
-        return lambda r: _rej(r, pol)[0]
-    except Exception:
-        return None
-
-
-def _tenant_prefs():
-    """What this tenant SAYS it wants plus what it actually DOES — a line-for-line copy of
-    views/opportunity_rail._tenant_prefs, reading through the same get_client()."""
-    from db.supabase_client import get_client
-    prefs = {}
-    try:
-        from core.policies import get_policies
-        pol = get_policies() or {}
-        countries = (pol.get("countries") or {})
-        prefs["countries"] = countries.get("eligible") or []
-        prefs["broad_terms"] = countries.get("broad_terms") or []
-        _th = pol.get("themes")
-        prefs["themes"] = (_th.get("required_any") if isinstance(_th, dict) else _th) or []
-    except Exception:
-        pass
-    try:
-        from core import org_profile as _orgp
-        prof = _orgp.get_profile() or {}
-        prefs["known_funders"] = (list(prof.get("org_engaged_donors") or [])
-                                  + list(prof.get("org_active_donors") or []))
-    except Exception:
-        prefs.setdefault("known_funders", [])
-    try:
-        rows = (get_client().table("rfp_submissions")
-                .select("funding_agency,call_domain_areas,decision")
-                .limit(800).execute().data or [])
-        areas, funders = [], []
-        for r in rows:
-            if str(r.get("decision") or "").lower().startswith("proceed"):
-                funders.append(r.get("funding_agency"))
-                areas.extend(r.get("call_domain_areas") or [])
-        prefs["pursued_areas"] = [a for a in areas if a]
-        prefs["known_funders"] = (prefs.get("known_funders") or []) + [f for f in funders if f]
-    except Exception:
-        pass
-    return prefs
-
-
-def feed(payload):
-    """views/opportunity_rail.py's four cards."""
-    from core import opportunity_feed as _f
-    # The rail's own reads go through get_client(), so put this page's rows where the
-    # stand-in serves them from.
-    _sc.SNAPSHOT["rfp_submissions"] = payload["pipeline"]
-    _sc.SNAPSHOT["extracted_solicitations"] = payload["catalog"]
-    today = _today()
-    groups = _f.classify(payload["pipeline"], today=today, geo_reject=_geo_reject())
-    try:
-        featured = _f.featured(payload["catalog"], _tenant_prefs(),
-                               seen_keys=set(payload["seen"]), today=today)
-    except Exception:
-        featured = []
-    return {"featured": featured, **groups}
 
 
 def opportunity(payload):
@@ -213,7 +150,7 @@ def opportunity(payload):
 
 def dispatch(kind, payload_json):
     payload = json.loads(payload_json)
-    fn = {"feed": feed, "opportunity": opportunity}[kind]
+    fn = {"opportunity": opportunity}[kind]
     return json.dumps(fn(payload), default=str)
 `;
 
@@ -262,7 +199,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       if (!booting) throw new Error("The scoring engine has not been started.");
       await booting;
     }
-    const payload: FeedRequest | OpportunityRequest = msg.payload;
+    const payload: OpportunityRequest = msg.payload;
     py!.globals.set("payload_json", JSON.stringify(payload));
     py!.globals.set("call_kind", msg.kind);
     const out = (await py!.runPythonAsync("dispatch(call_kind, payload_json)")) as string;

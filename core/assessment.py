@@ -22,10 +22,14 @@ CRITERIA = (
 def assess_row(row: dict[str, Any], policies: dict | None = None) -> dict[str, Any]:
     """LIVE assessment of one rfp_submissions row.
 
-    Returns {alignment_score, auto_recommendation, probability, <9 criteria labels>},
-    computed via the SAME core scoring path as scan-time `auto_score` (so a value shown
-    on any screen matches the Review gauge). Falls back to the row's stored values on any
-    error, so a display never crashes on a scoring hiccup."""
+    Returns {alignment_score, auto_recommendation, probability, decline_flags_present,
+    <9 criteria labels>}, computed via the SAME core scoring path as scan-time
+    `auto_score` (so a value shown on any screen matches the Review gauge). Falls back to
+    the row's stored values on any error, so a display never crashes on a scoring hiccup.
+
+    `decline_flags_present` is returned for the same reason as the criteria: a surface
+    that shows live criteria beside the stored flag prints a contradiction once the two
+    drift (see core.scorer.decline_flags)."""
     from core.pipeline import prob_tier
     try:
         from core.auto_scorer import auto_score
@@ -36,6 +40,7 @@ def assess_row(row: dict[str, Any], policies: dict | None = None) -> dict[str, A
             "alignment_score": score,
             "auto_recommendation": res.get("auto_recommendation"),
             "probability": prob_tier(score, short=True),
+            "decline_flags_present": res.get("decline_flags_present"),
         }
         for k in CRITERIA:
             if res.get(k) is not None:

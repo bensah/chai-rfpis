@@ -23,7 +23,7 @@ except Exception:
 
 from core import source_registry as sr, type_detect as td   # noqa: E402
 from core.type_detect import SOLICITATION_TYPES               # noqa: E402
-from db.supabase_client import get_client                     # noqa: E402
+from db.supabase_client import fetch_all, get_client          # noqa: E402
 
 # legacy type value (old single vocab / human type_label) -> new axis
 _OLD_SOL = set(SOLICITATION_TYPES)                            # RFP/CFP/CFA/NOFO/…
@@ -47,20 +47,29 @@ def _backfill_table(sb, table: str, key: str, extra_cols: str,
                     event: str | None = None) -> list:
     human = {}  # link -> human type_label
     try:
-        for r in (sb.table("scan_decisions")
-                  .select("opportunity_link,label,created_at")
-                  .eq("event_type", "type_label")
-                  .order("created_at", desc=True).limit(5000).execute().data or []):
+        # Every human type_label, newest-first. These are human CORRECTIONS and they win
+        # over the detector below, so a label missing from this map is silently overwritten
+        # by a machine guess - the one outcome a backfill must never produce.
+        _labels = sorted(
+            fetch_all(lambda: sb.table("scan_decisions")
+                      .select("opportunity_link,label,created_at,id")
+                      .eq("event_type", "type_label")),
+            key=lambda r: str(r.get("created_at") or ""), reverse=True)
+        for r in _labels:
             lk = (r.get("opportunity_link") or "").strip()
             if lk and lk not in human and (r.get("label") or "").strip():
                 human[lk] = r["label"].strip()
     except Exception:
         pass
-    q = (sb.table(table)
-         .select(f"{key},opportunity_title,opportunity_link{extra_cols}"))
-    if event:
-        q = q.eq("event_type", event)
-    rows = q.limit(5000).execute().data or []
+    def _rows():
+        q = (sb.table(table)
+             .select(f"{key},opportunity_title,opportunity_link{extra_cols}"))
+        if event:
+            q = q.eq("event_type", event)
+        return q
+
+    # Every row the backfill is meant to touch, not the first thousand of them.
+    rows = fetch_all(_rows, order=key)
     ups = []
     for row in rows:
         h_sol, h_inst = _human_axes(human.get((row.get("opportunity_link") or "").strip()))

@@ -27,6 +27,9 @@ import { corsHeaders, gzipped, HttpError, json, withCors } from "./api/http.ts";
 import { createAuthRoutes, type AuthDeps } from "./api/routes_auth.ts";
 import { createJobRoutes, type Dispatch } from "./api/routes_jobs.ts";
 import { createPhase1Routes } from "./api/routes_phase1.ts";
+import { createPipelineWrites } from "./api/pipeline_writes.ts";
+import { createPipelineRoutes } from "./api/routes_pipelines.ts";
+import { createReportRoutes } from "./api/routes_report.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
 import { createSessions } from "./api/session.ts";
 import { createTenants } from "./api/tenants.ts";
@@ -59,6 +62,11 @@ export function createApi(env: Env, deps: Deps) {
   const shell = createShellRoutes(db);
   const jobs = createJobRoutes(db, deps.dispatchJob ?? null);
   const phase1 = createPhase1Routes(db);
+  const pipelines = createPipelineRoutes(db);
+  // The editor's save queues a re-score through the same path POST /jobs uses, so there is
+  // one way a job reaches the runner rather than a second one owned by the write route.
+  const pipelineWrites = createPipelineWrites(db, jobs.enqueue);
+  const report = createReportRoutes(db);
 
   async function route(req: Request, path: string): Promise<Response> {
     const m = req.method;
@@ -79,10 +87,44 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/shell" && m === "GET") return shell.shell(ctx);
     if (path === "/notifications/read" && m === "POST") return shell.markRead(ctx);
     if (path === "/jobs" && m === "POST") return jobs.create(req, ctx);
-    // Phase 1. These fetch rows; the rules that act on them run in the browser's Python.
+    // Phase 1. The snapshot seeds the browser's Python engine, which is down to a single
+    // caller — the Opportunity page's decision aid. Everything else here decides in TS.
     if (path === "/scoring/snapshot" && m === "GET") return phase1.snapshot(req, ctx);
     if (path === "/home" && m === "GET") return phase1.home(ctx);
+    // The rail's RAW rows. No longer served to a browser: the rail is ranked below. It
+    // stays because web/scripts/parity/check-scoring.mjs feeds these exact rows to
+    // core/opportunity_feed.py to produce the Python side it compares against.
     if (path === "/feed" && m === "GET") return phase1.feed(req, ctx);
+    // The rail's finished cards, ranked here — the ranking orders values already stored on
+    // each row and computes no score, so it needs no Python.
+    if (path === "/opportunities/feed" && m === "GET") return phase1.opportunitiesFeed(req, ctx);
+    // Phase 2. Same division: these serve rows, the page scores and decides.
+    if (path === "/report/periods" && m === "GET") return report.periods(req, ctx);
+    if (path === "/report/section1" && m === "GET") return report.section1(req, ctx);
+
+    if (path === "/pipelines/weeks" && m === "GET") return pipelines.weeks(req, ctx);
+    if (path === "/pipelines/screen" && m === "GET") return pipelines.screen(req, ctx);
+    if (path === "/pipelines/summary" && m === "GET") return pipelines.summary(req, ctx);
+    if (path === "/pipelines/reviewed" && m === "GET") return pipelines.reviewed(req, ctx);
+    if (path === "/pipelines/track" && m === "GET") return pipelines.track(req, ctx);
+    if (path === "/pipelines/submitted" && m === "GET") return pipelines.submitted(req, ctx);
+    if (path === "/pipelines/outcome" && m === "GET") return pipelines.outcome(req, ctx);
+    if (path.startsWith("/pipelines/rfp/") && m === "GET") {
+      const rest = path.slice("/pipelines/rfp/".length);
+      const notes = rest.endsWith("/meeting-notes");
+      const uid = decodeURIComponent(
+        notes ? rest.slice(0, -"/meeting-notes".length) : rest).trim();
+      if (!uid) return json({ error: "No RFP selected." }, 400);
+      return notes
+        ? pipelines.meetingNotes(req, ctx, uid)
+        : pipelines.rfp(req, ctx, uid);
+    }
+    if (path === "/pipelines/decision" && m === "POST") return pipelineWrites.decide(req, ctx);
+    if (path.startsWith("/pipelines/rfp/") && m === "PATCH") {
+      const uid = decodeURIComponent(path.slice("/pipelines/rfp/".length)).trim();
+      if (!uid) return json({ error: "No RFP selected." }, 400);
+      return pipelineWrites.patchRfp(req, ctx, uid);
+    }
     if (path === "/opportunity" && m === "GET") {
       const uid = new URL(req.url).searchParams.get("uid")?.trim() ?? "";
       if (!uid) return json({ error: "No opportunity selected." }, 400);

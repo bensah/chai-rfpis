@@ -180,7 +180,13 @@ _DEADLINE_LABEL_RE = re.compile(
     # but NOT a bare "closed calls" / "closed competitions" (a non-deadline use
     # that used to false-trigger and let its capture window swallow the REAL
     # "Submission deadline: <date>" that followed). Require a date context.
-    r"|close[sd]?(?:\s*[:\-–]|\s+(?:on|date|by)\b|(?=\s+\d)|(?=\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)))"
+    # The optional (…) is a STAGE QUALIFIER, and without it a two-stage call loses its
+    # deadline entirely. WCRF writes "Grant calls close (Letter of Intent stage): 13
+    # November 2026, 5pm GMT" — "close" is followed by a parenthetical, so none of the
+    # alternatives below could reach the colon and the whole page parsed as having NO
+    # deadline. Bounded to 60 chars, and the date context after it is still required.
+    r"|close[sd]?(?:\s*\([^)]{1,60}\))?"
+    r"(?:\s*[:\-–]|\s+(?:on|date|by)\b|(?=\s+\d)|(?=\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)))"
     r"|date\s+closed"
     r"|due\s+(?:date|by|on)"
     r"|apply\s+(?:by|before|no\s+later\s+than|until)"
@@ -208,9 +214,42 @@ _DEADLINE_LABEL_RE = re.compile(
     # The tempered class refuses any position that begins ". <Capital>", which ends the
     # clause without breaking dates that legitimately contain a period ("Mar. 15, 2026",
     # "15.03.2026" — neither is a period + space + capital).
-    r"((?:(?!\.\s+[A-Z])[A-Za-z0-9 ,\-/.]){6,60})",
+    #
+    # A CLOCK TIME IS PART OF THE PHRASE, NOT THE END OF IT. ":" is not in the class, so
+    # FCDO's "The deadline for Expressions of Interest is 17:00 GMT on Monday, 30
+    # November 2026" stopped dead at "is 17" and the page's own plain statement of its
+    # deadline yielded NO date at all. A time is allowed through as a unit — a bare colon
+    # still ends the capture, which is what stops it swallowing the NEXT label
+    # ("… 23 march. extended deadline: 30 march" must leave that second label to match on
+    # its own). The window is 80 rather than 60 because a time plus a weekday pushes the
+    # real date past 60 characters.
+    #
+    # IT ALSO STOPS AT THE NEXT LABEL, not just at a sentence break. A TIMETABLE has no
+    # periods — FCDO prints one row after another:
+    #
+    #   Deadline for submitting questions 6 November 2026
+    #   Deadline for Expressions of Interest 30 November 2026, 17:00 GMT
+    #
+    # so the first row's capture ran straight through the second, and because finditer
+    # does not overlap, the EOI row's own label was never matched. Its date survived only
+    # as a passenger in the questions row's capture — which meant discarding that row (it
+    # is not a submission deadline) silently took the real deadline with it.
+    r"((?:(?!\.\s+[A-Z])(?!\s+(?:extended\s+|revised\s+|new\s+)?deadline\b)"
+    r"(?!\s+closing\s+date\b)(?:\d{1,2}:\d{2}|[A-Za-z0-9 ,\-/.])){6,80})",
     re.IGNORECASE,
 )
+
+# A "deadline" whose SUBJECT is questions, not submissions. An applicant does not submit
+# anything by it, and on a timetable it sits BEFORE the real one, so it is not merely
+# noise — it is the date a reader would act on if it won.
+_QUESTION_DEADLINE_RE = re.compile(
+    r"^\s*(?:for\s+|to\s+)?(?:submitting\s+|submission\s+of\s+|asking\s+|raising\s+)?"
+    r"(?:questions|queries|clarifications?|enquiries|inquiries|q\s*&\s*a)\b",
+    re.IGNORECASE,
+)
+
+# Labels that REPLACE an earlier deadline rather than name a different one.
+_SUPERSEDING_LABEL_RE = re.compile(r"\b(?:extended|revised|new)\b", re.IGNORECASE)
 
 # Year-in-URL/title heuristic. RFP pages typically embed the year in the
 # slug or title — "2020-call-for-projects", "year/2024/alliance-tsc-…".
@@ -308,17 +347,27 @@ _DATE_IN_TEXT_RE = re.compile(
 def _extract_deadline_from_text(text: str) -> date | None:
     """The SUBMISSION deadline in `text`, or None.
 
-    Two kinds of date show up, and they must not compete on equal terms:
+    Three kinds of date show up, and they must not compete on equal terms:
 
-      LABELLED   the text names it a deadline ("Deadline:", "applications close",
-                 "submission deadline", "closing date"). Authoritative. The LATEST wins,
-                 which is deliberate extended-deadline behaviour: donors say
-                 "Deadline: Mar 23" and later "Extended deadline: Mar 30", and Mar 30 is
-                 the real one.
+      SUPERSEDING an "extended" / "revised" / "new" deadline. It REPLACES an earlier one,
+                 so the latest wins: "Deadline: Mar 23" then "Extended deadline: Mar 30"
+                 means Mar 30.
+
+      ORDINARY   any other deadline wording ("Deadline:", "applications close",
+                 "submission deadline", "closing date"). Authoritative, but NOT
+                 interchangeable with the above: a staged call labels every stage, and
+                 the latest is the furthest one away. The earliest date still AHEAD
+                 wins — that is the one an applicant has to meet next. When none is
+                 ahead the call is over, and the latest is reported so it reads as
+                 closed on its real last date.
 
       UNLABELLED a date window with no deadline wording ("9 October to 7 November 2025:
                  applications open"). The range patterns capture the window's END, which
                  is the date an applicant must meet.
+
+    A deadline whose subject is QUESTIONS rather than submissions is discarded outright:
+    an applicant submits nothing by it, and it falls before the real one, so letting it
+    win would quietly shorten the call.
 
     A LABELLED date always beats an unlabelled one. Among UNLABELLED windows the EARLIEST
     end wins, not the latest — because a call that publishes a calendar lists the whole
@@ -335,11 +384,13 @@ def _extract_deadline_from_text(text: str) -> date | None:
     """
     if not text:
         return None
-    # (explicit year in the token, came from a deadline LABEL) -> dates
-    buckets: dict[tuple[bool, bool], list[date]] = {
-        (True, True): [], (True, False): [], (False, True): [], (False, False): []}
+    # (explicit year in the token, kind) -> dates. "superseding" and "ordinary" are both
+    # LABELLED; they are split because they must not be reduced the same way.
+    kinds = ("superseding", "ordinary", "window")
+    buckets: dict[tuple[bool, str], list[date]] = {
+        (y, k): [] for y in (True, False) for k in kinds}
 
-    def _add(raw: str | None, labelled: bool) -> None:
+    def _add(raw: str | None, kind: str) -> None:
         # Scan the captured blob for every date token, not just its prefix — the prefix
         # may be unparseable noise ("Tuesday, 16 December 1700HRS") while the real,
         # year-bearing date sits later in the same capture.
@@ -348,16 +399,21 @@ def _extract_deadline_from_text(text: str) -> date | None:
             if not d:
                 continue
             has_year = bool(re.search(r"(?<!\d)20\d{2}(?!\d)", tok))
-            buckets[(has_year, labelled)].append(d)
+            buckets[(has_year, kind)].append(d)
 
     for m in _DEADLINE_LABEL_RE.finditer(text):
-        _add(m.group(1), True)
+        capture = m.group(1)
+        if _QUESTION_DEADLINE_RE.match(capture or ""):
+            continue                       # a questions deadline is not a submission one
+        label = text[m.start():m.start(1)]
+        _add(capture,
+             "superseding" if _SUPERSEDING_LABEL_RE.search(label) else "ordinary")
     # Unlabelled date ranges — "APPLICATIONS: FROM OCT 9TH TO NOV 7TH 2025"
     for m in _DATE_RANGE_RE.finditer(text):
-        _add(m.group(1), False)
+        _add(m.group(1), "window")
     # Trailing-label windows — "9 october to 7 november 2025: applications open"
     for m in _DATE_RANGE_TRAILING_RE.finditer(text):
-        _add(m.group(1), False)
+        _add(m.group(1), "window")
 
     # Sanity window: drop absurd far-future dates (a stray year in a strategy PDF, or a
     # "36 months" -> 2036 misparse). Real RFP deadlines are within a couple of years.
@@ -371,11 +427,26 @@ def _extract_deadline_from_text(text: str) -> date | None:
     # deadline (the page's "Date Closed Dec 16, 2025") into a spurious FUTURE one and leak
     # an expired call through. Only fall back to year-less dates when no explicit-year
     # date is present at all.
+    today = date.today()
     for has_year in (True, False):
-        labelled = _ok(buckets[(has_year, True)])
-        if labelled:
-            return max(labelled)                 # extended deadline wins
-        windows = _ok(buckets[(has_year, False)])
+        superseding = _ok(buckets[(has_year, "superseding")])
+        if superseding:
+            return max(superseding)              # an extension replaces what came before
+        ordinary = _ok(buckets[(has_year, "ordinary")])
+        if ordinary:
+            # THE NEXT ONE AN APPLICANT MUST MEET, not the last one printed. A staged
+            # call labels every stage "Deadline for …", and taking the latest returned
+            # FCDO's "Deadline for Full Proposals 16 April 2027" on a call whose
+            # Expressions of Interest close 30 November 2026 — five months of false
+            # runway on the only date a reader can still act on. Among dates still
+            # ahead, the earliest is that one.
+            #
+            # Falling back to max when NOTHING is ahead keeps an expired call honest:
+            # its real last date is reported, so it reads as closed rather than
+            # acquiring an older date that would make it look longer dead than it is.
+            ahead = [d for d in ordinary if d >= today]
+            return min(ahead) if ahead else max(ordinary)
+        windows = _ok(buckets[(has_year, "window")])
         if windows:
             return min(windows)                  # earliest window end = submission close
     return None
@@ -1482,42 +1553,108 @@ _GOOGLE_ALERT_NOISE_DOMAINS = (
 )
 
 
+# Per-feed ceiling on how many unresolved redirects we will spend a Serper search on.
+# One alert that suddenly serves nothing but /goto? links would otherwise cost a search
+# and a page fetch for every entry in it, inside the scan's own time budget.
+_MAX_ALERT_RESOLUTIONS = 12
+
+
+def _resolver_available() -> bool:
+    """True when source_resolver can actually run a search (Serper configured)."""
+    try:
+        from core import source_resolver as _sr
+        return bool(_sr.available())
+    except Exception:
+        return False
+
+
+def _strip_www(host: str) -> str:
+    """'www.worldbank.org' -> 'worldbank.org'.
+
+    NOT `host.lstrip("www.")`: lstrip takes a SET of characters, so it eats every leading
+    'w' and '.' it finds. That spelling turned 'www.worldbank.org' into 'orldbank.org' and
+    would silently fail to match any noise domain beginning with w."""
+    h = (host or "").lower()
+    return h[4:] if h.startswith("www.") else h
+
+
 def _unwrap_google_url(url: str) -> str:
-    """Strip the google.com/url? redirect wrapper to get the real target."""
+    """Strip a google.com redirect wrapper to get the real target.
+
+    Google Alerts hand out several redirect shapes, and this only knew `google.com/url?`.
+    `/goto?url=` goes through the same alert feeds and was passed straight through, so the
+    stored link stayed on google.com — see `_google_redirect_host` for what that cost.
+
+    The `url`/`q` parameter is only usable when it IS a URL. On `/goto?` it is often an
+    opaque base64 protobuf token ('CAESyAEB6zsw…'), which is not decoded here: guessing at
+    an internal encoding would be a different bug the day Google changes it. Those fall
+    through unchanged and are rejected by `_google_redirect_host` instead."""
     if not url:
-        return url
-    if "google.com/url" not in url:
         return url
     try:
         parsed = urlsplit(url)
+        if not _strip_www(parsed.netloc).endswith("google.com"):
+            return url
         qs = parse_qs(parsed.query)
         for key in ("url", "q"):  # Google uses either depending on context
             if key in qs and qs[key]:
-                return unquote(qs[key][0])
+                target = unquote(qs[key][0])
+                # Only accept a real absolute URL. An opaque token is not one.
+                if target.lower().startswith(("http://", "https://")):
+                    return target
     except Exception:
         pass
     return url
 
 
-def _is_google_alert_noise(url: str) -> bool:
-    """Return True if the URL is from a known noise domain."""
+def _google_redirect_host(url: str) -> bool:
+    """True when a link is STILL on a Google host after unwrapping — i.e. we never got to
+    the donor's own page.
+
+    Such a link is worthless to the scan twice over. There is nothing at the other end to
+    read, so every extracted field comes back blank; and `_domain_to_funder` reads the host
+    and names the funder after the redirector. AS-261030-124802 was stored exactly that
+    way: funder "Google", no description, no deadline, no value, no instrument — an empty
+    row presented as a Google funding opportunity, which is both wrong and, to anyone
+    reading the Screen table, misleading about who is offering the money."""
     try:
-        host = urlsplit(url).netloc.lower().lstrip("www.")
+        return _strip_www(urlsplit(url).netloc).endswith("google.com")
+    except Exception:
+        return False
+
+
+def _is_google_alert_noise(url: str) -> bool:
+    """Return True if the URL is from a known noise domain, or is an unresolved Google
+    redirect (which is noise for a different reason — see `_google_redirect_host`)."""
+    try:
+        host = _strip_www(urlsplit(url).netloc)
+        if host.endswith("google.com"):
+            return True
         return any(host == d or host.endswith("." + d) for d in _GOOGLE_ALERT_NOISE_DOMAINS)
     except Exception:
         return False
 
 
-def _domain_to_funder(url: str) -> str:
+def _domain_to_funder(url: str) -> str | None:
     """Convert a URL host into a readable funder label, e.g.
-    'https://www.fondation-mma.org/calls' → 'fondation-mma.org'."""
+    'https://www.fondation-mma.org/calls' → 'fondation-mma.org'.
+
+    Returns None rather than a host we know is not the funder. A name here is published
+    on the Screen table and in the Review header as the organisation offering the money,
+    so "Google" for an alert redirect states something untrue. None leaves the field
+    empty, which the UI renders as "—" and a reviewer reads as unknown — and which
+    `source_resolver.resolve_and_enrich` treats as "fill this in from the real page".
+
+    A bare host is a weak funder label at the best of times; `source_resolver.
+    is_aggregator_funder` already classes one as not-a-real-funder, so a resolved page
+    will overwrite whatever this returns."""
     try:
-        host = urlsplit(url).netloc.lower()
-        if host.startswith("www."):
-            host = host[4:]
-        return host or "(unknown)"
+        host = _strip_www(urlsplit(url).netloc)
+        if not host or _is_google_alert_noise(url):
+            return None
+        return host
     except Exception:
-        return "(unknown)"
+        return None
 
 
 def _scan_google_alerts(name: str, url: str) -> list[dict[str, Any]]:
@@ -1554,20 +1691,19 @@ def _scan_google_alerts(name: str, url: str) -> list[dict[str, Any]]:
 
     out: list[dict[str, Any]] = []
     skipped_noise = 0
+    rescued = 0
+    unresolvable = 0
     for entry in feed.entries[:100]:
         title = _clean(getattr(entry, "title", "") or "")
         raw_link = _clean(getattr(entry, "link", "") or "")
         link = _unwrap_google_url(raw_link)
         if not title or not link:
             continue
-        if _is_google_alert_noise(link):
-            skipped_noise += 1
-            continue
         # Google's <summary> already strips bold tags etc. into clean
         # snippet text — use it as the starting description.
         summary = _clean(getattr(entry, "summary", "") or "")
         published = _parse_struct_time(getattr(entry, "published_parsed", None))
-        out.append({
+        cand = {
             "opportunity_title": title,
             "opportunity_link": link,
             "funding_agency": _domain_to_funder(link),
@@ -1575,12 +1711,44 @@ def _scan_google_alerts(name: str, url: str) -> list[dict[str, Any]]:
             "date_posted": published,
             "call_submission_deadline": None,
             "_source_origin": f"{name} (Google Alert)",
-        })
+        }
+
+        if _google_redirect_host(link):
+            # The alert handed us a redirect we could not unwrap, so there is no donor
+            # page behind this link to read: left alone it becomes a row with a real
+            # title, no description, no deadline, no value, and "Google" as the funder.
+            #
+            # A title is still a lead, and we already own the machinery to chase it —
+            # the same Serper-backed resolver that turns a DevelopmentAid listing into
+            # the donor's own page. Run it here before giving up, bounded per feed so a
+            # bad alert cannot turn one scan into a hundred searches.
+            if rescued < _MAX_ALERT_RESOLUTIONS and _resolver_available():
+                try:
+                    from core import source_resolver as _sr
+                    if _sr.resolve_and_enrich(cand):
+                        rescued += 1
+                        out.append(cand)
+                        continue
+                except Exception as exc:         # never raise into a scan
+                    log.debug("Google Alert resolve failed for %r: %s", title, exc)
+            # Nothing to read and nothing found: drop it rather than store an empty row
+            # attributed to the redirector. The title is in the log if anyone asks.
+            unresolvable += 1
+            log.info("Google Alert %s: unresolved redirect, dropped %r", name, title[:80])
+            continue
+
+        if _is_google_alert_noise(link):
+            skipped_noise += 1
+            continue
+        out.append(cand)
     if skipped_noise:
         log.info(
             "Google Alert %s: skipped %d noise-domain entr%s (social / aggregator)",
             name, skipped_noise, "y" if skipped_noise == 1 else "ies",
         )
+    if rescued or unresolvable:
+        log.info("Google Alert %s: %d redirect(s) resolved to a source page, %d dropped",
+                 name, rescued, unresolvable)
     return out
 
 
@@ -1607,8 +1775,102 @@ def _scan_rest_json(name: str, url: str) -> list[dict[str, Any]]:
     # NOTE: The World Bank projects API (search.worldbank.org/api/v3/projects)
     # returns ONGOING / COMPLETED projects, not open funding opportunities — use
     # the procnotices endpoint above for open procurement instead.
+    if _WP_REST_COLLECTION_RE.search(url):
+        return _scan_wp_rest(name, url)
     log.info("REST JSON endpoint not specifically handled: %s — returning []", url)
     return []
+
+
+# ---------------------------------------------------------------------------
+# WordPress REST — any donor whose calls are a custom post type
+# ---------------------------------------------------------------------------
+# Donor sites on WordPress publish their calls as a custom post type, and WP exposes
+# every registered type at /wp-json/wp/v2/<rest_base> for free. That is worth a GENERIC
+# handler rather than one more per-donor function: FCDO's Global Research and Technology
+# Development programme is the first user (rest_base `funding-opportunitie`, 37 live
+# opportunities), and the endpoint is the only honest way in — its /funding/ page says
+# "Showing 37 opportunities" but ships just 2 links in static HTML, because the cards are
+# rendered client-side by JetEngine. The alternative was Playwright for a site that is
+# already serving us clean JSON.
+#
+# Discover a site's types with /wp-json/wp/v2/types, then point a source row at the
+# collection URL with scrape_method='rest_json'.
+_WP_REST_COLLECTION_RE = re.compile(r"/wp-json/wp/v\d+/[a-z0-9._-]+/?$", re.I)
+_WP_REST_MAX_PAGES = 5           # 100 per page — 500 calls is far past any donor's list
+_WP_REST_DETAIL_MAX = 40         # bounded detail fetches (see below)
+
+
+def _wp_text(fragment: str | None) -> str:
+    """Readable text out of a WP `rendered` HTML fragment (also unescapes entities)."""
+    if not fragment:
+        return ""
+    return _clean(BeautifulSoup(fragment, "html.parser").get_text(" ", strip=True))
+
+
+def _scan_wp_rest(name: str, url: str) -> list[dict[str, Any]]:
+    """A WordPress REST collection of funding opportunities → candidates.
+
+    `content.rendered` is EMPTY on page-builder sites (Elementor/JetEngine keep the body
+    in post meta), which is exactly the case on FCDO GRTD — so the feed alone would give
+    titles with no text, and every candidate would fail the gate as "not-an-rfp: no valid
+    RFP signal". The detail PAGES are server-rendered, so we fetch the body for items the
+    feed leaves empty, bounded by `_WP_REST_DETAIL_MAX`."""
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    items: list[dict[str, Any]] = []
+    for page in range(1, _WP_REST_MAX_PAGES + 1):
+        try:
+            r = _http.get(url, headers=headers, timeout=HTTP_TIMEOUT,
+                          params={"per_page": 100, "orderby": "date",
+                              "order": "desc", "page": page})
+            if r.status_code == 400 and page > 1:
+                break                      # WP returns 400 past the last page
+            r.raise_for_status()
+            batch = r.json() or []
+        except Exception as exc:
+            log.warning("WP REST fetch failed (%s page %d): %s", url, page, exc)
+            break
+        if not isinstance(batch, list) or not batch:
+            break
+        items.extend(batch)
+        try:
+            if page >= int(r.headers.get("X-WP-TotalPages") or 1):
+                break
+        except ValueError:
+            break
+
+    out: list[dict[str, Any]] = []
+    detail_fetches = 0
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        link = (it.get("link") or "").strip()
+        title = _wp_text((it.get("title") or {}).get("rendered"))
+        if not link or not title:
+            continue
+        text = (_wp_text((it.get("content") or {}).get("rendered"))
+                or _wp_text((it.get("excerpt") or {}).get("rendered")))
+        if len(text) < 200 and detail_fetches < _WP_REST_DETAIL_MAX:
+            detail_fetches += 1
+            _, page_text = _cg_page(link, {"User-Agent": USER_AGENT,
+                                           "Accept": "text/html"})
+            text = page_text or text
+        cand: dict[str, Any] = {
+            "opportunity_title": title[:300],
+            "opportunity_link": link,
+            "funding_agency": name,
+            "brief_description": (text[:1800] or None),
+            "_page_text": (text[:20000] or None),
+            "_source_origin": name,
+        }
+        posted = _parse_freeform_date(str(it.get("date") or "")[:10])
+        if posted:
+            cand["date_posted"] = posted.isoformat()
+        dl = _extract_deadline_from_text(text)
+        if dl:
+            cand["call_submission_deadline"] = dl.isoformat()
+        out.append(cand)
+    log.info("WP REST %s: %d items, %d detail fetches", url, len(items), detail_fetches)
+    return _dedup_by_link_or_title(out)
 
 
 def _fetch_grants_gov_details(numeric_id: str) -> dict[str, Any] | None:

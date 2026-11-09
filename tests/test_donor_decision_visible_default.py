@@ -110,7 +110,7 @@ class TheDerivedDisplayStillCoversTheGapTests(unittest.TestCase):
 
     def test_grants_still_derives_the_pending_bucket_at_read_time(self):
         import io
-        with io.open(os.path.join(_ROOT, "app_pages", "grants.py"),
+        with io.open(os.path.join(_ROOT, "views", "outcomes.py"),
                      encoding="utf-8") as fh:
             src = fh.read()
         self.assertIn('_status_display', src)

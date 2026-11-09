@@ -592,8 +592,13 @@ with _main:
         _tracked = st.session_state.get(f"_opp_tracked_{_uid}")
         if not _tracked:
             try:
-                _mine = (get_client().table("rfp_submissions")
-                         .select("uid,opportunity_link").limit(2000).execute().data or [])
+                # EVERY row. This answers "is this call already in your pipeline?", so a
+                # row beyond the cap makes the page say no when the answer is yes — and
+                # with no .order() on the old read, WHICH rows were missing varied between
+                # loads, so the same call could be tracked on one visit and not the next.
+                from db.supabase_client import fetch_all
+                _mine = fetch_all(lambda: get_client().table("rfp_submissions")
+                                  .select("uid,opportunity_link"), order="uid")
                 _tracked = _od.tracked_uid(_row, _mine)
             except Exception:
                 _tracked = None

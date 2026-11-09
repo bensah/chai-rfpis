@@ -8,11 +8,14 @@ UX:
      exists, Action due defaults to the Monday after that week.
   3. All edits happen from the Data page — Tracking is **read-only**.
 
-Filters (active by default):
-  - Only Proceed / Proceed as sub (post-screening)
-  - Not yet submitted to a donor (donor_decision NULL or 'Not submitted')
-  - Progress status ≠ Completed
+Filters (active by default) — the first four are core.pipeline.is_active_proceed,
+shared with the Meetings note-taker's Linked RFP dropdown so the two always agree:
+  - decision starts with Proceed (post-screening)
+  - Not yet submitted to a donor (donor_decision NULL or 'Not submitted', no
+    date_completed, progress ≠ Completed)
+  - Progress status ≠ Completed / Discontinued
   - submission_deadline is null OR ≥ today (not overdue)
+and this page's own:
   - submitted_at year == settings.get_year() (YTD)
   - is_duplicate = false (canonical row only; duplicate leads concatenated)
 """
@@ -29,8 +32,10 @@ from core import dropdowns, settings
 from core.currency import format_money
 from core.scorer import criterion_score
 from core.records import clean_record, clean_df
-from core.pipeline import days_to_deadline, deadline_status, usd_value
-from core.review_week import all_weeks_for_year, week_bounds
+from core.pipeline import days_to_deadline, deadline_status, is_active_proceed, usd_value
+from core.review_week import (
+    all_weeks_for_year, monday_from_week_label, previous_review_week_label, week_bounds,
+)
 from db.supabase_client import get_client
 from views.rfp_editor import render_rfp_editor
 from core.cache_scope import scope_key
@@ -71,33 +76,27 @@ def _fetch(year: int, scope: str) -> pd.DataFrame:
         sbc.table("rfp_submissions")
         .select("*")
         .eq("is_duplicate", False)
-        .in_("decision", ["Proceed", "Proceed as sub"])
+        .ilike("decision", "Proceed%")
         .execute()
     )
     df = clean_df(pd.DataFrame(res.data or []))
     if df.empty:
         return df
 
-    # YTD by submitted_at
+    # YTD by submitted_at — the one filter that is this page's own, not the shared
+    # active-pipeline rule. Tracking is a year-to-date view; the Meetings note-taker,
+    # which shares `is_active_proceed`, deliberately has no year bound.
     df["_submitted_at"] = pd.to_datetime(df["submitted_at"], errors="coerce", format="ISO8601")
     df = df[df["_submitted_at"].dt.year == year].copy()
 
-    # Exclude submitted/approved/completed
-    dd_lower = df["donor_decision"].fillna("").str.lower()
-    df = df[dd_lower.isin({"", "not submitted"})].copy()
-    if "progress_status" in df:
-        # Progress status OVERRIDES: a Completed (submitted) or Discontinued row
-        # drops off the active pipeline entirely — it must not appear in the card,
-        # the dropdown, or the table even though its decision is still "Proceed".
-        df = df[~df["progress_status"].fillna("").astype(str).str.strip()
-                .str.lower().isin({"completed", "discontinued"})].copy()
-
-    # Not overdue (allow null deadlines)
-    df["_deadline_date"] = pd.to_datetime(df["call_submission_deadline"], errors="coerce", format="ISO8601").dt.date
-    df = df[df["_deadline_date"].isna() | (df["_deadline_date"] >= today)].copy()
+    # Not submitted, not Completed/Discontinued, deadline not passed (nulls allowed) —
+    # all four in core.pipeline so the Meetings dropdown offers exactly this set.
+    df = df[df.apply(is_active_proceed, axis=1)].copy() if not df.empty else df
 
     if df.empty:
         return df
+    df["_deadline_date"] = pd.to_datetime(
+        df["call_submission_deadline"], errors="coerce", format="ISO8601").dt.date
 
     # Derived columns
     df["_dtd"] = df["call_submission_deadline"].apply(days_to_deadline)
@@ -267,11 +266,13 @@ with st.container(border=True):
 
     all_weeks = all_weeks_for_year(year)
 
+    # Was a local copy of review_week.monday_from_week_label's arithmetic, and carried the
+    # same fault: a year can begin AND end with a label reading "Week 1", so resolving by
+    # week number sent the last week of the year to a Monday twelve months earlier and this
+    # selector looked up the wrong week's note. Use the shared one, which resolves by
+    # relabelling, rather than keeping a second copy that has to be fixed twice.
     def _monday_label_to_date(label: str) -> date:
-        week_num = int(label.split(" ")[1])
-        jan4 = date(year, 1, 4)
-        mon, _ = week_bounds(jan4)
-        return mon + timedelta(days=(week_num - mon.isocalendar().week) * 7)
+        return monday_from_week_label(label, year)
 
     # Default: the latest week with a note for this RFP, else current week
     if weeks_with_notes:
@@ -281,10 +282,11 @@ with st.container(border=True):
             all_weeks[0],
         )
     else:
-        # current ISO week
-        today_mon = today - timedelta(days=today.weekday())
+        # No note on this RFP yet — open on the week the team is reviewing, which is the
+        # one that ended last Sunday, the same default Screen and Review use.
+        prev_mon = monday_from_week_label(previous_review_week_label(today), year)
         default_label = next(
-            (w for w in all_weeks if _monday_label_to_date(w) == today_mon),
+            (w for w in all_weeks if _monday_label_to_date(w) == prev_mon),
             all_weeks[0],
         )
 

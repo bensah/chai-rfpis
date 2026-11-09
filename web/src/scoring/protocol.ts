@@ -1,4 +1,8 @@
 // What the main thread and the scoring worker say to each other.
+//
+// The feed request/result pair that used to live here is gone: the rail is ranked by the
+// server now (supabase/functions/_shared/api/opportunity_feed.ts). What remains is the one
+// call the Opportunity page's decision aid still needs.
 
 /** Everything the Python scoring path reads from the database, fetched once by the API.
  * See supabase/functions/_shared/api/routes_phase1.ts for how each piece is obtained. */
@@ -16,36 +20,6 @@ export type ScoringSnapshot = {
   /** Live exchange rates the server already fetched: the browser has no network access to
    * the rate API and would otherwise fall back to a stale static table. */
   fx_rates: Record<string, [number | null, string | null]>;
-};
-
-export type FeedRequest = {
-  pipeline: Record<string, unknown>[];
-  catalog: Record<string, unknown>[];
-  /** Links already in this tenant's pipeline, so Featured never repeats one. */
-  seen: string[];
-};
-
-export type FeedItem = {
-  uid: string | null;
-  title: string;
-  funder: string;
-  amount: number;
-  currency: string;
-  deadline: string | null;
-  days_until: number | null;
-  geo: string;
-  alignment: number;
-  link: string;
-  recommendation: string;
-  _why?: string;
-  _score?: number;
-};
-
-export type FeedResult = {
-  featured: FeedItem[];
-  top_matches: FeedItem[];
-  top_funding: FeedItem[];
-  other: FeedItem[];
 };
 
 export type OpportunityRequest = {
@@ -99,7 +73,6 @@ export type OpportunityResult = {
 
 export type WorkerRequest =
   | { id: number; kind: "boot"; bundleUrl: string; snapshot: ScoringSnapshot }
-  | { id: number; kind: "feed"; payload: FeedRequest }
   | { id: number; kind: "opportunity"; payload: OpportunityRequest };
 
 export type WorkerResponse =

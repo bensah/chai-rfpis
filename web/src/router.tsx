@@ -9,25 +9,87 @@ export type PageKey =
 
 type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boolean; public?: boolean };
 
-/** App.py::_pages, in rail order. `rail` = shown in the sidebar (the CSS-hidden ones are not). */
+/**
+ * App.py::_pages, in rail order. `rail` = shown in the sidebar.
+ *
+ * The URL paths are the Streamlit app's `url_path`s and must stay as they are until
+ * cut-over, so a link copied from one app opens the same page in the other. Keep the keys
+ * when a title changes: they ARE the slugs, and bookmarks and emailed links resolve
+ * through them.
+ *
+ * WHERE THE TITLES CAME FROM. The owner set these on 2026-11-09, naming both apps in one
+ * instruction ("change this for both platforms"), so these ARE theirs and the Streamlit
+ * rail carries the same words.
+ *
+ * The history is worth keeping, because this comment was wrong once in each direction.
+ * The owner first renamed the pages in the STREAMLIT app only, and an earlier version here
+ * claimed those titles as theirs for this app too — a cross-app inference presented as an
+ * instruction. They corrected it ("I only gave a prompt with a focus on the chai-rfpis
+ * page not the new react page"), so the claim was withdrawn, and then they issued the
+ * names for both. Same destination, different authority, and the difference is the whole
+ * point: a title changed here under the redesign's naming latitude may be changed again by
+ * the next author, and one the owner set may not.
+ *
+ * `grants` is the exception and is NOT the Streamlit title. See its own note below.
+ *
+ * EVERY TITLE IS TITLE CASE — owner, 2026-11-09, after their own names arrived mixed
+ * ("Submit new notice" beside "Funding Report" as first given). Every word is capitalised,
+ * including the
+ * pages that never appear in the rail, because one vocabulary with two conventions is how
+ * a reader learns that neither is the rule. The rail's label-hide in core/app_header.py
+ * lower-cases before matching, so the hidden pages could be recased safely; a hide that
+ * compared exactly would have made this a functional change rather than a cosmetic one.
+ * `test_every_page_title_is_title_case` holds the line.
+ *
+ * ONLY `rail: true` PUTS A PAGE IN THE SIDEBAR. The seven below without it — opportunity,
+ * profile, help, search and the three public auth pages — exist so their URLs resolve: an
+ * emailed activation link, a feed item's /opportunity deep link, the top-right menu. The
+ * Streamlit app registers the same set and then HIDES them with CSS, which failed in the
+ * COLLAPSED rail, where the icons are still painted: the owner saw a column of unexplained
+ * glyphs. Rendering from this flag cannot fail that way — a page without it never reaches
+ * the DOM, collapsed or not. Do not reintroduce a hide.
+ */
 export const PAGES: Record<PageKey, PageInfo> = {
-  home: { title: "Home", icon: "🏠", rail: true },
-  pipelines: { title: "Pipelines", icon: "📚", rail: true },
-  grants: { title: "Grants", icon: "💼", rail: true },
-  actions: { title: "Actions", icon: "🗒️", rail: true },
-  report: { title: "Report", icon: "📊", rail: true },
-  donors: { title: "Donors", icon: "🗺️", rail: true },
-  // Organization and Submit are registered in the rail and not hidden by the header CSS.
-  organization: { title: "Tenant", icon: "🏢", rail: true },
-  "submit-new-rfp": { title: "Submit", icon: "📝", rail: true },
+  home: { title: "Dashboard", icon: "🏠", rail: true },
+  pipelines: { title: "Funding Pipeline", icon: "📚", rail: true },
+  // A RAIL ITEM, AND THE OWNER SETTLED THAT ON 2026-11-09 — said to this session directly,
+  // not relayed: "keep Funding as its own page in the React not in the RFPIS". The two
+  // apps differ here on purpose. On the Streamlit side Funding stopped being a page and
+  // became the "Outcomes" tab of Funding Pipeline; here it stays its own page.
+  //
+  // ITS TITLE IS ALSO THE EXCEPTION. Every other name below matches the Streamlit rail
+  // word for word; this one is "Proposals Submitted" where that app says "Outcomes", and
+  // the owner named the difference when they set them: "do not change for streamlit as it
+  // is now moved to pipeline screen as a tab". A tab inside the Pipeline can be called
+  // Outcomes because the stages around it supply the context; a standalone rail item has
+  // to say what it holds.
+  //
+  // The reason it is not simply folded into the Pipeline's Outcome stage: that stage covers
+  // only what a funder has ANSWERED, while this page also holds the pending applications,
+  // the per-funder breakdown and the reporting tab. Making it a tab today would drop those
+  // three rather than move them. Revisit when the Outcome stage can carry them — until
+  // then this is a decision, not an oversight. /grants resolves either way.
+  grants: { title: "Proposals Submitted", icon: "💼", rail: true },
+  actions: { title: "Meeting Actions", icon: "🗒️", rail: true },
+  report: { title: "Funding Report", icon: "📊", rail: true },
+  donors: { title: "Donor Intelligence", icon: "🗺️", rail: true },
+  organization: { title: "My Organization", icon: "🏢", rail: true },
+  // The slug stays `submit-new-rfp`. The page is named for what it takes in now, but a
+  // bookmark or an emailed link still has to resolve.
+  "submit-new-rfp": { title: "Submit New Notice", icon: "📝", rail: true },
   opportunity: { title: "Opportunity", icon: "🎯" },
   profile: { title: "Profile", icon: "👤" },
   help: { title: "Help", icon: "❓" },
   search: { title: "Search", icon: "🔍" },
-  settings: { title: "Settings", icon: "⚙️", rail: true, adminOnly: true },
-  login: { title: "Sign in", icon: "🔐", public: true },
+  // Deliberately in the rail: admins get Settings as a first-class item, not a hidden one.
+  // NOT in the rail (owner, 2026-11-09): it already sits in the account menu at the
+  // foot of the sidebar, so a rail entry was the same destination twice, a few
+  // centimetres apart. `adminOnly` stays - it is the permission, not the placement,
+  // and the menu entry reads it.
+  settings: { title: "Settings", icon: "⚙️", adminOnly: true },
+  login: { title: "Sign In", icon: "🔐", public: true },
   "activate-account": { title: "Activate", icon: "🔑", public: true },
-  "password-reset": { title: "Reset password", icon: "🔓", public: true },
+  "password-reset": { title: "Reset Password", icon: "🔓", public: true },
 };
 
 export const pageOf = (pathname: string): PageKey | null => {

@@ -50,7 +50,10 @@ PAGE_SCRIPTS: dict[str, str] = {
     "": "app_pages/home.py",
     "home": "app_pages/home.py",
     "pipelines": "app_pages/pipelines.py",
-    "grants": "app_pages/grants.py",
+    # "Grants" is now the Outcomes TAB of the Funding Pipeline page; the old
+    # /grants slug still resolves so saved links and bookmarks keep working.
+    "grants": "app_pages/pipelines.py",
+    "outcomes": "app_pages/pipelines.py",
     "actions": "app_pages/actions.py",
     "report": "app_pages/report.py",
     "donors": "app_pages/donors.py",
@@ -222,9 +225,14 @@ _ROOT_PAGE = "home"
 
 # Human names for the trail, so a crumb can say where it goes.
 PAGE_TITLES: dict[str, str] = {
-    "": "Home", "home": "Home", "pipelines": "Pipelines", "grants": "Grants",
-    "actions": "Actions", "report": "Report", "donors": "Donors",
-    "organization": "Tenant", "submit-new-rfp": "Submit", "opportunity": "Opportunity",
+    "": "Dashboard", "home": "Dashboard", "pipelines": "Funding Pipeline",
+    # Stays "Outcomes" here: in this app it is a tab inside Funding Pipeline, where the
+    # stages around it supply the context. The React app, where it is still a standalone
+    # rail page, calls it "Proposals Submitted" — owner, 2026-11-09, naming the difference.
+    "grants": "Outcomes", "outcomes": "Outcomes",
+    "actions": "Meeting Actions", "report": "Funding Report",
+    "donors": "Donor Intelligence", "organization": "My Organization",
+    "submit-new-rfp": "Submit New Notice", "opportunity": "Opportunity",
     "profile": "Profile", "help": "Help", "search": "Search", "settings": "Settings",
 }
 
@@ -290,9 +298,10 @@ def _go(entry: dict) -> None:
 
 
 def render_breadcrumbs(*, key: str = "crumb") -> bool:
-    """`Home › Pipelines › Opportunity` — every level but the current one clickable.
+    """`Dashboard › Funding Pipeline › Opportunity` — every level but the current one
+    clickable.
 
-    Renders NOTHING when the trail is just Home: the root page has nothing above it, and a
+    Renders NOTHING when the trail is just the root page: it has nothing above it, and a
     lone unclickable crumb is furniture. Returns whether anything was drawn.
     """
     import streamlit as st
@@ -304,7 +313,9 @@ def render_breadcrumbs(*, key: str = "crumb") -> bool:
                       key=f"rfpis_{key}s"):
         for i, entry in enumerate(trail):
             page = str(entry.get("page") or "")
-            name = PAGE_TITLES.get(page, page or "Home")
+            # Falls back to the ROOT PAGE'S title rather than a literal: a hard-coded
+            # "Home" here outlived two renames of the page it was naming.
+            name = PAGE_TITLES.get(page) or page or PAGE_TITLES[_ROOT_PAGE]
             last = (i == len(trail) - 1)
             if last or page not in PAGE_SCRIPTS:
                 # The page you are ON is a label, not a link — clicking it goes nowhere,

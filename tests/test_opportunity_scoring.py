@@ -109,6 +109,28 @@ class TestTheDecisionRule(unittest.TestCase):
         self.assertEqual(osc.decide(70.0), "Park")
         self.assertEqual(osc.decide(69.9), "Decline")
 
+    def test_the_scorer_bands_the_same_number_the_same_way(self):
+        """The other path to a recommendation must agree with this one.
+
+        `scorer.auto_recommendation` is what Submit and the RFP editor write through, and
+        it reads its thresholds from config/scoring_weights.yaml. Those were left at 70/45
+        when the composite was retuned to 90/70 (the donor-org extras were dropped in
+        2026-06-29 and the number changed meaning), so the SAME score was banded two ways
+        depending on how a row entered the app — a 75 read Park if the scan found it and
+        Proceed if somebody submitted it by hand. Measured on live data, 95 of 266 rows
+        banded differently between the two.
+
+        The test above only ever compared this rule with itself, which is why the drift
+        went unnoticed. Pinned here so the two cannot separate again.
+        """
+        from core.scorer import auto_recommendation
+        for score in (100.0, 95.0, 90.0, 89.9, 75.0, 70.0, 69.9, 50.0, 0.0):
+            self.assertEqual(
+                auto_recommendation(score, False), osc.decide(score),
+                f"scorer.auto_recommendation and the canonical rule disagree at {score}")
+        # The decline-flag override still beats the score.
+        self.assertEqual(auto_recommendation(99.0, True), "Decline")
+
     def test_a_fatal_gate_declines_outright(self):
         self.assertEqual(osc.decide(99.0, fatal=True), "Decline")
 

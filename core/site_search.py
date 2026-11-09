@@ -30,7 +30,7 @@ _NAV: list[tuple[str, str, str, bool]] = [
      "app_pages/pipelines.py", False),
     ("Pipelines · Summary", "summary stats overview", "app_pages/pipelines.py", False),
     ("Grants", "applied funding awarded won reporting deadlines",
-     "app_pages/grants.py", False),
+     "app_pages/pipelines.py", False),
     ("Actions", "meetings engagements pending follow ups todo tasks check-ins",
      "app_pages/actions.py", False),
     ("Report", "analytics kpi dashboard charts export pdf metrics",

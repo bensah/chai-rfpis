@@ -54,7 +54,7 @@ px.defaults.color_discrete_sequence = _theme.ramp(6)
 from core.member_names import (first_name_display_map, normalize_member_name,
                               split_and_normalize_names)
 from core.records import clean_df
-from db.supabase_client import get_client
+from db.supabase_client import fetch_all, get_client
 
 
 # ---------------------------------------------------------------------------
@@ -411,10 +411,21 @@ def _bucket_start(series: pd.Series, mode: str) -> pd.Series:
     if mode == "Quarterly":
         return s.dt.to_period("Q").dt.start_time
     if mode == "Semestrial":
+        # The only branch that builds a date from STRINGS, and the only one that used to
+        # raise on a missing date. `s.dt.year` is float64 as soon as one value is NaT, so
+        # 2026 becomes "2026.0" and the concatenation produces "2026.0-01-01", which
+        # pd.to_datetime cannot parse — and it raised rather than coercing. Report with
+        # "View by = Semestrial" crashed whenever a row without a search_date was in
+        # scope, which is the Excel-migrated ones.
+        #
+        # Int64 keeps the year integral and carries missing values as <NA>; errors="coerce"
+        # then lets a missing date stay missing, which is what every other mode here does
+        # (they go through .dt.to_period, which is NaT-safe already).
         month = s.dt.month
         return pd.to_datetime(
-            s.dt.year.astype(str) + "-"
-            + np.where(month <= 6, "01", "07") + "-01"
+            s.dt.year.astype("Int64").astype(str) + "-"
+            + np.where(month <= 6, "01", "07") + "-01",
+            errors="coerce",
         )
     if mode == "Annually":
         return s.dt.to_period("Y").dt.start_time
@@ -487,14 +498,21 @@ _DT_KW = dict(errors="coerce", format="ISO8601")
 
 @st.cache_data(ttl=120)
 def _load_scan_logs(scope: str, start_iso: str | None, end_iso: str | None) -> pd.DataFrame:
-    q = sb.table("scan_logs").select("*")
-    if start_iso:
-        q = q.gte("scan_date", start_iso)
-    if end_iso:
-        q = q.lte("scan_date",
-                  (date.fromisoformat(end_iso) + timedelta(days=1)).isoformat())
-    res = q.limit(10000).execute()
-    df = clean_df(pd.DataFrame(res.data or []))
+    def _q():
+        q = sb.table("scan_logs").select("*")
+        if start_iso:
+            q = q.gte("scan_date", start_iso)
+        if end_iso:
+            q = q.lte("scan_date",
+                      (date.fromisoformat(end_iso) + timedelta(days=1)).isoformat())
+        return q
+    # fetch_all, not .limit(10000): PostgREST returns at most 1000 rows per request however
+    # large a limit is asked for, and says nothing about the rest. scan_logs held 3,082 rows
+    # on 2026-10-29 and this page saw 1,000 of them, so every tile below - runs, found,
+    # eligible, duplicates, rejected - was a partial sum presented as a total, and the Top 15
+    # sources table ranked an arbitrary third of the runs. Same fault core.analytics already
+    # documents and pages around.
+    df = clean_df(pd.DataFrame(fetch_all(_q)))
     if not df.empty:
         df["scan_date"] = pd.to_datetime(df["scan_date"], **_DT_KW)
         for c in ("rfps_found", "rfps_new", "rfps_duplicate", "rfps_rejected"):
@@ -534,7 +552,7 @@ def _load_rfps(scope: str) -> pd.DataFrame:
     # through to USD-as-fallback for every row, so a 200,000 GBP grant
     # rendered as $200,000 instead of $266,000. If you add a new
     # monetary field, add its companion currency column here too.
-    res = sb.table("rfp_submissions").select(
+    _cols = (
         "uid,source,opportunity_title,brief_description,funding_agency,"
         "submitted_at,search_date,"
         "submitted_by,submitted_by_email,"
@@ -546,8 +564,12 @@ def _load_rfps(scope: str) -> pd.DataFrame:
         "proposal_lead,contributors,reviewers,"
         "lead_applicant,sub_applicant,"
         "is_duplicate,review_week,applicant_role"
-    ).limit(50000).execute()
-    df = clean_df(pd.DataFrame(res.data or []))
+    )
+    # Every row, in pages. This table still fits in one response today (266 rows), which is
+    # exactly why it had to change: at 1,001 rows EVERY figure on this page would have begun
+    # under-counting in silence, and nobody would have connected it to the row that tipped it.
+    df = clean_df(pd.DataFrame(fetch_all(
+        lambda: sb.table("rfp_submissions").select(_cols), order="uid")))
     if df.empty:
         return df
     for c in ("submitted_at", "search_date"):
@@ -563,13 +585,14 @@ def _load_rfps(scope: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=120)
 def _load_meetings(scope: str, start_iso: str | None, end_iso: str | None) -> pd.DataFrame:
-    q = sb.table("meeting_logs").select("*")
-    if start_iso:
-        q = q.gte("meeting_date", start_iso)
-    if end_iso:
-        q = q.lte("meeting_date", end_iso)
-    res = q.limit(10000).execute()
-    df = clean_df(pd.DataFrame(res.data or []))
+    def _q():
+        q = sb.table("meeting_logs").select("*")
+        if start_iso:
+            q = q.gte("meeting_date", start_iso)
+        if end_iso:
+            q = q.lte("meeting_date", end_iso)
+        return q
+    df = clean_df(pd.DataFrame(fetch_all(_q)))
     if not df.empty and "meeting_date" in df.columns:
         df["meeting_date"] = pd.to_datetime(df["meeting_date"], **_DT_KW)
         df["is_resolved"] = df.get("is_resolved", False).fillna(False)
@@ -578,13 +601,14 @@ def _load_meetings(scope: str, start_iso: str | None, end_iso: str | None) -> pd
 
 @st.cache_data(ttl=120)
 def _load_engagements(scope: str, start_iso: str | None, end_iso: str | None) -> pd.DataFrame:
-    q = sb.table("engagement_logs").select("*")
-    if start_iso:
-        q = q.gte("engagement_date", start_iso)
-    if end_iso:
-        q = q.lte("engagement_date", end_iso)
-    res = q.limit(10000).execute()
-    df = clean_df(pd.DataFrame(res.data or []))
+    def _q():
+        q = sb.table("engagement_logs").select("*")
+        if start_iso:
+            q = q.gte("engagement_date", start_iso)
+        if end_iso:
+            q = q.lte("engagement_date", end_iso)
+        return q
+    df = clean_df(pd.DataFrame(fetch_all(_q)))
     if not df.empty and "engagement_date" in df.columns:
         df["engagement_date"] = pd.to_datetime(df["engagement_date"], **_DT_KW)
     return df
@@ -592,8 +616,8 @@ def _load_engagements(scope: str, start_iso: str | None, end_iso: str | None) ->
 
 @st.cache_data(ttl=120)
 def _load_grants(scope: str) -> pd.DataFrame:
-    res = sb.table("applied_funding").select("*").limit(10000).execute()
-    df = clean_df(pd.DataFrame(res.data or []))
+    df = clean_df(pd.DataFrame(
+        fetch_all(lambda: sb.table("applied_funding").select("*"))))
     if not df.empty:
         for c in ("award_date", "end_date", "submitted_date", "report_due_date"):
             if c in df.columns:

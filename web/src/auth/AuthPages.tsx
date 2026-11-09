@@ -7,7 +7,8 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { CheckCircle2, ChevronDown, Loader2, Mail, ShieldCheck, Sparkles } from "lucide-react";
 import {
-  ApiError, forcedChange, login, peekToken, redeemToken, requestReset, type TokenInfo,
+  ApiError, forcedChange, login, peekToken, redeemToken, requestReset,
+  type Credential, type TokenInfo,
 } from "../api";
 import { navigate, setParams } from "../router";
 import { Button, Field, Notice } from "../ui";
@@ -147,20 +148,48 @@ export function LoginScreen({ onSignedIn }: { onSignedIn: () => void }) {
   );
 }
 
-/** activation_code_entry: the code goes into the URL, and the token screen owns the verdict. */
+/**
+ * activation_code_entry. Two kinds of thing get pasted here: the long token from a link,
+ * which identifies itself, and the six-digit code, which does not — six digits is one in a
+ * million, so the API only ever checks it against the account an email address names. That
+ * email is asked for here and kept in component state: a long token may ride in the URL,
+ * an address may not.
+ */
 function CodeEntry() {
   const [code, setCode] = useState("");
+  const [email, setEmail] = useState("");
+  const [cred, setCred] = useState<Credential | null>(null);
   const [error, setError] = useState<Error | null>(null);
+  const digits = code.replace(/\D/g, "");
+  const isShortCode = digits.length === 6 && !/[^\d\s-]/.test(code);
+
+  if (cred) return <TokenFlow credential={cred} />;
+
   return (
     <form onSubmit={(e) => {
       e.preventDefault();
+      setError(null);
       if (!code.trim()) return setError(new Error("Paste the code from your email."));
+      if (isShortCode) {
+        if (!email.includes("@")) return setError(new Error("Enter the email address the code was sent to."));
+        return setCred({ email: email.trim(), code: digits });
+      }
+      // A long token identifies itself, so it can go in the URL and be bookmarked.
       setParams({ token: code.trim() });
     }}>
       <p className="mb-3 text-xs text-ink-500">
-        If the button in your email did not open a password screen, paste the code printed underneath it here.
+        If the button in your email did not open a password screen, enter the six-digit code printed
+        underneath it — or paste the long link code.
       </p>
-      <Field id="code" label="Activation / reset code" value={code} onChange={(e) => setCode(e.target.value)} />
+      <Field id="code" label="Activation / reset code" value={code} inputMode="text"
+        onChange={(e) => setCode(e.target.value)} />
+      {isShortCode && (
+        <Field
+          id="code_email" label="Your email address" type="email" autoComplete="username"
+          value={email} onChange={(e) => setEmail(e.target.value)}
+          hint="A six-digit code is only checked against the account it was sent to."
+        />
+      )}
       <Problems error={error} />
       <Button type="submit" className="w-full">Continue</Button>
     </form>
@@ -249,8 +278,17 @@ export function ChoosePasswordGate({ onDone, onCancel }: { onDone: () => void; o
 
 // ── Setup / reset links ──────────────────────────────────────────────────────
 
-/** handle_setup_token: one screen per state — invalid, activate (invites), choose, done. */
+/** The ?token= link route: the same flow, in its own two-panel frame. */
 export function TokenScreen({ token }: { token: string }) {
+  return <Frame><TokenFlow credential={{ token }} /></Frame>;
+}
+
+/**
+ * handle_setup_token: one state at a time — invalid, activate (invites), choose, done.
+ * Frameless, because it is rendered both as a page of its own and inline under the code
+ * box on the sign-in screen.
+ */
+function TokenFlow({ credential }: { credential: Credential }) {
   const [info, setInfo] = useState<TokenInfo | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [next, setNext] = useState("");
@@ -259,14 +297,17 @@ export function TokenScreen({ token }: { token: string }) {
   const [error, setError] = useState<Error | null>(null);
   const [done, setDone] = useState<{ email: string; purpose: string } | null>(null);
 
+  // `credential` is a fresh object on every render, so key the effect on its contents.
+  const credKey = JSON.stringify(credential);
   useEffect(() => {
     setInfo(null);
-    peekToken(token).then(setInfo).catch((e) => setInfo({ valid: false, error: e.message }));
-  }, [token]);
+    peekToken(JSON.parse(credKey) as Credential)
+      .then(setInfo).catch((e) => setInfo({ valid: false, error: e.message }));
+  }, [credKey]);
 
   if (done) {
     return (
-      <Frame>
+      <>
         <Notice tone="good" className="mb-6" icon={<CheckCircle2 className="h-4 w-4" />}>
           {done.purpose === "invite" ? "Account activated. Your password is set." : "Password changed."}
         </Notice>
@@ -275,33 +316,32 @@ export function TokenScreen({ token }: { token: string }) {
         <Button variant="primary" className="w-full" onClick={() => navigate("/login", { replace: true })}>
           Go to sign in
         </Button>
-      </Frame>
+      </>
     );
   }
   if (!info) {
     return (
-      <Frame>
-        <div className="flex items-center gap-2.5 py-10 text-sm text-ink-500">
-          <Loader2 className="h-5 w-5 animate-spin text-accent-600" /> Checking your link…
-        </div>
-      </Frame>
+      <div className="flex items-center gap-2.5 py-10 text-sm text-ink-500">
+        <Loader2 className="h-5 w-5 animate-spin text-accent-600" /> Checking your code…
+      </div>
     );
   }
   if (!info.valid) {
     return (
-      <Frame>
-        <h2 className="mb-4 text-2xl font-bold text-brand-700">This link is no longer valid</h2>
+      <>
+        <h2 className="mb-4 text-2xl font-bold text-brand-700">That code is no longer valid</h2>
         <Notice tone="bad">
-          Setup and reset links can only be used once, and they expire. Ask an administrator to send you a new one.
+          Setup and reset codes can only be used once, and they expire. A six-digit code may also
+          be typed a few times only. Ask an administrator to send you a new one.
         </Notice>
         <Button className="mt-5 w-full" onClick={() => navigate("/login", { replace: true })}>Go to sign in</Button>
-      </Frame>
+      </>
     );
   }
   const invite = info.purpose === "invite";
   if (invite && !confirmed) {
     return (
-      <Frame>
+      <>
         <h2 className="text-2xl font-bold text-brand-700">Activate your account</h2>
         <p className="mt-3 text-sm text-ink-700">This invitation is for <strong>{info.email}</strong>.</p>
         <p className="mt-2 mb-6 text-sm text-ink-500">
@@ -309,25 +349,24 @@ export function TokenScreen({ token }: { token: string }) {
           including the administrator who invited you, knows it.
         </p>
         <Button variant="primary" className="w-full" onClick={() => setConfirmed(true)}>Activate account</Button>
-      </Frame>
+      </>
     );
   }
   return (
-    <Frame>
-      <form onSubmit={async (e) => {
-        e.preventDefault();
-        setBusy(true);
-        setError(null);
-        try {
-          const r = await redeemToken(token, next, confirm);
-          setParams({ token: null, activate: null });
-          setDone({ email: r.email, purpose: r.purpose });
-        } catch (err) {
-          setError(err instanceof Error ? err : new Error("Could not save the password."));
-        } finally {
-          setBusy(false);
-        }
-      }}>
+    <form onSubmit={async (e) => {
+      e.preventDefault();
+      setBusy(true);
+      setError(null);
+      try {
+        const r = await redeemToken(credential, next, confirm);
+        setParams({ token: null, activate: null });
+        setDone({ email: r.email, purpose: r.purpose });
+      } catch (err) {
+        setError(err instanceof Error ? err : new Error("Could not save the password."));
+      } finally {
+        setBusy(false);
+      }
+    }}>
         {invite && (
           <Notice tone="good" className="mb-5" icon={<CheckCircle2 className="h-4 w-4" />}>
             Account activated. One step left: choose your password.
@@ -345,10 +384,9 @@ export function TokenScreen({ token }: { token: string }) {
           value={next} onChange={(e) => setNext(e.target.value)} />
         <Field id="tok_confirm" label="Confirm new password" type="password" autoComplete="new-password"
           value={confirm} onChange={(e) => setConfirm(e.target.value)} />
-        <Problems error={error} />
-        <Button type="submit" variant="primary" busy={busy} className="w-full">Save password</Button>
-      </form>
-    </Frame>
+      <Problems error={error} />
+      <Button type="submit" variant="primary" busy={busy} className="w-full">Save password</Button>
+    </form>
   );
 }
 

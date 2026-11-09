@@ -71,8 +71,12 @@ with _main:
         render_view("review_rfp")
         st.stop()
 
-    tab_screen, tab_review, tab_tracking, tab_summary = st.tabs(
-        ["Screen", "Review", "Track", "Summary"]
+    # "Outcomes" was its own rail page ("Grants"). It belongs here: it is the last
+    # stage of the same lifecycle the other tabs walk through - screened, reviewed,
+    # tracked, then what came of it - and it sits before Summary so the summary stays
+    # the closing read of the whole pipeline.
+    tab_screen, tab_review, tab_tracking, tab_outcomes, tab_summary = st.tabs(
+        ["Screen", "Review", "Track", "Outcomes", "Summary"]
     )
 
     with tab_screen:
@@ -83,6 +87,9 @@ with _main:
 
     with tab_tracking:
         render_view("tracking_rfp")
+
+    with tab_outcomes:
+        render_view("outcomes")
 
     with tab_summary:
         render_view("summary_rfp")

@@ -121,7 +121,7 @@ export function createMailer(db: Db, env: MailEnv) {
    * token appears underneath as a code — two routes to one secret, because a link has ways
    * to fail that are nobody's fault (a client rewriting the URL, a forward to a phone).
    */
-  function instructions(base: string, token: string, expiresHint: string): string {
+  function instructions(base: string, token: string, code: string, expiresHint: string): string {
     const page = `${base}/password-reset`;
     const link = `${page}?token=${encodeURIComponent(token)}`;
     return `
@@ -132,14 +132,15 @@ export function createMailer(db: Db, env: MailEnv) {
           If the button does not work, paste this into your browser:<br>${esc(link)}
         </p>
         <p style="font-size:13px; color:#4b586c; margin-top:22px;">
-          Or, if neither opens, go to <a href="${esc(page)}" style="color:#117996;">${esc(page)}</a>
-          and enter this reset code:
+          Or go to <a href="${esc(page)}" style="color:#117996;">${esc(page)}</a> and type this
+          code with your email address:
         </p>
-        <p style="font-family:monospace; font-size:14px; background:#f7f9fb; padding:12px 14px; border-radius:8px; border:1px solid #e0e5ec; word-break:break-all; color:#232c3a;">
-          ${esc(token)}
+        <p style="font-family:monospace; font-size:26px; letter-spacing:0.22em; font-weight:700; background:#f7f9fb; padding:14px 18px; border-radius:8px; border:1px solid #e0e5ec; color:#003E78; text-align:center;">
+          ${esc(code)}
         </p>
         <p style="font-size:13px; color:#4b586c;">
-          Either way it works once and expires in ${esc(expiresHint)}. If it expires, ask for a new one.
+          Either way it works once and expires in ${esc(expiresHint)}. The code may be typed a
+          few times only, so check it before entering it. If it expires, ask for a new one.
         </p>`;
   }
 
@@ -167,7 +168,7 @@ export function createMailer(db: Db, env: MailEnv) {
 
   /** user_emails.send_password_reset_email, worded for a reset the person asked for. */
   async function sendPasswordReset(opts: {
-    toEmail: string; toName: string | null; token: string;
+    toEmail: string; toName: string | null; token: string; code: string;
     origin?: string | null; allowedOrigins?: string[]; expiresHint?: string;
   }): Promise<boolean> {
     const base = await appUrl(opts.origin, opts.allowedOrigins);
@@ -175,7 +176,7 @@ export function createMailer(db: Db, env: MailEnv) {
     const short = await shortName();
     const body = `
         <p>You asked to reset the password on your ${esc(short)} account.</p>
-        ${instructions(base, opts.token, hint)}
+        ${instructions(base, opts.token, opts.code, hint)}
         <p style="font-size:13px; color:#4b586c;">
           If you did NOT ask for this, you can ignore this email. Your existing password still
           works until this code is used, so nothing has changed yet.
