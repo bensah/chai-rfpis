@@ -49,14 +49,27 @@ name: Deploy API
 #                      → New repository secret (NOT an environment or Dependabot secret)
 #   Value              a Supabase personal access token, from
 #                      https://supabase.com/dashboard/account/tokens
-#   Scope              narrow it. Resource access -> Project -> the CHAI org -> RFPIS
-#                      Project, so the token reaches one project and not the account. Then
-#                      drop the "Full access" preset and grant only the Edge Functions
-#                      permissions a deploy actually uses. Full access includes write
-#                      access to the database, the project's API keys and organization
-#                      members; this repo is public and that database holds real client
-#                      data, so it is a far wider blast radius than deploying a function
-#                      needs. Name it for this repo so it can be revoked without hunting.
+#   Scope              narrow it twice over. Resource access -> Project -> the CHAI org ->
+#                      RFPIS Project, so the token reaches one project and not the account.
+#                      Then drop the "Full access" preset and set every permission to None
+#                      except these two:
+#
+#                        Application services -> Edge Functions     Read-write
+#                        Project -> Project Settings                Read
+#
+#                      Three of the Nones are worth being deliberate about:
+#
+#                        * Edge Function Secrets. The section above promises this workflow
+#                          does not touch RFPIS_JWT_SECRET and friends. Leaving this at
+#                          None makes that a property of the token rather than a promise
+#                          in a comment — CI then cannot rewrite them even by mistake.
+#                        * API Key Secrets. Read there yields the service-role key, which
+#                          bypasses RLS on a database holding real client data.
+#                        * The whole Database category: SQL access, migrations, backups.
+#                          Migrations here are hand-numbered and applied to a shared,
+#                          hosted, live database; CI has no business holding that.
+#
+#                      Name the token for this repo so it can be revoked without hunting.
 #   Expiry             pick the longest the dashboard offers. It defaults to 7 days, and an
 #                      expired token stops API deploys *while Cloudflare carries on
 #                      shipping the frontend* — which is precisely the drift this file
