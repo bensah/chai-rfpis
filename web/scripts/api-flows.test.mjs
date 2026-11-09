@@ -1729,3 +1729,93 @@ test("a scan alert carries the run's numbers, not just a sentence", async () => 
   assert.equal(facts.Eligible, "37");
   assert.equal(facts.Added, "12");
 });
+
+// ── The RFP editor ───────────────────────────────────────────────────────────
+// One form, one table. The editor is a single React component opened from the Opportunity
+// page and from all five Pipeline stages, and the only reason that can be true is that the
+// routes below are the only two ways it writes.
+
+test("the editor's dropdowns carry the deployment's roster, not the repo's placeholders", async () => {
+  // core/dropdowns.load overlays team_members and currencies from app_settings on top of
+  // the YAML. Generating them into form_vocab.ts would publish one organisation's staff,
+  // or ship "Team Member 1..N" as if they were people — so they are read live here.
+  const { call, signIn, db } = setup();
+  db.tables.tenant_settings.push({
+    tenant_id: T1, key: "team_members_json", value: JSON.stringify(["Ada", "Sam"]),
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/form-options", null, col.token);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.teamMembers, ["Ada", "Sam", "Other"],
+    "the roster, with the forms' Other → specify path kept as a roster entry");
+  assert.ok(r.body.currencies.includes("USD"));
+  // The generated half is there too, and the nine criteria each offer real answers.
+  assert.equal(Object.keys(r.body.criterionAnswers).length, 9);
+  for (const [k, v] of Object.entries(r.body.criterionAnswers)) {
+    assert.ok(v.length > 0, `${k} would render an empty dropdown`);
+  }
+  assert.ok(r.body.opportunityTypes.includes("Procurement"),
+    "the gate's own exclusion classes must be markable");
+  assert.ok(r.body.dropdowns.stages.length >= 7, "seven stages, not tracking_rfp's fallback five");
+});
+
+test("a tenant with no roster of its own is offered nobody else's", async () => {
+  const { call, signIn, db } = setup();
+  db.tables.app_settings.push({ key: "team_members_json", value: JSON.stringify(["Someone Else"]) });
+  db.tables.tenant_settings.push({
+    tenant_id: T2, key: "team_members_json", value: JSON.stringify(["Beta Person"]),
+  });
+  const col = await signIn("col@x.org", "col pass 1");   // a T1 member
+  const r = await call("GET", "/pipelines/form-options", null, col.token);
+  assert.deepEqual(r.body.teamMembers, [],
+    "tenant-scoped with no fallback: an empty roster beats another organisation's team");
+});
+
+test("the editor's record is unprojected, so the form has every column it writes", async () => {
+  const { call, signIn, db } = setup();
+  Object.assign(db.tables.rfp_submissions[0], {
+    eligibility_specifics: "Registered NGOs only", application_checklist: "CV; budget",
+    call_domain_areas: ["Malaria"], support_roles: "Technical, Finance",
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/rfp/R1", null, col.token);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.row.eligibility_specifics, "Registered NGOs only");
+  assert.deepEqual(r.body.row.call_domain_areas, ["Malaria"]);
+  assert.equal(r.body.grant, null, "no reporting lookup unless the tab is open");
+});
+
+test("every tab of the editor writes the one rfp_submissions row", async () => {
+  // The whole point of the shared form: a save that spans Opportunity, Eligibility, Team
+  // and Award is one update to one row, not four writes to four places.
+  const { call, signIn, db } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const before = db.log.length;
+  const r = await call("PATCH", "/pipelines/rfp/R1", {
+    fields: {
+      opportunity_title: "Malaria call, revised",   // Opportunity
+      qualification: "Yes, fully",                  // Eligibility
+      proposal_lead: "Ada",                         // Team
+      amount_requested: 250000,                     // Submission & Award
+      how_to_apply: "Through the portal",           // Application
+    },
+  }, col.token);
+  assert.equal(r.status, 200);
+  const writes = db.log.slice(before)
+    .filter((e) => e.method === "PATCH" && e.table === "rfp_submissions");
+  assert.equal(writes.length, 1, "one row, one write");
+  const row = db.tables.rfp_submissions.find((x) => x.uid === "R1");
+  assert.equal(row.opportunity_title, "Malaria call, revised");
+  assert.equal(row.proposal_lead, "Ada");
+  assert.equal(row.how_to_apply, "Through the portal");
+  assert.equal(row.decision_overridden_by, "col@x.org", "stamped by the server, not the form");
+});
+
+test("a column the editor must not write is refused, not dropped", async () => {
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("PATCH", "/pipelines/rfp/R1",
+    { fields: { opportunity_title: "ok", not_a_column: 1 } }, col.token);
+  assert.equal(r.status, 400, "a typo should fail where it is made, not look like a no-op");
+  assert.deepEqual(r.body.problems, ["not_a_column"]);
+});

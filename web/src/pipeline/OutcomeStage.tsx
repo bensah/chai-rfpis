@@ -21,10 +21,10 @@
  *     scoring snapshot would stop working the day that seam is retired.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  AlertTriangle, ExternalLink, Trophy, X,
-} from "lucide-react";
+import { AlertTriangle, Trophy, X } from "lucide-react";
 import { fetchOutcome, type Outcome, type OutcomeRow } from "../api";
+import OpportunityCell from "../opportunity/OpportunityCell";
+import RfpEditor from "../opportunity/RfpEditor";
 import { atGrain, labelOf, rangeOf, type Period } from "./period";
 import { Badge, Card, Button, EmptyState, Notice, Spinner, fieldClass } from "../ui";
 
@@ -54,6 +54,7 @@ export default function OutcomeStage({ period, onPickPeriod }: {
   const [q, setQ] = useState("");
   const [only, setOnly] = useState<"all" | "won" | "lost">("all");
   const [open, setOpen] = useState<string | null>(null);
+  const [editUid, setEditUid] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -221,25 +222,17 @@ export default function OutcomeStage({ period, onPickPeriod }: {
                     className={`border-b border-ink-100 transition-colors last:border-0 ${
                       on ? "bg-brand-50" : "hover:bg-ink-50"}`}>
                     <td className="px-4 py-3">
-                      <button
-                        onClick={() => setOpen(on ? null : r.uid)} aria-expanded={on}
-                        className="text-left font-medium text-brand-700 hover:text-accent-700 hover:underline"
+                      <OpportunityCell uid={r.uid} title={r.opportunity_title}
+                        link={r.opportunity_link} onEdit={setEditUid}
+                        expanded={on} onToggle={() => setOpen(on ? null : r.uid)}
                       >
-                        {r.opportunity_title || r.uid}
-                      </button>
-                      {r.applications > 1 && (
-                        <span className="ml-1.5 text-xs text-ink-500"
-                          title="Submitted to the funder more than once — counts each time">
-                          ×{r.applications}
-                        </span>
-                      )}
-                      {r.opportunity_link && (
-                        <a href={r.opportunity_link} target="_blank" rel="noreferrer"
-                          className="ml-1.5 inline-flex text-ink-400 hover:text-accent-700"
-                          aria-label="Open the call">
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      )}
+                        {r.applications > 1 && (
+                          <span className="ml-1.5 text-xs text-ink-500"
+                            title="Submitted to the funder more than once — counts each time">
+                            ×{r.applications}
+                          </span>
+                        )}
+                      </OpportunityCell>
                     </td>
                     <td className="px-4 py-3 text-ink-600">{r.funding_agency || "—"}</td>
                     <td className="px-4 py-3 whitespace-nowrap text-ink-600">
@@ -284,6 +277,9 @@ export default function OutcomeStage({ period, onPickPeriod }: {
               `${cur} ${Number(rate).toFixed(4)}${when ? ` (${when})` : ""}`)
             .join(", ") || "the table rates"}.
         </p>
+      )}
+      {editUid && (
+        <RfpEditor uid={editUid} onClose={() => setEditUid(null)} onSaved={load} />
       )}
     </>
   );

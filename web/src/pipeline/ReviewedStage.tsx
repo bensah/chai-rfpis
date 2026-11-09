@@ -19,11 +19,13 @@
  *     would otherwise discover by seeing it again weeks later.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ExternalLink, RefreshCw } from "lucide-react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import {
   fetchReviewed, recordDecision, scoreIsBehind,
   type Reviewed, type ReviewedRow, type Warning,
 } from "../api";
+import OpportunityCell from "../opportunity/OpportunityCell";
+import RfpEditor from "../opportunity/RfpEditor";
 import { atGrain, periodOf, rangeOf, labelOf, type Period } from "./period";
 import { Badge, Button, Card, EmptyState, Notice, Select, Spinner, fieldClass } from "../ui";
 
@@ -69,6 +71,7 @@ export default function ReviewedStage({ period, onPickPeriod }: {
   const [q, setQ] = useState("");
   const [notices, setNotices] = useState<Warning[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
+  const [editUid, setEditUid] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -245,16 +248,8 @@ export default function ReviewedStage({ period, onPickPeriod }: {
                 return (
                   <tr key={r.uid} className="border-b border-ink-100 transition-colors last:border-0 hover:bg-ink-50">
                     <td className="px-4 py-3">
-                      <a href={`/opportunity?uid=${encodeURIComponent(r.uid)}`}
-                        className="font-medium text-brand-700 hover:text-accent-700 hover:underline">
-                        {r.opportunity_title || r.uid}
-                      </a>
-                      {r.opportunity_link && (
-                        <a href={r.opportunity_link} target="_blank" rel="noreferrer"
-                          className="ml-1.5 inline-flex text-ink-400 hover:text-accent-700" aria-label="Open the call">
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      )}
+                      <OpportunityCell uid={r.uid} title={r.opportunity_title}
+                        link={r.opportunity_link} onEdit={setEditUid} />
                     </td>
                     <td className="px-4 py-3 align-top text-ink-600 break-words">
                       {r.funding_agency || "—"}
@@ -321,6 +316,9 @@ export default function ReviewedStage({ period, onPickPeriod }: {
           </table>
         </div>
       </Card>
+      {editUid && (
+        <RfpEditor uid={editUid} onClose={() => setEditUid(null)} onSaved={load} />
+      )}
     </>
   );
 }

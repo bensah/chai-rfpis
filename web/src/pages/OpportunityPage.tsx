@@ -11,14 +11,15 @@
  * renders what they return. The page shows its header as soon as the rows arrive and fills
  * in the rest when the engine answers, so it never sits blank waiting for the boot.
  */
-import { useEffect, useState } from "react";
-import { ArrowUpRight, Layers } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ArrowUpRight, Layers, Pencil } from "lucide-react";
 import { fetchOpportunityRows, type User } from "../api";
 import OpportunityRail from "../components/OpportunityRail";
+import RfpEditor from "../opportunity/RfpEditor";
 import { scoreOpportunity, useEngine, warmEngine } from "../scoring/engine";
 import type { Block, OpportunityResult } from "../scoring/protocol";
 import { hrefOf, Link } from "../router";
-import { Badge, Card, EmptyState, LinkButton, Notice, PageHeader, Spinner, type Tone } from "../ui";
+import { Badge, Button, Card, EmptyState, LinkButton, Notice, PageHeader, Spinner, type Tone } from "../ui";
 
 /** opportunity_detail's chip tones, mapped onto the design system's. */
 const CHIP_TONE: Record<string, Tone> = {
@@ -155,7 +156,14 @@ function Analysis({ a, who }: { a: Record<string, unknown>; who: string }) {
 export default function OpportunityPage({ uid, user }: { uid: string; user: User }) {
   const [data, setData] = useState<OpportunityResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  /** Bumped when a save lands, to re-run the load effect below. The detail layout and the
+   *  decision aid are both computed from the row, so an edit that changes a date or a
+   *  criterion changes the page — re-reading is the only honest way to show the result. */
+  const [saved, setSaved] = useState(0);
   const engine = useEngine();
+
+  const onSaved = useCallback(() => setSaved((n) => n + 1), []);
 
   // This is the only surface left that needs the Python engine, so it starts it rather
   // than the app shell: nobody downloads a Python runtime until they open an opportunity.
@@ -175,7 +183,7 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
     return () => {
       live = false;
     };
-  }, [uid]);
+  }, [uid, saved]);
 
   const rail = (
     <div className="w-full shrink-0 lg:w-80">
@@ -183,10 +191,18 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
     </div>
   );
   const frame = (body: React.ReactNode) => (
-    <div className="flex flex-col gap-7 lg:flex-row">
-      <div className="min-w-0 flex-1">{body}</div>
-      {rail}
-    </div>
+    <>
+      <div className="flex flex-col gap-7 lg:flex-row">
+        <div className="min-w-0 flex-1">{body}</div>
+        {rail}
+      </div>
+      {/* The one editor. Mounted at the frame rather than inside the header so it survives
+          the page's own loading states — a save re-reads the rows, and a dialog that
+          unmounted while that happened would close itself on every save. */}
+      {editing && (
+        <RfpEditor uid={uid} onClose={() => setEditing(false)} onSaved={onSaved} />
+      )}
+    </>
   );
 
   if (!uid) {
@@ -226,11 +242,19 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
       <PageHeader
         title={d.title}
         lead={<>{d.funder}{d.reference ? ` · ${d.reference}` : ""}</>}
-        actions={d.link ? (
-          <LinkButton href={d.link} variant="primary" icon={<ArrowUpRight className="h-4 w-4" />}>
-            Open the call
-          </LinkButton>
-        ) : undefined}
+        actions={
+          <>
+            <Button variant="secondary" icon={<Pencil className="h-4 w-4" />}
+              onClick={() => setEditing(true)}>
+              Edit this opportunity
+            </Button>
+            {d.link && (
+              <LinkButton href={d.link} variant="primary" icon={<ArrowUpRight className="h-4 w-4" />}>
+                Open the call
+              </LinkButton>
+            )}
+          </>
+        }
       />
       <div className="-mt-3 mb-2 flex flex-wrap gap-1.5">
         {d.chips.map((c, i) => (
