@@ -85,7 +85,7 @@ def _pages(include_admin: bool) -> list:
                 url_path="organization"),
         # The slug stays `submit-new-rfp` though the label no longer says RFP: a bookmark
         # and an emailed link still have to resolve.
-        st.Page("app_pages/submit_rfp.py", title="Submit new notice", icon="📝",
+        st.Page("app_pages/submit_rfp.py", title="Submit New Notice", icon="📝",
                 url_path="submit-new-rfp"),
         # One opportunity on its own page (/opportunity?uid=…) — every title in the Live
         # Opportunity Feed links here. Menu-only, like the pages above: it is always
@@ -99,10 +99,13 @@ def _pages(include_admin: bool) -> list:
         # because its visitor CANNOT sign in - a new joiner has no password yet, and
         # somebody who has forgotten theirs is in the same position - so none of these can
         # live behind the login gate.
-        st.Page("app_pages/login.py", title="Sign in", icon="🔐", url_path="login"),
+        # Title case like every other page title, and safe to recase: the rail's
+        # label-hide (core/app_header.py) lower-cases before matching, so these three stay
+        # hidden. A hide that compared exactly would have made this a functional change.
+        st.Page("app_pages/login.py", title="Sign In", icon="🔐", url_path="login"),
         st.Page("app_pages/activate.py", title="Activate", icon="🔑",
                 url_path="activate-account"),
-        st.Page("app_pages/password_reset.py", title="Reset password", icon="🔓",
+        st.Page("app_pages/password_reset.py", title="Reset Password", icon="🔓",
                 url_path="password-reset"),
     ]
     if include_admin:
