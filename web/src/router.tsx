@@ -17,10 +17,18 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
  * when a title changes: they ARE the slugs, and bookmarks and emailed links resolve
  * through them.
  *
- * THE TITLES ARE THE OWNER'S, as of 2026-11-09, renamed on the Streamlit side first and
- * carried across verbatim rather than re-derived. One page under two names across two apps
+ * WHERE THE TITLES CAME FROM, stated carefully because an earlier version of this comment
+ * got it wrong. The owner renamed these pages in the STREAMLIT app on 2026-11-09. That
+ * instruction was scoped to that app; they have since said so plainly ("I only gave a
+ * prompt with a focus on the chai-rfpis page not the new react page"). Reusing the same
+ * words here was a choice made FOR THIS APP under the naming latitude the redesign was
+ * given — not an instruction the owner issued about this nav, and this comment should not
+ * be read as one.
+ *
+ * The reason for reusing them stands on its own: one page under two names across two apps
  * reads as two products, which is what "Pipelines"/"Pipeline" and "Grants"/"Applied
- * funding" used to do.
+ * funding" used to do. But a cross-app inference is the author's to defend, not the
+ * owner's, and the next person changing a title here needs no permission from that commit.
  *
  * ONLY `rail: true` PUTS A PAGE IN THE SIDEBAR. The seven below without it — opportunity,
  * profile, help, search and the three public auth pages — exist so their URLs resolve: an
@@ -33,12 +41,16 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
 export const PAGES: Record<PageKey, PageInfo> = {
   home: { title: "Home", icon: "🏠", rail: true },
   pipelines: { title: "Funding Pipeline", icon: "📚", rail: true },
-  // STILL A RAIL ITEM HERE, where on the Streamlit side it no longer is — there it became
-  // the "Outcomes" tab of Funding Pipeline. The React Pipeline does have an Outcome stage,
-  // but that covers only what a funder has ANSWERED, while this page also holds the
-  // pending applications, the per-funder breakdown and the reporting tab. Folding it in
-  // would drop function rather than move it, so it is the owner's call. /grants resolves
-  // either way.
+  // A RAIL ITEM, AND THE OWNER SETTLED THAT ON 2026-11-09 — said to this session directly,
+  // not relayed: "keep Funding as its own page in the React not in the RFPIS". The two
+  // apps differ here on purpose. On the Streamlit side Funding stopped being a page and
+  // became the "Outcomes" tab of Funding Pipeline; here it stays its own page.
+  //
+  // The reason it is not simply folded into the Pipeline's Outcome stage: that stage covers
+  // only what a funder has ANSWERED, while this page also holds the pending applications,
+  // the per-funder breakdown and the reporting tab. Making it a tab today would drop those
+  // three rather than move them. Revisit when the Outcome stage can carry them — until
+  // then this is a decision, not an oversight. /grants resolves either way.
   grants: { title: "Funding", icon: "💼", rail: true },
   actions: { title: "Meeting Actions", icon: "🗒️", rail: true },
   report: { title: "Fundraising Report", icon: "📊", rail: true },
