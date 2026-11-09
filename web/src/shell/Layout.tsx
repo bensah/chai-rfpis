@@ -42,7 +42,7 @@ const GROUPS: { label: string; pages: PageKey[] }[] = [
   // the group named a page that could never render — harmless to run and misleading to
   // read, which is the kind of line that answers a future question wrongly. Settings is
   // reached from the account menu at the foot of this sidebar.
-  { label: "Organization", pages: ["organization", "submit-new-rfp"] },
+  { label: "Organization", pages: ["organization", "submit-new-rfp", "alerts"] },
 ];
 
 export default function Layout({ user, page, children }: { user: User; page: PageKey; children: ReactNode }) {

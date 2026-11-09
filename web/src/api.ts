@@ -404,7 +404,13 @@ export const recordDecision = (
     });
 
 // ── App shell ────────────────────────────────────────────────────────────────
-export type FeedItem = { ts: number; icon: string; title: string; detail: string; nav: string; uid: string | null };
+export type FeedItem = {
+  ts: number; icon: string; title: string; detail: string; nav: string;
+  uid: string | null;
+  /** The bell shows a line; the Alerts screen opens one of these. */
+  kind: "scan" | "opportunity" | "verdict";
+  facts?: { label: string; value: string }[];
+};
 export type Shell = {
   org: { name: string; logo: { b64: string; mime: string } | null };
   nextMeeting: { date: string; note_taker: string; presenter: string; chair: string } | null;

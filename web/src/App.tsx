@@ -5,6 +5,7 @@ import { navigate, PAGES, recordVisit, setParams, useLocation, type PageKey } fr
 import Layout from "./shell/Layout";
 import ClassicPage from "./pages/ClassicPage";
 import DonorsPage from "./pages/DonorsPage";
+import AlertsPage from "./pages/AlertsPage";
 import HomePage from "./pages/HomePage";
 import OpportunityPage from "./pages/OpportunityPage";
 import PipelinePage from "./pages/PipelinePage";
@@ -84,6 +85,8 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
     body = <OpportunityPage uid={params.get("uid")?.trim() ?? ""} user={user} />;
   } else if (shown === "pipelines") {
     body = <PipelinePage user={user} />;
+  } else if (shown === "alerts") {
+    body = <AlertsPage />;
   } else if (shown === "donors") {
     body = <DonorsPage />;
   } else if (shown === "settings") {

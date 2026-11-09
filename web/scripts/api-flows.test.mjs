@@ -1679,3 +1679,53 @@ test("a decision cannot have been taken tomorrow", async () => {
     { uid: "R1", decision: "Proceed", decision_date: "2026-02-31" }, col.token);
   assert.equal(nonsense.status, 400, "31 February is not a date");
 });
+
+test("the feed carries Proceed and Park verdicts without carrying the flood", async () => {
+  // Every auto row used to be dropped, for a sound reason: a Friday scan adds dozens at
+  // once and the scan_logs line already says so in ONE item rather than forty. But it
+  // also meant the alert the owner most wanted - a new call the system rates Proceed or
+  // Park - was the one thing the feed could not carry. Suppress the flood, not the
+  // verdict.
+  const { db, call, signIn } = setup();
+  const base = {
+    tenant_id: T1, is_duplicate: false, source: "auto", search_date: "2026-11-07",
+    funding_agency: "F", call_submission_deadline: "2027-01-01",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "N-PRO", ...base, opportunity_title: "A strong fit",
+      auto_recommendation: "Proceed", alignment_score: 88 },
+    { uid: "N-PARK", ...base, opportunity_title: "A maybe",
+      auto_recommendation: "Park", alignment_score: 61 },
+    // The flood: rated Decline, or not rated at all. Neither is news.
+    { uid: "N-DEC", ...base, opportunity_title: "Not for us",
+      auto_recommendation: "Decline", alignment_score: 20 },
+    { uid: "N-NONE", ...base, opportunity_title: "Unscored" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const shell = (await call("GET", "/shell", null, col.token)).body;
+  const verdicts = shell.feed.filter((f) => f.kind === "verdict");
+  assert.deepEqual(verdicts.map((f) => f.uid).sort(), ["N-PARK", "N-PRO"],
+    "Proceed and Park only — a Decline is not an alert");
+  const pro = verdicts.find((f) => f.uid === "N-PRO");
+  assert.equal(pro.title, "New Proceed call");
+  // The detail view needs facts, or opening an alert tells you nothing the line did not.
+  assert.ok(pro.facts.some((f) => f.label === "Score" && f.value === "88"));
+  assert.ok(pro.facts.some((f) => f.label === "System rating" && f.value === "Proceed"));
+  assert.equal(pro.nav, "opportunity", "an alert about a call opens that call");
+});
+
+test("a scan alert carries the run's numbers, not just a sentence", async () => {
+  const { db, call, signIn } = setup();
+  db.tables.scan_logs.push({
+    id: 9001, tenant_id: null, scan_date: "2026-11-07T06:00:00+00:00",
+    triggered_by: "cron", rfps_found: 400, rfps_new: 37, rfps_added: 12,
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+  const shell = (await call("GET", "/shell", null, col.token)).body;
+  const scan = shell.feed.find((f) => f.kind === "scan");
+  assert.ok(scan, "a completed scan is an alert");
+  const facts = Object.fromEntries(scan.facts.map((f) => [f.label, f.value]));
+  assert.equal(facts.Found, "400");
+  assert.equal(facts.Eligible, "37");
+  assert.equal(facts.Added, "12");
+});

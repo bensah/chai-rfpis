@@ -45,6 +45,11 @@ const SCAN_KIND: Record<string, string> = {
 
 export type FeedItem = {
   ts: number; icon: string; title: string; detail: string; nav: string; uid: string | null;
+  /** What the Alerts screen shows when an item is opened. The bell stays a one-line
+   *  summary; these are the facts somebody needs before deciding to act, and they come
+   *  from the row we already read rather than a second fetch per alert. */
+  kind: "scan" | "opportunity" | "verdict";
+  facts?: { label: string; value: string }[];
 };
 
 export function createShellRoutes(db: Db) {
@@ -54,8 +59,12 @@ export function createShellRoutes(db: Db) {
     const eff = db.scopeTid(ctx.scope);
     const [rawScans, rfps] = await Promise.all([
       sb.get("scan_logs", `select=*&order=scan_date.desc&limit=${12 * 4}`).catch(() => [] as Json[]),
-      sb.get("rfp_submissions", "select=uid,opportunity_title,source,search_date,submitted_by" +
-        "&order=search_date.desc&limit=15").catch(() => [] as Json[]),
+      sb.get("rfp_submissions",
+        "select=uid,opportunity_title,source,search_date,submitted_by," +
+        "auto_recommendation,alignment_score,funding_agency,call_submission_deadline" +
+        // 40, not 15: auto rows are now kept when the engine rated them Proceed or
+        // Park, and a Friday scan can bury a week of manual entries in the first 15.
+        "&order=search_date.desc&limit=40").catch(() => [] as Json[]),
     ]);
     const items: FeedItem[] = [];
     // System-wide runs (no tenant_id) show to everyone; a tenant's own screening run only to
@@ -71,18 +80,66 @@ export function createShellRoutes(db: Db) {
       const ts = parseTs(s.scan_date);
       if (ts == null) continue;
       items.push({ ts, icon, title: `${SCAN_KIND[String(s.triggered_by)] ?? "Scan"} completed`,
-        detail, nav: "report", uid: null });
+        detail, nav: "report", uid: null, kind: "scan",
+        facts: [
+          { label: "Run", value: SCAN_KIND[String(s.triggered_by)] ?? "Scan" },
+          { label: "Found", value: String(s.rfps_found ?? "—") },
+          { label: "Eligible", value: String(s.rfps_new ?? "—") },
+          ...(s.rfps_added == null
+            ? [] : [{ label: "Added", value: String(s.rfps_added) }]),
+          ...(s.errors ? [{ label: "Errors", value: String(s.errors) }] : []),
+        ],
+      });
     }
     for (const r of rfps) {
-      if (String(r.source ?? "").toLowerCase() === "auto") continue;
+      const auto = String(r.source ?? "").toLowerCase() === "auto";
       const ts = parseTs(r.search_date);
       if (ts == null) continue;
       const title = String(r.opportunity_title || "Untitled opportunity").trim();
       const who = String(r.submitted_by ?? "").trim();
       const uid = String(r.uid ?? "").trim() || null;
-      items.push({ ts, icon: "📥", title: "New opportunity",
+      const nav = uid ? "opportunity" : "pipelines";
+      // THE VERDICT ITEMS ARE WHY auto ROWS ARE NO LONGER SKIPPED WHOLESALE.
+      //
+      // Every auto row used to be dropped here, and the reason was sound: a Friday scan
+      // adds dozens at once and the scan_logs line above already says so, in one item
+      // rather than forty. But it also meant the alert the owner most wanted - a new call
+      // the system rates Proceed or Park - was the one thing the feed could not carry.
+      //
+      // So the flood is still suppressed and the verdicts are not: an auto row appears
+      // only when the engine rated it Proceed or Park, which is a handful of a Friday,
+      // and it says which rating so a reader can tell "look at this" from "we logged it".
+      const verdict = String(r.auto_recommendation ?? "").trim().toLowerCase();
+      const isProceed = verdict.startsWith("proceed");
+      const isPark = verdict === "park";
+      if (auto && !(isProceed || isPark)) continue;
+      const score = r.alignment_score == null
+        ? "—" : String(Math.round(Number(r.alignment_score)));
+      if (auto) {
+        items.push({
+          ts, icon: isProceed ? "✅" : "🟡",
+          title: isProceed ? "New Proceed call" : "New Park call",
+          detail: [...title].slice(0, 64).join(""),
+          nav, uid, kind: "verdict",
+          facts: [
+            { label: "Funder", value: String(r.funding_agency || "—") },
+            { label: "System rating", value: isProceed ? "Proceed" : "Park" },
+            { label: "Score", value: score },
+            { label: "Deadline", value: String(r.call_submission_deadline || "—") },
+          ],
+        });
+        continue;
+      }
+      items.push({
+        ts, icon: "📥", title: "New opportunity",
         detail: [...title].slice(0, 64).join("") + (who ? ` — ${who}` : ""),
-        nav: uid ? "opportunity" : "pipelines", uid });
+        nav, uid, kind: "opportunity",
+        facts: [
+          { label: "Funder", value: String(r.funding_agency || "—") },
+          { label: "Added by", value: who || "—" },
+          { label: "Deadline", value: String(r.call_submission_deadline || "—") },
+        ],
+      });
     }
     items.sort((a, b) => b.ts - a.ts);
     return items;

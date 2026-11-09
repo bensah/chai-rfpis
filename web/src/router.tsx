@@ -4,7 +4,7 @@ import { useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent } from
 
 export type PageKey =
   | "home" | "pipelines" | "grants" | "actions" | "report" | "donors" | "organization"
-  | "submit-new-rfp" | "opportunity" | "profile" | "help" | "search" | "settings"
+  | "submit-new-rfp" | "alerts" | "opportunity" | "profile" | "help" | "search" | "settings"
   | "login" | "activate-account" | "password-reset";
 
 type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boolean; public?: boolean };
@@ -86,6 +86,10 @@ export const PAGES: Record<PageKey, PageInfo> = {
   // The slug stays `submit-new-rfp`. The page is named for what it takes in now, but a
   // bookmark or an emailed link still has to resolve.
   "submit-new-rfp": { title: "Submit New Notice", icon: "📝", rail: true },
+  // A real rail destination, not a URL-only page: the bell is a glance and this is
+  // the screen the team watches (owner, 2026-11-09). Key and slug are the same word,
+  // and it is deliberately nowhere near a hide list.
+  alerts: { title: "Alerts", icon: "🔔", rail: true },
   opportunity: { title: "Opportunity", icon: "🎯" },
   profile: { title: "Profile", icon: "👤" },
   help: { title: "Help", icon: "❓" },
