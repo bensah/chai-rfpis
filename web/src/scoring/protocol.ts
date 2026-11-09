@@ -37,13 +37,54 @@ export type Block =
   | { kind: "cards" | "facts"; title: string; rows: [string, string][]; prose: string[] }
   | { kind: "prose"; title: string; lines: string[]; missing: boolean };
 
+/** One of the nine weighted criteria, as core/opportunity_scoring.analyse returns it.
+ *
+ * Typed rather than read off a `Record<string, unknown>`, which is what the page did while
+ * this declaration described fields (`name`, `tone`, `caption`) that the Python has not
+ * returned for some time. A stale type that nothing checks is worse than none: it reads
+ * like a contract.
+ */
 export type Criterion = {
-  name: string;
-  label: string;
-  tone: string;
-  caption: string;
-  points: string;
+  key: string;
+  /** Already carries its own "MUST 1 · " / "PREFER 6 · " prefix. */
+  title: string;
+  label: string | null;
+  /** 2 / 1 / 0, or null when the criterion could not be determined. */
+  band: number | null;
+  countText: string;
+  scored: boolean;
+  weight: number;
+  points: number;
 };
+
+export type Analysis = {
+  bidStrength: number;
+  fit: string;
+  systemDecision: string;
+  suggestedDecision: string;
+  confidenceNote: string;
+  fatal: boolean;
+  fatalTrigger: string;
+  belowAwardFloor: boolean;
+  screenedOut: boolean;
+  screenReason: string;
+  confidence: {
+    band: string; pct: number; callPct: number; donorPct: number; donorMatched: boolean;
+  };
+  criteria: Criterion[];
+  /** Set instead of everything above when scoring could not run at all. */
+  error?: string;
+};
+
+/** How much of the call we actually captured — core/opportunity_detail.coverage.
+ *
+ * Served to every reader, not only a super_user. The page renders the schema's whole
+ * skeleton on every call, dash and all (sections(), 2026-08-11: "a dash is a statement"),
+ * so on a thinly-extracted call most of what is on screen is dashes. This is the one
+ * number that tells a reader whether that is this call being silent or this record being
+ * thin, and without it the page looks broken rather than honest.
+ */
+export type Coverage = { filled: number; total: number };
 
 export type OpportunityResult = {
   found: boolean;
@@ -55,17 +96,20 @@ export type OpportunityResult = {
   links: { label: string; url: string }[];
   awardHeadline: string;
   overview: [string, string[], boolean][];
+  /** True when `full_description` was clipped to fit, so the page can offer the source
+   *  instead of pretending the summary is the whole call. */
+  overviewTruncated: boolean;
   pageRows: Block[][][];
-  narrative: [string, string[], boolean][];
-  analysis: {
-    score: number | null;
-    band: string | null;
-    recommendation: string | null;
-    confidence: string | null;
-    blockers: string[];
-    notices: string[];
-    criteria: Criterion[];
-  } | null;
+  coverage: Coverage;
+  // NO `narrative`. core/opportunity_detail composes every NARRATIVE_FIELD into the page
+  // already — `full_description` as the overview, `how_to_apply` and
+  // `compliance_requirements` through INLINE_PROSE, the two funded/not-funded fields
+  // through PROSE_ROWS — so sending narrative_sections as well rendered all five A SECOND
+  // TIME, under their own headings, further down the same page. app_pages/opportunity.py
+  // never did: it renders overview_text + page_rows and stops.
+  // tests/test_opportunity_detail_places_every_narrative.py keeps that composition
+  // complete, so a field added to NARRATIVE_FIELDS cannot go unplaced here.
+  analysis: Analysis | null;
   /** Only populated for a super_user: where each field came from. */
   provenance: [string, string][] | null;
   tracked: { uid: string | null; decision: string | null };
