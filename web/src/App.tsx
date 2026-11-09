@@ -9,7 +9,6 @@ import HomePage from "./pages/HomePage";
 import OpportunityPage from "./pages/OpportunityPage";
 import PipelinePage from "./pages/PipelinePage";
 import SettingsPage from "./pages/SettingsPage";
-import { warmEngine } from "./scoring/engine";
 import { EmptyState } from "./ui";
 
 export default function App() {
@@ -41,12 +40,14 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
 
   // Re-check the account on every app load (a deactivated account or a revoked membership
   // ends the session here), and fetch the fields only /me returns.
+  //
+  // The scoring engine is NOT warmed here any more. It used to be, because the rail needed
+  // it on every signed-in page; the rail is now ranked server-side, and the only surface
+  // left that needs Python is the Opportunity page's decision aid. That page starts the
+  // engine itself when it mounts, so nobody downloads a Python runtime to read Home.
   useEffect(() => {
     me().catch(() => undefined);
     fetchShell().then((s) => setClassicUrl(s.classicUrl)).catch(() => undefined);
-    // The scoring engine takes a few seconds to start. Begin now, in the background, so it
-    // is usually ready by the time a page asks it anything.
-    warmEngine();
   }, []);
 
   // ?tenant= — app_header._apply_tenant_url: for a super_user it SELECTS a view-as tenant;

@@ -419,9 +419,40 @@ export type HomeKpis = {
 };
 export const fetchHome = () => call<HomeKpis>("/home");
 
-/** The rows the rail ranks. The ranking runs in the browser's Python engine. */
-export const fetchFeedRows = () =>
-  call<{ pipeline: Record<string, unknown>[]; catalog: Record<string, unknown>[]; seen: string[] }>("/feed");
+/** One item in the rail's four cards. supabase/functions/_shared/api/opportunity_feed.ts
+ * builds these; core/opportunity_feed.py's `_item` / `catalog_item` are what it mirrors.
+ *
+ * Not to be confused with `FeedItem` above, which is the app shell's activity feed. */
+export type OpportunityFeedItem = {
+  uid: string | null;
+  title: string;
+  funder: string;
+  amount: number;
+  currency: string;
+  deadline: string | null;
+  days_until: number | null;
+  geo: string;
+  alignment: number;
+  link: string;
+  recommendation: string;
+  /** Featured only: why this call was surfaced, and the score behind it. */
+  _why?: string;
+  _score?: number;
+};
+
+export type OpportunityFeed = {
+  featured: OpportunityFeedItem[];
+  top_matches: OpportunityFeedItem[];
+  top_funding: OpportunityFeedItem[];
+  other: OpportunityFeedItem[];
+};
+
+/** The rail's four cards, ranked by the server.
+ *
+ * The ranking used to run in the browser's Python engine over rows from `/feed`. It needs
+ * no scoring — it ranks values already stored on each row — so it moved server-side, and
+ * the rail no longer boots a Python runtime to draw a sidebar. */
+export const fetchOpportunityFeed = () => call<OpportunityFeed>("/opportunities/feed");
 
 export const fetchOpportunityRows = (uid: string) =>
   call<{

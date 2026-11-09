@@ -15,7 +15,7 @@ import { useEffect, useState } from "react";
 import { ArrowUpRight, Layers } from "lucide-react";
 import { fetchOpportunityRows, type User } from "../api";
 import OpportunityRail from "../components/OpportunityRail";
-import { scoreOpportunity, useEngine } from "../scoring/engine";
+import { scoreOpportunity, useEngine, warmEngine } from "../scoring/engine";
 import type { Block, OpportunityResult } from "../scoring/protocol";
 import { hrefOf, Link } from "../router";
 import { Badge, Card, EmptyState, LinkButton, Notice, PageHeader, Spinner, type Tone } from "../ui";
@@ -156,6 +156,12 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
   const [data, setData] = useState<OpportunityResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const engine = useEngine();
+
+  // This is the only surface left that needs the Python engine, so it starts it rather
+  // than the app shell: nobody downloads a Python runtime until they open an opportunity.
+  useEffect(() => {
+    if (uid) warmEngine();
+  }, [uid]);
 
   useEffect(() => {
     let live = true;

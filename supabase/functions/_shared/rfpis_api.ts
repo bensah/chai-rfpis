@@ -91,6 +91,9 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/scoring/snapshot" && m === "GET") return phase1.snapshot(req, ctx);
     if (path === "/home" && m === "GET") return phase1.home(ctx);
     if (path === "/feed" && m === "GET") return phase1.feed(req, ctx);
+    // The rail's finished cards. /feed returns the raw rows the browser's Python engine
+    // ranked; this ranks them here, because the ranking needs no scoring.
+    if (path === "/opportunities/feed" && m === "GET") return phase1.opportunitiesFeed(req, ctx);
     // Phase 2. Same division: these serve rows, the page scores and decides.
     if (path === "/report/periods" && m === "GET") return report.periods(req, ctx);
     if (path === "/report/section1" && m === "GET") return report.section1(req, ctx);

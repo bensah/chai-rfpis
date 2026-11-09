@@ -13,6 +13,8 @@ import { q, type Db } from "./db.ts";
 import { json, gzipped, str } from "./http.ts";
 import { ratesFor } from "./fx.ts";
 import type { Json } from "./jwt.ts";
+import { asToday, classify, featured } from "./opportunity_feed.ts";
+import { getPolicies, tenantPrefs } from "./policies.ts";
 import { isSuperUser, type PermUser } from "./permissions.ts";
 import type { Ctx } from "./session.ts";
 
@@ -147,6 +149,49 @@ export function createPhase1Routes(db: Db) {
     }, 200, { "Cache-Control": "private, max-age=45" }));
   }
 
+  /**
+   * The rail's four cards, RANKED HERE.
+   *
+   * `feed` above returns rows for the browser's Python engine to rank. This returns the
+   * finished cards, because the ranking needs no scoring: measured over the live database,
+   * core/opportunity_feed.classify reads only columns already stored on the row. Moving it
+   * here is what lets Home and Pipelines stop booting a Python runtime to draw a sidebar.
+   *
+   * The Opportunity page's decision aid is a different matter and still runs in the engine
+   * — it computes nine criteria live, and the stored alignment_score is measurably not the
+   * same number (see the retirement notes).
+   */
+  async function opportunitiesFeed(req: Request, ctx: Ctx): Promise<Response> {
+    const sb = db.as(ctx.scope);
+    const tid = db.scopeTid(ctx.scope);
+    const [pipeline, catalog, links, policyRow, tenantRow] = await Promise.all([
+      sb.get("rfp_submissions", `select=${PIPELINE_FIELDS}&order=created_at.desc&limit=800`)
+        .catch(() => [] as Json[]),
+      db.service.get("extracted_solicitations",
+        `select=${CATALOG_FIELDS}&order=scraped_at.desc&limit=1000`).catch(() => [] as Json[]),
+      sb.getAll("rfp_submissions", "select=opportunity_link,uid", "uid")
+        .catch(() => [] as Json[]),
+      db.service.get("tenant_settings",
+        `select=value&tenant_id=eq.${q(tid)}&key=eq.scan_policies&limit=1`).catch(() => []),
+      db.service.get("tenants", `select=org_profile&id=eq.${q(tid)}&limit=1`).catch(() => []),
+    ]);
+
+    const profile = ((tenantRow[0] ?? {}).org_profile ?? null) as Json | null;
+    const policies = getPolicies((policyRow[0]?.value as string) ?? null, profile);
+    // The server's date, as the snapshot passed it before: a browser in another timezone
+    // must not classify a deadline differently from Streamlit.
+    const day = asToday(today());
+    const seen = new Set(links.map((r) =>
+      str(r.opportunity_link).trim().toLowerCase().replace(/\/+$/, "")).filter(Boolean));
+
+    const groups = classify(pipeline, day, policies as unknown as Json);
+    const prefs = tenantPrefs(policies, profile, pipeline);
+    return gzipped(req, json({
+      featured: featured(catalog, prefs, seen, day),
+      ...groups,
+    }, 200, { "Cache-Control": "private, max-age=45" }));
+  }
+
   /** The candidate rows for one uid. app_pages/opportunity.py's own readers, server-side:
    * the pipeline is tenant-scoped, the catalogue deliberately is not. */
   async function opportunity(req: Request, ctx: Ctx, uid: string): Promise<Response> {
@@ -183,5 +228,5 @@ export function createPhase1Routes(db: Db) {
     }));
   }
 
-  return { snapshot, home, feed, opportunity };
+  return { snapshot, home, feed, opportunitiesFeed, opportunity };
 }

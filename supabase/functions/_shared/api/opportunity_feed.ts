@@ -165,8 +165,10 @@ function geoIneligible(policies: Json | null, row: Json): boolean {
  * ascending and reversing — it keeps the original order among ties rather than inverting
  * it. Comparing b-to-a on a stable sort is what reproduces that.
  */
-function sortedDesc<T>(rows: T[], key: (r: T) => number | string | (number | string)[]): T[] {
-  const cmp = (a: unknown, b: unknown) => (a < b ? -1 : a > b ? 1 : 0);
+type SortKey = number | string;
+function sortedDesc<T>(rows: T[], key: (r: T) => SortKey | SortKey[]): T[] {
+  const cmp = (a: SortKey | undefined, b: SortKey | undefined) =>
+    (a === b ? 0 : a === undefined ? -1 : b === undefined ? 1 : a < b ? -1 : 1);
   return [...rows].sort((ra, rb) => {
     const a = key(ra), b = key(rb);
     if (Array.isArray(a) && Array.isArray(b)) {
@@ -176,7 +178,7 @@ function sortedDesc<T>(rows: T[], key: (r: T) => number | string | (number | str
       }
       return 0;
     }
-    return -cmp(a, b);
+    return -cmp(a as SortKey, b as SortKey);
   });
 }
 
@@ -205,7 +207,7 @@ export function classify(rows: Json[], today: Date, policies: Json | null): Feed
   const indexOf = new Map<Json, number>();
   all.forEach((r, i) => indexOf.set(r, i));
 
-  const take = (candidates: Json[], key: (r: Json) => number | string | (number | string)[],
+  const take = (candidates: Json[], key: (r: Json) => SortKey | SortKey[],
     n = TOP_N): FeedItem[] => {
     const out: FeedItem[] = [];
     for (const r of sortedDesc(candidates, key)) {

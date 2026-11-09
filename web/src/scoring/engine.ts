@@ -5,13 +5,31 @@
  * seconds, so NOTHING waits on it: a page renders from stored values, calls `ask(...)`, and
  * replaces them when the answer arrives. `useEngine` exposes the boot state so a page can
  * say "working out the live numbers…" rather than appearing stuck.
+ *
+ * ONE CALLER LEFT: the Opportunity page's decision aid. The rail used to be the other, and
+ * moved server-side once it was measured to need no scoring at all. This did not, and the
+ * measurement is why it is still here rather than ported:
+ *
+ *   * `opportunity_scoring.analyse` reaches 87-95 functions of core/criteria_derive.py and
+ *     43-48 of core/auto_scorer.py per call — 23 modules, several thousand lines. A
+ *     TypeScript port would be a second implementation of the scoring rules, which is the
+ *     class of bug this project has been bitten by twice.
+ *   * The stored `alignment_score` is NOT the number this page shows. It equals
+ *     `auto_scorer.auto_score`, and measured against the live database that differs from
+ *     `analyse` on every RFPIS row (by ~4 points) and changes the RECOMMENDATION on 8 of
+ *     40 CHAI Cameroon rows — Proceed vs Park, Park vs Decline. Reading it instead would
+ *     change the answer the page gives to "should we bid?".
+ *   * There is no stored per-criterion breakdown anywhere in the schema, and the page shows
+ *     nine criteria with labels, bands, counts and points.
+ *
+ * Retiring this properly means having the `rescore` job persist the breakdown it already
+ * computes in Python, after reconciling `auto_score` against `analyse` so there is one
+ * number to store. Until then the engine stays, started only by the page that needs it.
  */
 import { useEffect, useState } from "react";
 import { fetchSnapshot } from "../api";
 import { PY_BUNDLE_HASH } from "../generated/py-bundle-hash";
-import type {
-  FeedRequest, FeedResult, OpportunityRequest, OpportunityResult, WorkerResponse,
-} from "./protocol";
+import type { OpportunityRequest, OpportunityResult, WorkerResponse } from "./protocol";
 
 export type EngineState = "idle" | "starting" | "ready" | "failed";
 
@@ -72,17 +90,17 @@ function send(kind: string, extra: Record<string, unknown>): Promise<unknown> {
   });
 }
 
-async function ask<T>(kind: "feed" | "opportunity", payload: unknown): Promise<T> {
+async function ask<T>(kind: "opportunity", payload: unknown): Promise<T> {
   await ensure();
   return (await send(kind, { payload })) as T;
 }
 
-export const scoreFeed = (payload: FeedRequest) => ask<FeedResult>("feed", payload);
 export const scoreOpportunity = (payload: OpportunityRequest) =>
   ask<OpportunityResult & { analysis: Record<string, unknown> | null }>("opportunity", payload);
 
-/** Start the engine without waiting for it — called as soon as a signed-in page mounts, so
- * the few seconds of boot overlap with the user reading what is already on screen. */
+/** Start the engine without waiting for it. The Opportunity page calls this as it mounts,
+ * so the boot overlaps with the user reading the header and the call's own details, which
+ * render from the API's rows and never wait on Python. */
 export function warmEngine(): void {
   if (!started) void ensure().catch(() => undefined);
 }
