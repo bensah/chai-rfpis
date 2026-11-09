@@ -28,7 +28,19 @@ _BRIEF_MAX = 1000          # hard cap on the synthesised brief (chars)
 # into _page_text by deep_read.py) — see _build_excerpt(), which anchors on those
 # sections instead of just taking the opening. Env-configurable so a higher-spend
 # deployment (e.g. a premium tier) can raise quality without a code fork.
-_MAX_INPUT_CHARS = int(os.environ.get("LLM_SYNTH_MAX_INPUT_CHARS", "20000"))
+# 20000 was far above what the provider actually accepts. Measured against the live
+# endpoint on a real 13421-char call page: 2000 / 4000 / 8000 chars all returned a clean
+# brief, 13421 returned an EMPTY response from every model in the chain. So the richest
+# pages - the ones with the most to summarise - were the ones that silently produced
+# nothing, and 467 store rows sat with page text and no summary because of it.
+#
+# 8000 is the largest size proven to work here. It is only the FIRST attempt: a failure
+# retries smaller (see _RETRY_SHRINK), so a provider with a tighter or looser limit than
+# this one still lands on a size that works instead of giving up.
+_MAX_INPUT_CHARS = int(os.environ.get("LLM_SYNTH_MAX_INPUT_CHARS", "8000"))
+# Each retry halves the excerpt. An empty response is almost always an over-long input,
+# and shrinking is the one remedy that does not need to know the provider's real limit.
+_RETRY_SHRINK = (1.0, 0.5, 0.25)
 _OPENING_CHARS = int(os.environ.get("LLM_SYNTH_OPENING_CHARS", "6000"))     # always-included lead
 _ANCHOR_WINDOW = int(os.environ.get("LLM_SYNTH_ANCHOR_WINDOW", "1200"))    # chars kept per anchor
 _MAX_OUTPUT_TOKENS = 2200  # reasoning model needs head-room for reasoning + JSON
@@ -105,7 +117,8 @@ _EXTRA_ANCHOR_RE = re.compile(
 )
 
 
-def _build_excerpt(body: str, candidate: dict[str, Any]) -> str:
+def _build_excerpt(body: str, candidate: dict[str, Any],
+                   cap: int | None = None) -> str:
     """Text sent to the model: the opening _OPENING_CHARS (purpose/scope usually
     lead the document) PLUS windows anchored on sections that matter most and are
     otherwise likely to fall past a flat truncation on long RFPs — eligibility,
@@ -113,8 +126,9 @@ def _build_excerpt(body: str, candidate: dict[str, Any]) -> str:
     back to a plain slice when body already fits, or when no anchors are found
     past the opening (e.g. the backfill script often only has the short
     brief_description, not the full page text, on older rows)."""
+    cap = int(cap or _MAX_INPUT_CHARS)
     n = len(body)
-    if n <= _MAX_INPUT_CHARS:
+    if n <= cap:
         return body
     try:
         from core.scraper import (
@@ -122,9 +136,9 @@ def _build_excerpt(body: str, candidate: dict[str, Any]) -> str:
         )
         from core.deep_read import _AMOUNT_RE
     except Exception:
-        return body[:_MAX_INPUT_CHARS]
+        return body[:cap]
 
-    opening_end = min(_OPENING_CHARS, n, _MAX_INPUT_CHARS)
+    opening_end = min(_OPENING_CHARS, n, cap)
     half = _ANCHOR_WINDOW // 2
     spans: list[tuple[int, int]] = []
     for rx in (_DEADLINE_LABEL_RE, _ELIGIBILITY_LABEL_RE, _DUR_RANGE_RE,
@@ -136,7 +150,7 @@ def _build_excerpt(body: str, candidate: dict[str, Any]) -> str:
             spans.append((max(opening_end, center - half), min(n, center + half)))
 
     if not spans:
-        return body[:_MAX_INPUT_CHARS]
+        return body[:cap]
 
     spans.sort()
     merged: list[list[int]] = []
@@ -146,7 +160,7 @@ def _build_excerpt(body: str, candidate: dict[str, Any]) -> str:
         else:
             merged.append([s, e])
 
-    budget = max(0, _MAX_INPUT_CHARS - opening_end)
+    budget = max(0, cap - opening_end)
     kept: list[tuple[int, int]] = []
     for s, e in merged:
         if budget <= 0:
@@ -247,18 +261,67 @@ def _org_block(org: dict) -> str:
     )
 
 
+# Why the LAST synthesis produced nothing, for the caller to record. A blank summary and
+# a summary we could not write look identical in the UI otherwise, and the page then says
+# "Summary not yet available" whether we never tried, were capped, or asked and got an
+# empty answer back. Those need different responses from a human, so they get different
+# words.
+_LAST_FAILURE: str = ""
+
+
+def last_failure() -> str:
+    """Why the most recent synthesize() returned None. "" when the last one succeeded."""
+    return _LAST_FAILURE
+
+
 def synthesize(candidate: dict[str, Any], org: dict[str, Any],
                auto_recommendation: str | None,
                criteria: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Return {brief_description, program_areas, key_risks, decision_rationale}
     or None if disabled / failed. brief is capped at 1000 chars; program_areas
-    are bare sub-labels from the canonical taxonomy."""
+    are bare sub-labels from the canonical taxonomy.
+
+    RETRIES SMALLER BEFORE GIVING UP. An over-long prompt does not come back as an error
+    here - the provider returns an EMPTY string, which reads downstream as "nothing to
+    say about this call" when it actually means "ask me less". Measured on a real
+    13421-char page: every model in the chain returned empty, and the same page at 8000
+    chars summarised cleanly. So a failure halves the excerpt and asks again rather than
+    leaving the richest pages permanently blank.
+    """
+    global _LAST_FAILURE
+    _LAST_FAILURE = ""
+    if not is_enabled():
+        _LAST_FAILURE = "synthesis is not configured"
+        return None
+    _body_all = (candidate.get("_page_text") or candidate.get("raw_text")
+                 or candidate.get("brief_description") or "")
+    if len(str(_body_all).strip()) < 120 and not (candidate.get("opportunity_title") or ""):
+        _LAST_FAILURE = "the call page had almost no readable text"
+        return None
+    for _i, _frac in enumerate(_RETRY_SHRINK):
+        _cap = max(1000, int(_MAX_INPUT_CHARS * _frac))
+        out = _synthesize_once(candidate, org, auto_recommendation, criteria, cap=_cap)
+        if out:
+            return out
+        if _i + 1 < len(_RETRY_SHRINK):
+            log.info("llm_synthesis: empty at %d chars for %s - retrying smaller",
+                     _cap, candidate.get("opportunity_link"))
+    _LAST_FAILURE = ("the model returned nothing for this page, at every excerpt size "
+                     "tried")
+    return None
+
+
+def _synthesize_once(candidate: dict[str, Any], org: dict[str, Any],
+                     auto_recommendation: str | None,
+                     criteria: dict[str, Any] | None = None,
+                     cap: int | None = None) -> dict[str, Any] | None:
+    """One attempt at one excerpt size. See synthesize() for the retry policy."""
     if not is_enabled():
         return None
     title = (candidate.get("opportunity_title") or "").strip()
     body = (candidate.get("_page_text") or candidate.get("raw_text")
             or candidate.get("brief_description") or "")
-    body = _build_excerpt(str(body).strip(), candidate)
+    body = _build_excerpt(str(body).strip(), candidate, cap=cap)
     if not (title or body):
         return None
 
@@ -266,7 +329,7 @@ def synthesize(candidate: dict[str, Any], org: dict[str, Any],
               or "gpt-oss:120b")
     ckey = hashlib.sha1(
         ("synth|" + chosen + "|" + (auto_recommendation or "") + "|" + title
-         + "|" + body).encode("utf-8")).hexdigest()
+         + "|" + str(cap or "") + "|" + body).encode("utf-8")).hexdigest()
     if ckey in _CACHE:
         return _CACHE[ckey]
 

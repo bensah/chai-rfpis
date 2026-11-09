@@ -366,9 +366,23 @@ from core.records import clean_brief as _clean_brief
 # still raw boilerplate (old pre-synthesis rows), so we fall back to a neutral line + the
 # call link instead of contract clauses. New rows carry a synthesised brief and pass through.
 _clean = _clean_brief(row.get("brief_description"), row.get("raw_text"))
-_brief = (_esc(_clean).rstrip() if _clean
-          else "<span style='color:#8a8a8a'>Summary not yet available — open the call for "
-               "full details.</span>")
+# SAY WHICH KIND OF BLANK THIS IS. One sentence covered three different situations -
+# we never tried, we tried and the model returned nothing, and the page genuinely had
+# almost nothing to read - and a reader cannot tell them apart or know whether opening
+# the link will help. It is most misleading on a rich page: the extractor pulls out a
+# value, a deadline and a geography, so the call plainly HAS text, and the summary line
+# still reads as though there were nothing there.
+_raw_len = len(str(row.get("raw_text") or "").strip())
+if _clean:
+    _brief = _esc(_clean).rstrip()
+elif _raw_len < 200:
+    _brief = ("<span style='color:#8a8a8a'>We could not read a usable description from "
+              "this call page — there may be little text on it, or the details may sit "
+              "in an attachment.</span>")
+else:
+    _brief = ("<span style='color:#8a8a8a'>Summary not written yet — the call page was "
+              f"read ({_raw_len:,} characters) but no summary has been generated for it "
+              "yet.</span>")
 if row.get("opportunity_link"):
     _brief += (f" <a href='{_html.escape(str(row['opportunity_link']))}' "
                f"target='_blank' style='white-space:nowrap'>Learn more&hellip; &#8599;</a>")
