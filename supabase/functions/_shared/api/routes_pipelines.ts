@@ -136,6 +136,23 @@ const OUTCOME_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,cu
  */
 const isProceed = (v: unknown) => norm(v).startsWith("proceed");
 
+/**
+ * Strip and lower-case. DELIBERATELY DOES NOT BLANK THE LITERAL "nan", and that is the
+ * question a reader of this line will have, because Excel-migrated rows do carry it.
+ *
+ * Nothing that needs "nan" blanked still comes through here. The submission test moved to
+ * `api/donor_decision.ts::isSubmitted`, which has its own `txt()` mirroring
+ * `core/pipeline.py::_txt`, and every membership rule — Track, the awaiting panel,
+ * Submitted, Outcome — routes through that. What is left on this helper is `decision` and
+ * `progress_status`, which are prefix and equality tests that "nan" fails either way, and
+ * `dropConcluded`'s donor_decision test.
+ *
+ * THAT LAST ONE IS WHY THIS MUST STAY AS IT IS. `core/records.py::drop_concluded` strips
+ * and lower-cases and does no nan handling either, so the asymmetry between it and
+ * `core/pipeline._txt` is real in the Python and reproduced here on purpose. Teaching this
+ * helper about "nan" would make `dropConcluded` disagree with the function it mirrors —
+ * an audit proposed exactly that, from reading this line alone.
+ */
 const norm = (v: unknown) => str(v).trim().toLowerCase();
 
 /** core/review_week.py::week_bounds — the Monday of the ISO week containing `d`. */
@@ -170,6 +187,28 @@ export function reviewWeekLabel(d: Date): string {
   const sun = new Date(mon);
   sun.setUTCDate(sun.getUTCDate() + 6);
   return `Week ${isoWeek(mon)} (${fmtDay(mon)} - ${fmtDay(sun)})`;
+}
+
+/**
+ * The label for the week BEFORE the one containing `d` — `core/review_week.py`'s
+ * `previous_review_week_label`, and the week the review screens should OPEN on.
+ *
+ * This is a statement about how the team works rather than a convenience. A week runs
+ * Monday to Sunday, the scan collects calls across it, and the team sits down on the
+ * following Monday to review what the week just gone turned up. On that Monday the current
+ * week is one day old.
+ *
+ * Measured on the live table on Monday 2026-11-09: the current week held 0 rows and the
+ * previous week 2. So opening on the current week opens on nothing, and every reviewer
+ * changes the selector by hand before they can start. The Python moved its screens to this
+ * default; this app opens on it because of the measurement above, not because that one did.
+ *
+ * It moves the DEFAULT only. The selector still offers every week of the year and still
+ * honours whatever the reader picks.
+ */
+export function previousReviewWeekLabel(d: Date = new Date()): string {
+  const mon = monday(d);
+  return reviewWeekLabel(new Date(mon.getTime() - 7 * 86400_000));
 }
 
 /** core/review_week.py::all_weeks_for_year — every label for the year, in order.
@@ -453,8 +492,15 @@ export function leadsFor(rows: Json[], dups: Json[]): { uid: string; proposalLea
 }
 
 export function createPipelineRoutes(db: Db) {
-  /** The week picker: every label for the year, which week is current, and where the data
-   * actually is. */
+  /** The week picker: every label for the year, which week is current, which one to open
+   * on, and where the data actually is.
+   *
+   * `current` and `defaultWeek` are BOTH served, and they are different questions.
+   * `current` is the week we are in — a fact, and what an empty state means by "this
+   * week". `defaultWeek` is the week a review screen should open on, which is the one
+   * before it: see `previousReviewWeekLabel`. Collapsing the two would make the page unable
+   * to say "nothing found in the week you are looking at" without lying about which week
+   * that is. */
   async function weeks(req: Request, ctx: Ctx): Promise<Response> {
     const url = new URL(req.url);
     const year = Number(url.searchParams.get("year")) ||
@@ -462,10 +508,16 @@ export function createPipelineRoutes(db: Db) {
 
     const labels = allWeeksForYear(year);
     const current = reviewWeekLabel(new Date());
-    // screened_rfp.py line 67: a current week missing from the year's list is prepended
-    // rather than dropped, so the default selection always exists as an option. It can be
-    // missing when the current week belongs to a different year than the one being viewed.
-    const weeksOut = labels.includes(current) ? labels : [current, ...labels];
+    const defaultWeek = previousReviewWeekLabel();
+    // screened_rfp.py line 67: a week missing from the year's list is prepended rather
+    // than dropped, so a selection always exists as an option. Either can be missing when
+    // it belongs to a different year than the one being viewed — and `defaultWeek` is the
+    // one that goes missing in the first days of January, which is exactly when nobody
+    // would be watching for it. Order preserved: previous week, then current.
+    const weeksOut = [
+      ...[defaultWeek, current].filter((w) => !labels.includes(w)),
+      ...labels,
+    ];
 
     // Counts only — this feeds the empty state's "most recent week with activity", so it
     // must never carry rows.
@@ -482,7 +534,7 @@ export function createPipelineRoutes(db: Db) {
       .map(([week, count]) => ({ week, count }))
       .sort((a, b) => a.week.localeCompare(b.week));
 
-    return gzipped(req, json({ year, weeks: weeksOut, current, weeksWithData }));
+    return gzipped(req, json({ year, weeks: weeksOut, current, defaultWeek, weeksWithData }));
   }
 
   /** Screened: one week's rows, or a date range's, concluded ones removed.

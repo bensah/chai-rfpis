@@ -31,25 +31,108 @@ def _src(rel):
     return io.open(os.path.join(_ROOT, rel), encoding="utf-8").read()
 
 
+def _is_title_case(title):
+    """Every word's first LETTER is upper case.
+
+    Judged on the first letter rather than the first character so a word like "&" or a
+    hyphenated one does not read as a violation — the rule is about capitalisation, and a
+    test that fails on punctuation teaches people to work around it.
+    """
+    for word in title.split():
+        first = next((ch for ch in word if ch.isalpha()), "")
+        if first and not first.isupper():
+            return False
+    return True
+
+
 class TheRailLabelsTests(unittest.TestCase):
     def setUp(self):
         self.app = _src("App.py")
 
     def test_every_renamed_page_carries_its_new_title(self):
-        for title, page in (("Funding Pipeline", "pipelines.py"),
+        for title, page in (("Dashboard", "home.py"),
+                            ("Funding Pipeline", "pipelines.py"),
                             ("Meeting Actions", "actions.py"),
-                            ("Fundraising Report", "report.py"),
+                            ("Funding Report", "report.py"),
                             ("Donor Intelligence", "donors.py"),
                             ("My Organization", "organization.py"),
-                            ("Submit New RFP", "submit_rfp.py")):
+                            ("Submit New Notice", "submit_rfp.py")):
             self.assertRegex(self.app, r'title="%s"' % re.escape(title),
                              "%s should be titled %r" % (page, title))
 
     def test_the_old_labels_are_gone(self):
+        # Two rounds of renames, both the owner's: 2026-11-09 morning (the first seven)
+        # and the same day (Home, Fundraising Report, Submit New RFP). A superseded label
+        # left behind in one place is how a rail and a breadcrumb start disagreeing.
         for old in ('title="Pipelines"', 'title="Grants"', 'title="Actions"',
                     'title="Report"', 'title="Donors"', 'title="Tenant"',
-                    'title="Submit"'):
+                    'title="Submit"', 'title="Home"',
+                    'title="Fundraising Report"', 'title="Submit New RFP"'):
             self.assertNotIn(old, self.app)
+
+    def test_the_breadcrumb_titles_match_the_rail(self):
+        # core/ui_links.py::PAGE_TITLES is a second copy of these names, and a rename that
+        # updates one and not the other shows a page called two things in one session.
+        #
+        # Asserted against the MAPPING, not the file text. The first draft of this grepped
+        # the source and failed on a COMMENT that happened to mention another app's label
+        # for the same page — a test that cannot tell a value from prose about a value.
+        from core.ui_links import PAGE_TITLES
+        for slug, name in (("home", "Dashboard"), ("pipelines", "Funding Pipeline"),
+                           ("actions", "Meeting Actions"), ("report", "Funding Report"),
+                           ("donors", "Donor Intelligence"),
+                           ("organization", "My Organization"),
+                           ("submit-new-rfp", "Submit New Notice")):
+            self.assertEqual(PAGE_TITLES[slug], name)
+        for gone in ("Fundraising Report", "Submit New RFP", "Home",
+                     "Submit new notice"):
+            self.assertNotIn(gone, PAGE_TITLES.values())
+
+    def test_every_page_title_is_title_case(self):
+        # Owner, 2026-11-09, after their own names arrived mixed ("Submit new notice"
+        # beside "Funding Report"). Every word capitalised, in EVERY title — including the
+        # pages that never reach the rail, because one vocabulary with two conventions
+        # teaches a reader that neither is the rule.
+        #
+        # Asserted over the whole table rather than a list of names, so a page added later
+        # is covered without anyone remembering this test exists.
+        from core.ui_links import PAGE_TITLES
+        for slug, title in PAGE_TITLES.items():
+            self.assertTrue(_is_title_case(title),
+                            "%r (%s) is not title case" % (title, slug or "root"))
+
+    def test_the_registered_page_titles_are_title_case_too(self):
+        # The same rule on App.py's st.Page titles, which are a separate copy of the names.
+        # Safe to recase the hidden ones: core/app_header.py lower-cases a label before
+        # matching it against HIDE, so "Sign In" still hides. A hide that compared exactly
+        # would have turned a cosmetic change into the collapsed-rail bug all over again.
+        # Scoped to st.Page calls. A bare `title="..."` search also catches
+        # st.set_page_config's browser title ("RFP Intelligence System - RFPIS"), which is
+        # a sentence about the product and not a page label — the first draft of this test
+        # failed on it.
+        titles = re.findall(r'st\.Page\(.*?title="([^"]+)"', self.app, re.S)
+        self.assertGreaterEqual(len(titles), 10, "st.Page titles should have been found")
+        for title in titles:
+            self.assertTrue(_is_title_case(title), "%r is not title case" % title)
+        self.assertIn(".toLowerCase()", _src("core/app_header.py"),
+                      "the label hide must stay case-insensitive for this to be safe")
+
+    def test_outcomes_keeps_its_own_name_here(self):
+        # The one place the two apps deliberately differ. This is a TAB inside Funding
+        # Pipeline, where the stages around it supply the context; React still has it as a
+        # standalone rail page and calls it "Proposals submitted". Owner, 2026-11-09:
+        # "do not change for streamlit as it is now moved to pipeline screen as a tab".
+        from core.ui_links import PAGE_TITLES
+        self.assertEqual(PAGE_TITLES["grants"], "Outcomes")
+        self.assertEqual(PAGE_TITLES["outcomes"], "Outcomes")
+        self.assertNotIn("Proposals submitted", PAGE_TITLES.values())
+
+    def test_the_breadcrumb_root_is_not_a_hard_coded_word(self):
+        # The crumb fallback said "Home" and survived two renames of the page it names.
+        # Both apps now fall back to whatever the root page is actually called.
+        from core.ui_links import PAGE_TITLES, _ROOT_PAGE
+        self.assertNotIn('or "Home"', _src("core/ui_links.py"))
+        self.assertEqual(PAGE_TITLES[_ROOT_PAGE], "Dashboard")
 
     def test_the_url_slugs_are_unchanged(self):
         # Renaming a label must not break a bookmark or an emailed link.

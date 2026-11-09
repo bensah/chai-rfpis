@@ -192,7 +192,15 @@ export const scoreIsBehind = (r: {
 export type Weeks = {
   year: number;
   weeks: string[];
+  /** The week we are in. A fact about today, not a selection. */
   current: string;
+  /**
+   * The week a review screen OPENS on: the one before `current`. A week runs Monday to
+   * Sunday and the team reviews it on the following Monday, when the current week is a day
+   * old — measured 2026-11-09, it held 0 rows against the previous week's 2. The selector
+   * still offers every week and still honours whatever is picked.
+   */
+  defaultWeek: string;
   weeksWithData: { week: string; count: number }[];
 };
 

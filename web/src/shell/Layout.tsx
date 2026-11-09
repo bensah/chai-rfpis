@@ -443,7 +443,11 @@ function Breadcrumbs({ page }: { page: PageKey }) {
   return (
     <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1 text-sm">
       {trail.map((c, i) => {
-        const name = PAGES[c.page]?.title ?? "Home";
+        // Falls back to the ROOT PAGE'S title, not a literal: a crumb whose page is no
+        // longer in the table is a stale sessionStorage trail, and naming it after
+        // whatever Home is currently called beats a hard-coded word that goes stale on
+        // the next rename. (It said "Home" through two of them.)
+        const name = PAGES[c.page]?.title ?? PAGES.home.title;
         const last = i === trail.length - 1;
         // Below sm there is only room for where you are — the whole crumb goes, separator
         // included, or the bar fills with orphaned slashes.

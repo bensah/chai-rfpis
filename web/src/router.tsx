@@ -17,10 +17,29 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
  * when a title changes: they ARE the slugs, and bookmarks and emailed links resolve
  * through them.
  *
- * THE TITLES ARE THE OWNER'S, as of 2026-11-09, renamed on the Streamlit side first and
- * carried across verbatim rather than re-derived. One page under two names across two apps
- * reads as two products, which is what "Pipelines"/"Pipeline" and "Grants"/"Applied
- * funding" used to do.
+ * WHERE THE TITLES CAME FROM. The owner set these on 2026-11-09, naming both apps in one
+ * instruction ("change this for both platforms"), so these ARE theirs and the Streamlit
+ * rail carries the same words.
+ *
+ * The history is worth keeping, because this comment was wrong once in each direction.
+ * The owner first renamed the pages in the STREAMLIT app only, and an earlier version here
+ * claimed those titles as theirs for this app too — a cross-app inference presented as an
+ * instruction. They corrected it ("I only gave a prompt with a focus on the chai-rfpis
+ * page not the new react page"), so the claim was withdrawn, and then they issued the
+ * names for both. Same destination, different authority, and the difference is the whole
+ * point: a title changed here under the redesign's naming latitude may be changed again by
+ * the next author, and one the owner set may not.
+ *
+ * `grants` is the exception and is NOT the Streamlit title. See its own note below.
+ *
+ * EVERY TITLE IS TITLE CASE — owner, 2026-11-09, after their own names arrived mixed
+ * ("Submit new notice" beside "Funding Report" as first given). Every word is capitalised,
+ * including the
+ * pages that never appear in the rail, because one vocabulary with two conventions is how
+ * a reader learns that neither is the rule. The rail's label-hide in core/app_header.py
+ * lower-cases before matching, so the hidden pages could be recased safely; a hide that
+ * compared exactly would have made this a functional change rather than a cosmetic one.
+ * `test_every_page_title_is_title_case` holds the line.
  *
  * ONLY `rail: true` PUTS A PAGE IN THE SIDEBAR. The seven below without it — opportunity,
  * profile, help, search and the three public auth pages — exist so their URLs resolve: an
@@ -31,29 +50,42 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
  * the DOM, collapsed or not. Do not reintroduce a hide.
  */
 export const PAGES: Record<PageKey, PageInfo> = {
-  home: { title: "Home", icon: "🏠", rail: true },
+  home: { title: "Dashboard", icon: "🏠", rail: true },
   pipelines: { title: "Funding Pipeline", icon: "📚", rail: true },
-  // STILL A RAIL ITEM HERE, where on the Streamlit side it no longer is — there it became
-  // the "Outcomes" tab of Funding Pipeline. The React Pipeline does have an Outcome stage,
-  // but that covers only what a funder has ANSWERED, while this page also holds the
-  // pending applications, the per-funder breakdown and the reporting tab. Folding it in
-  // would drop function rather than move it, so it is the owner's call. /grants resolves
-  // either way.
-  grants: { title: "Funding", icon: "💼", rail: true },
+  // A RAIL ITEM, AND THE OWNER SETTLED THAT ON 2026-11-09 — said to this session directly,
+  // not relayed: "keep Funding as its own page in the React not in the RFPIS". The two
+  // apps differ here on purpose. On the Streamlit side Funding stopped being a page and
+  // became the "Outcomes" tab of Funding Pipeline; here it stays its own page.
+  //
+  // ITS TITLE IS ALSO THE EXCEPTION. Every other name below matches the Streamlit rail
+  // word for word; this one is "Proposals Submitted" where that app says "Outcomes", and
+  // the owner named the difference when they set them: "do not change for streamlit as it
+  // is now moved to pipeline screen as a tab". A tab inside the Pipeline can be called
+  // Outcomes because the stages around it supply the context; a standalone rail item has
+  // to say what it holds.
+  //
+  // The reason it is not simply folded into the Pipeline's Outcome stage: that stage covers
+  // only what a funder has ANSWERED, while this page also holds the pending applications,
+  // the per-funder breakdown and the reporting tab. Making it a tab today would drop those
+  // three rather than move them. Revisit when the Outcome stage can carry them — until
+  // then this is a decision, not an oversight. /grants resolves either way.
+  grants: { title: "Proposals Submitted", icon: "💼", rail: true },
   actions: { title: "Meeting Actions", icon: "🗒️", rail: true },
-  report: { title: "Fundraising Report", icon: "📊", rail: true },
+  report: { title: "Funding Report", icon: "📊", rail: true },
   donors: { title: "Donor Intelligence", icon: "🗺️", rail: true },
   organization: { title: "My Organization", icon: "🏢", rail: true },
-  "submit-new-rfp": { title: "Submit New RFP", icon: "📝", rail: true },
+  // The slug stays `submit-new-rfp`. The page is named for what it takes in now, but a
+  // bookmark or an emailed link still has to resolve.
+  "submit-new-rfp": { title: "Submit New Notice", icon: "📝", rail: true },
   opportunity: { title: "Opportunity", icon: "🎯" },
   profile: { title: "Profile", icon: "👤" },
   help: { title: "Help", icon: "❓" },
   search: { title: "Search", icon: "🔍" },
   // Deliberately in the rail: admins get Settings as a first-class item, not a hidden one.
   settings: { title: "Settings", icon: "⚙️", rail: true, adminOnly: true },
-  login: { title: "Sign in", icon: "🔐", public: true },
+  login: { title: "Sign In", icon: "🔐", public: true },
   "activate-account": { title: "Activate", icon: "🔑", public: true },
-  "password-reset": { title: "Reset password", icon: "🔓", public: true },
+  "password-reset": { title: "Reset Password", icon: "🔓", public: true },
 };
 
 export const pageOf = (pathname: string): PageKey | null => {
