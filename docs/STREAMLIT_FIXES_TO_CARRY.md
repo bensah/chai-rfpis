@@ -124,10 +124,27 @@ carries the point:
 The Review page showed five green MUSTs beside "Decline flags: Yes", because the grid was
 live and the flag was a column written at scan time.
 
-React does not display decline flags today — `decline_flags_present` appears only in
-`pipeline_writes.ts`, in a column allowlist. So nothing is wrong yet. It is recorded here
-because the Review stage is still to be ported, and reading the stored column is the
-obvious thing to do and the wrong one.
+React does not display decline flags today. `decline_flags` appears nowhere in `web/src`,
+and in the shared API only once: `decline_flags_present`, in `pipeline_writes.ts`. No route
+projects it, no page reads it. Nothing computes it, so nothing can disagree with anything.
+
+**But it is in the `EDITABLE` allowlist, so it is writable today.** That is the part to
+carry forward, and it changes what the fix has to be. A client that sent
+`decline_flags_present` would have it stored — so the stale-at-scan-time value could be
+persisted by a human save, not only left behind by the scan. Inert is not the same as
+inaccessible.
+
+So when Review lands there are **two** questions, not one:
+
+1. Compute the flag from the values being displayed, per `core/scorer.py::decline_flags`.
+   A live grid beside a stored flag is the bug that was just fixed.
+2. Decide whether a save may write a derived column at all.
+
+The precedent for (2) is in the same file. `alignment_score` is also in `EDITABLE`, and
+the comment there settles it: a client that computes its own number **gets it replaced by
+the server's**, and any save outside `WORKFLOW_ONLY` counts as one that could have changed
+the score. A derived column that the server owns is the established shape here; the open
+question is only whether `decline_flags_present` should join it or leave the allowlist.
 
 ## 4. ALREADY CORRECT — the week-label year boundary
 
