@@ -38,7 +38,11 @@ const isAdmin = (u: User) => u.role === "admin" || u.role === "super_user";
  *  as a mistake even though both are only labels. */
 const GROUPS: { label: string; pages: PageKey[] }[] = [
   { label: "Workspace", pages: ["home", "pipelines", "grants", "actions", "report", "donors"] },
-  { label: "Organization", pages: ["organization", "submit-new-rfp", "settings"] },
+  // `settings` was listed here until it left the rail. `allowed()` filtered it out, so
+  // the group named a page that could never render — harmless to run and misleading to
+  // read, which is the kind of line that answers a future question wrongly. Settings is
+  // reached from the account menu at the foot of this sidebar.
+  { label: "Organization", pages: ["organization", "submit-new-rfp"] },
 ];
 
 export default function Layout({ user, page, children }: { user: User; page: PageKey; children: ReactNode }) {
