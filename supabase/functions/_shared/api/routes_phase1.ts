@@ -22,9 +22,7 @@ import { BUCKET, BUCKETS, measure, membership } from "./home_buckets.ts";
 import {
   loadCurrencies, requestedCurrency, submissionWeight, usdValue,
 } from "./money.ts";
-import {
-  liveProceeds, selectOutcomeRows, selectSubmittedRows,
-} from "./routes_pipelines.ts";
+import { selectOutcomeRows, selectSubmittedRows } from "./routes_pipelines.ts";
 import type { Json } from "./jwt.ts";
 import { asToday, classify, featured } from "./opportunity_feed.ts";
 import { getPolicies, tenantPrefs } from "./policies.ts";
@@ -152,7 +150,6 @@ export function createPhase1Routes(db: Db) {
     const sb = db.as(ctx.scope);
     const rows = await sb.getAll("rfp_submissions", `select=${HOME_FIELDS}`, "uid");
     const t = today();
-    const soon = new Date(Date.parse(t) + 14 * 86400_000).toISOString().slice(0, 10);
 
     // EVERY FIGURE BELOW IS A SELECTION, not a count written here. api/home_buckets.ts
     // owns each one, and /opportunities/list tags rows with the same selections, so a
@@ -196,13 +193,11 @@ export function createPhase1Routes(db: Db) {
       Math.round(rs.reduce((a, r) => a + pick(r), 0));
 
     // Soonest first: this list exists to be worked down, so the order IS the priority.
-    const closing = liveProceeds(unique, t)
-      .filter((r) => {
-        const d = asDate(r.call_submission_deadline);
-        return d !== null && d >= t && d <= soon;
-      })
-      .sort((a, b) =>
-        str(a.call_submission_deadline) < str(b.call_submission_deadline) ? -1 : 1);
+    // THE SAME SELECTION THE COUNT USES, not a second copy of it. The rows under the
+    // number and the number itself have to be the same set or the card contradicts its
+    // own list, which is the whole reason home_buckets exists; it also keeps the sort
+    // (soonest first — the list exists to be worked down) in one place.
+    const closing = BUCKET.get("due_in_14_days")!.select(rows, t);
     const requested = sum(sent, (r) =>
       usdValue(r.amount_requested, requestedCurrency(r), rates, table));
     const secured = sum(sent, (r) =>
