@@ -527,6 +527,13 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
     }
     if (!jobId) return json(NOT_DELETED, 503);
 
+    // `enqueue` never throws: a job it could not hand to the runner comes back as an id
+    // pointing at a row already marked `failed`. For a save that is a warning to carry;
+    // here it is the whole request, and answering 202 would send somebody off to watch a
+    // job that is never going to run. Read it back and say so now.
+    const [job] = await db.service.get("web_jobs", `select=status&id=eq.${q(jobId)}&limit=1`);
+    if (!job || str(job.status) === "failed") return json(NOT_DELETED, 503);
+
     return json({
       uid,
       title: str(row.opportunity_title) || null,
