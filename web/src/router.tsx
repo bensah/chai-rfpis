@@ -17,18 +17,20 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
  * when a title changes: they ARE the slugs, and bookmarks and emailed links resolve
  * through them.
  *
- * WHERE THE TITLES CAME FROM, stated carefully because an earlier version of this comment
- * got it wrong. The owner renamed these pages in the STREAMLIT app on 2026-11-09. That
- * instruction was scoped to that app; they have since said so plainly ("I only gave a
- * prompt with a focus on the chai-rfpis page not the new react page"). Reusing the same
- * words here was a choice made FOR THIS APP under the naming latitude the redesign was
- * given — not an instruction the owner issued about this nav, and this comment should not
- * be read as one.
+ * WHERE THE TITLES CAME FROM. The owner set these on 2026-11-09, naming both apps in one
+ * instruction ("change this for both platforms"), so these ARE theirs and the Streamlit
+ * rail carries the same words.
  *
- * The reason for reusing them stands on its own: one page under two names across two apps
- * reads as two products, which is what "Pipelines"/"Pipeline" and "Grants"/"Applied
- * funding" used to do. But a cross-app inference is the author's to defend, not the
- * owner's, and the next person changing a title here needs no permission from that commit.
+ * The history is worth keeping, because this comment was wrong once in each direction.
+ * The owner first renamed the pages in the STREAMLIT app only, and an earlier version here
+ * claimed those titles as theirs for this app too — a cross-app inference presented as an
+ * instruction. They corrected it ("I only gave a prompt with a focus on the chai-rfpis
+ * page not the new react page"), so the claim was withdrawn, and then they issued the
+ * names for both. Same destination, different authority, and the difference is the whole
+ * point: a title changed here under the redesign's naming latitude may be changed again by
+ * the next author, and one the owner set may not.
+ *
+ * `grants` is the exception and is NOT the Streamlit title. See its own note below.
  *
  * ONLY `rail: true` PUTS A PAGE IN THE SIDEBAR. The seven below without it — opportunity,
  * profile, help, search and the three public auth pages — exist so their URLs resolve: an
@@ -39,24 +41,33 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
  * the DOM, collapsed or not. Do not reintroduce a hide.
  */
 export const PAGES: Record<PageKey, PageInfo> = {
-  home: { title: "Home", icon: "🏠", rail: true },
+  home: { title: "Dashboard", icon: "🏠", rail: true },
   pipelines: { title: "Funding Pipeline", icon: "📚", rail: true },
   // A RAIL ITEM, AND THE OWNER SETTLED THAT ON 2026-11-09 — said to this session directly,
   // not relayed: "keep Funding as its own page in the React not in the RFPIS". The two
   // apps differ here on purpose. On the Streamlit side Funding stopped being a page and
   // became the "Outcomes" tab of Funding Pipeline; here it stays its own page.
   //
+  // ITS TITLE IS ALSO THE EXCEPTION. Every other name below matches the Streamlit rail
+  // word for word; this one is "Proposals submitted" where that app says "Outcomes", and
+  // the owner named the difference when they set them: "do not change for streamlit as it
+  // is now moved to pipeline screen as a tab". A tab inside the Pipeline can be called
+  // Outcomes because the stages around it supply the context; a standalone rail item has
+  // to say what it holds.
+  //
   // The reason it is not simply folded into the Pipeline's Outcome stage: that stage covers
   // only what a funder has ANSWERED, while this page also holds the pending applications,
   // the per-funder breakdown and the reporting tab. Making it a tab today would drop those
   // three rather than move them. Revisit when the Outcome stage can carry them — until
   // then this is a decision, not an oversight. /grants resolves either way.
-  grants: { title: "Funding", icon: "💼", rail: true },
+  grants: { title: "Proposals submitted", icon: "💼", rail: true },
   actions: { title: "Meeting Actions", icon: "🗒️", rail: true },
-  report: { title: "Fundraising Report", icon: "📊", rail: true },
+  report: { title: "Funding Report", icon: "📊", rail: true },
   donors: { title: "Donor Intelligence", icon: "🗺️", rail: true },
   organization: { title: "My Organization", icon: "🏢", rail: true },
-  "submit-new-rfp": { title: "Submit New RFP", icon: "📝", rail: true },
+  // The slug stays `submit-new-rfp`. The page is named for what it takes in now, but a
+  // bookmark or an emailed link still has to resolve.
+  "submit-new-rfp": { title: "Submit new notice", icon: "📝", rail: true },
   opportunity: { title: "Opportunity", icon: "🎯" },
   profile: { title: "Profile", icon: "👤" },
   help: { title: "Help", icon: "❓" },

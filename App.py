@@ -61,10 +61,9 @@ def _pages(include_admin: bool) -> list:
     page and lives at the app root.
 
     Registered pages fall into two groups:
-      * RAIL pages — shown in the sidebar nav: the six everyday work surfaces
-        (Home, Funding Pipeline, Meeting Actions, Fundraising Report, Donor
-        Intelligence) plus Settings
-        (admins only) as a first-class rail item.
+      * RAIL pages — shown in the sidebar nav: the everyday work surfaces
+        (Dashboard, Funding Pipeline, Meeting Actions, Funding Report, Donor
+        Intelligence) plus Settings (admins only) as a first-class rail item.
       * MENU-only pages (Profile, Help, Search) — registered with st.navigation
         for stable URLs / st.page_link, but their sidebar nav links are HIDDEN by
         CSS (core/app_header.py) so they live only in the top-right user menu.
@@ -72,19 +71,21 @@ def _pages(include_admin: bool) -> list:
       reached via the user menu / in-app links.)
     """
     pages = [
-        st.Page("app_pages/home.py", title="Home", icon="🏠", default=True),
+        st.Page("app_pages/home.py", title="Dashboard", icon="🏠", default=True),
         st.Page("app_pages/pipelines.py", title="Funding Pipeline", icon="📚",
                 url_path="pipelines"),
         st.Page("app_pages/actions.py", title="Meeting Actions", icon="🗒️",
                 url_path="actions"),
-        st.Page("app_pages/report.py", title="Fundraising Report", icon="📊",
+        st.Page("app_pages/report.py", title="Funding Report", icon="📊",
                 url_path="report"),
         st.Page("app_pages/donors.py", title="Donor Intelligence", icon="🗺️",
                 url_path="donors"),
         # ── Top-right user-menu pages (sidebar links hidden via CSS) ──
         st.Page("app_pages/organization.py", title="My Organization", icon="🏢",
                 url_path="organization"),
-        st.Page("app_pages/submit_rfp.py", title="Submit New RFP", icon="📝",
+        # The slug stays `submit-new-rfp` though the label no longer says RFP: a bookmark
+        # and an emailed link still have to resolve.
+        st.Page("app_pages/submit_rfp.py", title="Submit new notice", icon="📝",
                 url_path="submit-new-rfp"),
         # One opportunity on its own page (/opportunity?uid=…) — every title in the Live
         # Opportunity Feed links here. Menu-only, like the pages above: it is always

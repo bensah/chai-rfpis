@@ -219,9 +219,9 @@ with _main:
          "What came of the applications we sent: awarded, under review, or not funded."),
         ("Meeting Actions", "app_pages/actions.py", "🗒️", "Check-ins & engagements",
          "Weekly meeting notes, donor engagement touchpoints and pending follow-ups."),
-        ("Fundraising Report", "app_pages/report.py", "📊", "KPI dashboard",
+        ("Funding Report", "app_pages/report.py", "📊", "KPI dashboard",
          "Activity from search and reviews through to grants secured, at a glance."),
-        ("Organization", "app_pages/organization.py", "🏢", "Organization",
+        ("My Organization", "app_pages/organization.py", "🏢", "Organization",
          "Your organisation — profile, bid-fitness, eligibility, partners and team."),
     ]
     if role in ("super_user", "admin"):
