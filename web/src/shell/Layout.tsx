@@ -273,10 +273,13 @@ function AccountMenu({ user, close }: { user: User; close: () => void }) {
       </div>
       <Badge tone="brand" className="mb-3 ml-1">{user.roleLabel}</Badge>
       <div className="border-t border-ink-100 pt-2">
-        <MenuLink to={hrefOf("help")} icon={<HelpCircle className="h-4 w-4" />} label="Help" close={close} />
-        <MenuLink to={hrefOf("organization")} icon={<NAV_ICON.organization className="h-4 w-4" />} label="Tenant" close={close} />
-        <MenuLink to={hrefOf("profile")} icon={<UserIcon className="h-4 w-4" />} label="Profile" close={close} />
-        {isAdmin(user) && <MenuLink to={hrefOf("settings")} icon={<Settings className="h-4 w-4" />} label="Settings" close={close} />}
+        {/* Labels come from PAGES, not from here. This menu called the organisation page
+            "Tenant" while the rail called it something else, which is one page under two
+            names in a single app — the thing the title table exists to stop. */}
+        <MenuLink to={hrefOf("help")} icon={<HelpCircle className="h-4 w-4" />} label={PAGES.help.title} close={close} />
+        <MenuLink to={hrefOf("organization")} icon={<NAV_ICON.organization className="h-4 w-4" />} label={PAGES.organization.title} close={close} />
+        <MenuLink to={hrefOf("profile")} icon={<UserIcon className="h-4 w-4" />} label={PAGES.profile.title} close={close} />
+        {isAdmin(user) && <MenuLink to={hrefOf("settings")} icon={<Settings className="h-4 w-4" />} label={PAGES.settings.title} close={close} />}
       </div>
       <div className="mt-2 border-t border-ink-100 pt-2">
         <button
