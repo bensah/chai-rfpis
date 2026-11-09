@@ -687,25 +687,38 @@ test("changing a verdict without a word does not keep the old rationale", async 
   assert.equal(cleared.body.row.decision_note, null);
 });
 
-test("Reviewed holds what a person decided, keyed on when they decided it", async () => {
+test("Reviewed holds what a person decided, keyed on when the call was FOUND", async () => {
+  // Re-keyed from the decision date to the found date (owner, 2026-11-09). A week runs
+  // Monday to Sunday, the scan finds calls across it, and the team reviews that week's
+  // finds the following Monday - so the week a row belongs to is settled when it is
+  // found, and nothing done to it afterwards may move it. Filing by decision date meant
+  // editing a September row dragged it into the current review week, in front of a team
+  // who had settled it two months earlier.
   const { call, signIn } = setup();
   const col = await signIn("col@x.org", "col pass 1");
+  const FOUND = "2026-10-22";             // R1's search_date in the fixture
+  const dayAfter = "2026-10-23";
   const today = new Date().toISOString().slice(0, 10);
   const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
 
   // Nothing is reviewed until somebody decides, even though both rows exist and are scored.
-  const before = await call("GET", `/pipelines/reviewed?from=${today}&to=${tomorrow}`, null, col.token);
+  const before = await call("GET", `/pipelines/reviewed?from=${FOUND}&to=${dayAfter}`, null, col.token);
   assert.equal(before.status, 200);
   assert.deepEqual(before.body.rows, []);
 
   await call("POST", "/pipelines/decision", { uid: "R1", decision: "Park" }, col.token);
-  const after = await call("GET", `/pipelines/reviewed?from=${today}&to=${tomorrow}`, null, col.token);
-  assert.deepEqual(after.body.rows.map((r) => r.uid), ["R1"]);
+  const after = await call("GET", `/pipelines/reviewed?from=${FOUND}&to=${dayAfter}`, null, col.token);
+  assert.deepEqual(after.body.rows.map((r) => r.uid), ["R1"],
+    "the row appears in the week it was found");
   assert.equal(after.body.rows[0].decision, "Park");
+  // The decision date is still RECORDED and shown - it is simply not what files the row.
   assert.equal(after.body.rows[0].decision_date, today);
 
-  // A window that ends before today excludes it: the stage files a call by the date the
-  // decision was taken, which is the question "what did we decide this period" asks.
+  // Decided today, and still not in today's window.
+  const now = await call("GET", `/pipelines/reviewed?from=${today}&to=${tomorrow}`, null, col.token);
+  assert.deepEqual(now.body.rows, [], "a decision does not re-file the row under today");
+
+  // A window nowhere near the found date excludes it.
   const earlier = await call("GET", `/pipelines/reviewed?from=2020-01-01&to=2020-02-01`, null, col.token);
   assert.deepEqual(earlier.body.rows, []);
 });
@@ -799,14 +812,25 @@ test("the Reviewed window is half-open, so periods tile", async () => {
   // in two periods, and the stage's numbers stop adding up to the year's.
   const { call, signIn } = setup();
   const col = await signIn("col@x.org", "col pass 1");
-  const today = new Date().toISOString().slice(0, 10);
-  const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+  // R1 was FOUND on 2026-10-22 (its search_date). Deciding it now must not move it: the
+  // window tiles on the day a call was found, not the day somebody touched it, or an edit
+  // drags a settled row into the current review week. 47 of 87 live rows carried an
+  // override timestamp later than their found date when this was fixed.
+  const FOUND = "2026-10-22";
+  const dayAfter = "2026-10-23";
   await call("POST", "/pipelines/decision", { uid: "R1", decision: "Proceed" }, col.token);
 
-  const endingToday = await call("GET", `/pipelines/reviewed?from=2020-01-01&to=${today}`, null, col.token);
-  assert.deepEqual(endingToday.body.rows, [], "`to` is exclusive");
-  const startingToday = await call("GET", `/pipelines/reviewed?from=${today}&to=${tomorrow}`, null, col.token);
-  assert.deepEqual(startingToday.body.rows.map((r) => r.uid), ["R1"], "`from` is inclusive");
+  const endingOnFound = await call("GET", `/pipelines/reviewed?from=2020-01-01&to=${FOUND}`, null, col.token);
+  assert.deepEqual(endingOnFound.body.rows, [], "`to` is exclusive");
+  const startingOnFound = await call("GET", `/pipelines/reviewed?from=${FOUND}&to=${dayAfter}`, null, col.token);
+  assert.deepEqual(startingOnFound.body.rows.map((r) => r.uid), ["R1"], "`from` is inclusive");
+
+  // The regression itself: a decision taken today leaves the row in the week it was found.
+  const today = new Date().toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+  const nowWindow = await call("GET", `/pipelines/reviewed?from=${today}&to=${tomorrow}`, null, col.token);
+  assert.deepEqual(nowWindow.body.rows, [],
+    "deciding a row today must not re-file it under today");
 
   for (const bad of [`from=${today}&to=${today}`, "from=nope&to=2026-01-01", `from=${tomorrow}&to=${today}`]) {
     assert.equal((await call("GET", `/pipelines/reviewed?${bad}`, null, col.token)).status, 400);

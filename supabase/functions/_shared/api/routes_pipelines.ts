@@ -73,7 +73,7 @@ const SUMMARY_FIELDS = "uid,funding_agency,call_award_value,currency," +
  *  time rather than counted. */
 const REVIEWED_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,currency," +
   "call_submission_deadline,call_geographic_scope,focus_theme,opportunity_link," +
-  "submitted_at,review_week,alignment_score,auto_recommendation,scored_at," +
+  "submitted_at,search_date,created_at,review_week,alignment_score," + "auto_recommendation,scored_at," +
   "score_profile_sig,decision,decision_note,decision_date,decision_overridden_by," +
   "decision_overridden_at,donor_decision,progress_status,applicant_role," +
   "is_duplicate,duplicate_of_uid";
@@ -852,7 +852,11 @@ export function createPipelineRoutes(db: Db) {
     const decided = all.filter((r) => str(r.decision).trim() !== "");
 
     const dated = decided
-      .map((r) => ({ ...r, decided_on: decidedOn(r), found_on: foundOn(r) }))
+      // decidedOn is the LAST resort, not a peer: a row with no found date at all (an
+      // old migrated one) still belongs on this stage somewhere, and dropping it would
+      // quietly shrink the totals rather than misplace one row. Where a found date
+      // exists - every live row has one - it wins, and an edit cannot move the row.
+      .map((r) => ({ ...r, decided_on: decidedOn(r), found_on: foundOn(r) ?? decidedOn(r) }))
       .filter((r) => r.found_on);
     // Half-open, matching web/src/pipeline/period.ts, so consecutive windows tile exactly
     // and a row on a boundary date is counted once rather than in both.
@@ -1073,8 +1077,19 @@ export function createPipelineRoutes(db: Db) {
  * taken is worth showing, it is just not what the row is filed under.
  */
 export function foundOn(r: Json): string | null {
-  const v = str(r["submitted_at"]).trim().slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
+  // search_date FIRST, because it is the row's own found date and it is write-once:
+  // core/scan_pipeline.py stamps it at insert on the same line as `review_week`, and the
+  // re-seen path backfills it only `if _is_blank(existing_row.get("search_date"))`. That
+  // keeps this window agreeing with the Screened tab, which files rows under the
+  // review_week label derived from the very same moment - otherwise one tab could say a
+  // call belongs to week 44 while the other showed it in week 45.
+  // submitted_at and created_at follow for rows that predate it. None of the three is an
+  // update timestamp, which is the whole point.
+  for (const k of ["search_date", "submitted_at", "created_at"]) {
+    const v = str(r[k]).trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  }
+  return null;
 }
 
 export function decidedOn(r: Json): string | null {
