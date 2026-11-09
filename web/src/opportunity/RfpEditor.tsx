@@ -46,149 +46,10 @@ import {
 } from "../api";
 import MultiSelect from "../components/MultiSelect";
 import { Button, IconButton, Notice, Select, Spinner, fieldClass } from "../ui";
-
-// ── Reading a stored value ───────────────────────────────────────────────────
-// `views/rfp_editor.py` opens with _str / _num / _date / _multi_default for the same
-// reason: a column can arrive as null, as a number, as a Postgres array, or as the
-// comma-joined string an older import left behind, and a widget must not render "nan".
-
-const txt = (v: unknown): string =>
-  v === null || v === undefined || (typeof v === "number" && Number.isNaN(v)) ? "" : String(v);
-
-/** Numbers stay STRINGS in form state. A number input bound to a number cannot hold the
- *  empty string, and empty is a real value here: `float(x) if x else None` in the Python
- *  writes null, which is not the same as 0. */
-const numText = (v: unknown): string => {
-  if (v === null || v === undefined || v === "") return "";
-  const n = Number(v);
-  return Number.isFinite(n) ? String(n) : "";
-};
-
-/** yyyy-mm-dd, which is what both `<input type="date">` and the column want. */
-const dateText = (v: unknown): string => {
-  const s = txt(v).trim();
-  if (!s) return "";
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
-};
-
-/** `_team_multi`'s coercion: a list stays a list, anything else splits on , or ;. */
-const toList = (v: unknown): string[] => {
-  if (Array.isArray(v)) return v.map((x) => txt(x).trim()).filter(Boolean);
-  const s = txt(v).trim();
-  if (!s || s.toLowerCase() === "nan" || s.toLowerCase() === "none") return [];
-  if (s.startsWith("[")) {
-    try {
-      const parsed = JSON.parse(s);
-      if (Array.isArray(parsed)) return parsed.map((x) => txt(x).trim()).filter(Boolean);
-    } catch { /* not JSON after all — fall through to the split */ }
-  }
-  return s.split(/[;,]/).map((x) => x.trim()).filter(Boolean);
-};
-
-const isTruthyFlag = (v: unknown): boolean =>
-  v === true || ["true", "yes", "1", "y"].includes(txt(v).trim().toLowerCase());
-
-// ── Writing one back ─────────────────────────────────────────────────────────
-
-/** `_val`: "" and the em-dash placeholder both mean "no value", which is null. */
-const orNull = (s: string): string | null => {
-  const t = s.trim();
-  return t === "" || t === "—" ? null : t;
-};
-
-/** `float(x) if x else None` — note that 0 writes null, not 0, in the Python too. */
-const numOrNull = (s: string): number | null => {
-  const t = s.trim();
-  if (!t) return null;
-  const n = Number(t);
-  return Number.isFinite(n) && n !== 0 ? n : null;
-};
-
-const intOrNull = (s: string): number | null => {
-  const n = numOrNull(s);
-  return n === null ? null : Math.round(n);
-};
-
-const listOrNull = (v: string[]): string[] | null => (v.length ? v : null);
-
-// ── The form's shape ─────────────────────────────────────────────────────────
-
-/** Column → how its value is held in form state and turned back into a column value.
- *
- * Declared as data rather than written out twice, because the load and the save have to
- * agree: the dirty check compares the loaded value with the current one, and two
- * hand-written coercions that disagree would make a field look permanently edited (and
- * re-queue a rescore on every save) or permanently clean (and never save at all). */
-type Kind = "text" | "number" | "int" | "date" | "list" | "bool";
-
-const KIND: Record<string, Kind> = {
-  // Opportunity
-  opportunity_title: "text", opportunity_id: "text", funding_agency: "text",
-  brief_description: "text", date_posted: "date", call_submission_deadline: "date",
-  expected_award_date: "date", applicant_role: "text", funding_window: "text",
-  time_to_award: "text", submission_format: "text", lead_applicant: "text",
-  sub_applicant: "text", opportunity_link: "text", call_award_value: "number",
-  currency: "text", project_duration: "int", focus_theme: "text",
-  call_geographic_scope: "list", call_domain_areas: "list",
-  funding_opportunity_number: "text", apply_url: "text", opportunity_type: "text",
-  solicitation_type: "text", instrument_type: "text", notes: "text",
-  // Eligibility
-  feasibility: "text", qualification: "text", strategic_fit: "text", capacity: "text",
-  geographic_fit: "text", cofinancing: "text", funding_quality: "text",
-  funder_relationship: "text", competitiveness: "text", bid_effort: "text",
-  decline_flags_present: "bool", key_risks: "text",
-  // Decision & pipeline
-  decision: "text", decision_note: "text", submissions: "int", stage: "text",
-  progress_status: "text", donor_decision: "text", assigned_to: "text",
-  action_deadline: "date", last_update: "date", next_action: "text", remarks: "text",
-  // Team
-  proposal_lead: "text", contributors: "list", reviewers: "list", support_roles: "list",
-  // Submission & award
-  date_completed: "date", amount_requested: "number", call_award_floor: "number",
-  call_award_ceiling: "number", total_program_funding: "number", expected_awards: "int",
-  date_of_approval: "date", amount_secured: "number", currency_secured: "text",
-  donor_program_officer: "text", kickoff_date: "date", next_step: "text",
-  // Application
-  how_to_apply: "text", eligibility_specifics: "text", compliance_requirements: "text",
-  application_checklist: "text",
-};
-
-type FormValue = string | string[] | boolean;
-type Form = Record<string, FormValue>;
-
-function readRow(row: Record<string, unknown>): Form {
-  const out: Form = {};
-  for (const [col, kind] of Object.entries(KIND)) {
-    const v = row[col];
-    out[col] = kind === "list" ? toList(v)
-      : kind === "bool" ? isTruthyFlag(v)
-      : kind === "date" ? dateText(v)
-      : kind === "number" || kind === "int" ? numText(v)
-      : txt(v);
-  }
-  return out;
-}
-
-function columnValue(col: string, v: FormValue): unknown {
-  switch (KIND[col]) {
-    case "list": return listOrNull(v as string[]);
-    case "bool": return Boolean(v);
-    case "number": return numOrNull(v as string);
-    case "int": return intOrNull(v as string);
-    default: return orNull(v as string);
-  }
-}
-
-const same = (a: FormValue, b: FormValue) =>
-  Array.isArray(a) || Array.isArray(b)
-    ? JSON.stringify(a) === JSON.stringify(b)
-    : a === b;
-
-/** `support_roles` is the one multi-value column stored as a string: the Excel column is
- *  "Support (e.g. tech/finance/compliance)" and the Python joins with ", " on save. */
-const SUPPORT_JOINED = "support_roles";
+import {
+  changedColumns, columnValue, dateText, numText, orNull, readRow, txt,
+  type Form, type FormValue,
+} from "./values";
 
 // ── Small controls ───────────────────────────────────────────────────────────
 
@@ -379,10 +240,8 @@ export default function RfpEditor({
   const set = useCallback(
     (col: string, v: FormValue) => setForm((f) => (f ? { ...f, [col]: v } : f)), []);
 
-  const dirty = useMemo(() => {
-    if (!form || !loaded) return [] as string[];
-    return Object.keys(KIND).filter((c) => !same(form[c], loaded[c]));
-  }, [form, loaded]);
+  const dirty = useMemo(
+    () => (form && loaded ? changedColumns(form, loaded) : []), [form, loaded]);
 
   const reportingDirty = useMemo(() => {
     if (!showReporting) return false;
@@ -399,6 +258,7 @@ export default function RfpEditor({
     setProblems([]);
     setError(null);
     setSavedNote(null);
+    setWarnings([]);
     if (!txt(form.opportunity_title).trim() || !txt(form.funding_agency).trim()) {
       setError("Title and Funder are required.");
       setTab("Opportunity");
@@ -431,11 +291,7 @@ export default function RfpEditor({
       const fields: Record<string, unknown> = {};
       for (const col of dirty) {
         if (col === "decision" || col === "decision_note") continue;
-        fields[col] = col === SUPPORT_JOINED
-          // Stored as a string, not an array — core/dropdowns' support_roles is a set of
-          // FUNCTIONS the proposal needs, and the column it lands in is plain text.
-          ? ((form[col] as string[]).length ? (form[col] as string[]).join(", ") : null)
-          : columnValue(col, form[col]);
+        fields[col] = columnValue(col, form[col]);
       }
 
       const sendReporting = showReporting && (reportingDirty || Object.keys(fields).length > 0);
