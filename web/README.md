@@ -156,9 +156,12 @@ workflow fails on its first step with these instructions rather than half-deploy
 - **`SUPABASE_ACCESS_TOKEN`** — a Supabase personal access token from
   <https://supabase.com/dashboard/account/tokens>, added at GitHub → this repo → Settings →
   Secrets and variables → Actions → New **repository** secret. Scope the token to the RFPIS
-  project alone (Resource access → Project) and grant only the Edge Functions permissions,
-  not the "Full access" preset — that preset carries database write, API keys and
-  organization members, and this repo is public while the database holds real client data.
+  project alone (Resource access → Project), then drop the "Full access" preset and set
+  every permission to None except **Application services → Edge Functions: Read-write** and
+  **Project → Project Settings: Read**. Leaving *Edge Function Secrets* at None is what
+  makes "CI does not touch the function's secrets" true of the token and not just of the
+  workflow; leaving *API Key Secrets* and the whole *Database* category at None keeps the
+  service-role key and the migration surface away from a public repo's CI.
   Give it the longest expiry offered: the dashboard defaults to 7 days, and an expired
   token stops API deploys while Cloudflare keeps shipping the frontend, which is the drift
   this workflow exists to prevent.
