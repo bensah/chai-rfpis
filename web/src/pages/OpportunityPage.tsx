@@ -200,7 +200,7 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
           the page's own loading states — a save re-reads the rows, and a dialog that
           unmounted while that happened would close itself on every save. */}
       {editing && (
-        <RfpEditor uid={uid} user={user} onClose={() => setEditing(false)} onSaved={onSaved} />
+        <RfpEditor uid={uid} onClose={() => setEditing(false)} onSaved={onSaved} />
       )}
     </>
   );
