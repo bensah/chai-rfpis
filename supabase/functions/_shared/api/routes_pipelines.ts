@@ -405,8 +405,11 @@ export function selectSubmittedRows(rows: Json[]): Json[] {
  *   submitted_at     the row's own intake date, so a proposal is never undated
  *
  * `decision_overridden_at` IS DELIBERATELY NOT IN THIS LIST, which is where it differs
- * from `decidedOn` above. There, a save stamp is decent evidence of when a verdict was
- * reached. Here it is evidence of when somebody did bookkeeping: the owner is working
+ * from `decidedOn` above. That function still resolves a save stamp, but nothing FILES a
+ * row by it any more: the Reviewed window keys on `foundOn`, because an edit to a settled
+ * row was dragging it into the current review week (owner, 2026-11-09). This docstring used
+ * to say a save stamp was decent evidence of when a verdict was reached; it is not, for the
+ * same reason given here. Here it is evidence of when somebody did bookkeeping: the owner is working
  * through the Bidding backlog today, marking proposals from June and July as submitted, so
  * every one of those rows carries today's stamp. Using it would file a July submission
  * under November and make "submitted this month" a count of data entry.
@@ -1077,6 +1080,11 @@ export function createPipelineRoutes(db: Db) {
  * taken is worth showing, it is just not what the row is filed under.
  */
 export function foundOn(r: Json): string | null {
+  // `submittedOn` and `outcomeOn` already refuse the save stamp for the same reason, and
+  // said so in writing two functions below while this one still used it - worth reading
+  // together, because the three stages only tell a coherent story if they agree about
+  // which dates describe the CALL and which describe somebody doing data entry.
+  //
   // search_date FIRST, because it is the row's own found date and it is write-once:
   // core/scan_pipeline.py stamps it at insert on the same line as `review_week`, and the
   // re-seen path backfills it only `if _is_blank(existing_row.get("search_date"))`. That
