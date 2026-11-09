@@ -34,7 +34,7 @@ the Google Alert redirect repair, staged-call deadlines, WordPress listings, scr
 without programme areas, the synthesis empty-response retry, the dedup country veto, the
 seen-ledger schema drift — is scan-side and already shared.
 
-## 1. LIVE GAP — the review screens open on an empty week
+## 1. FIXED — the review screens opened on an empty week
 
 `4c5b17c` added `core/review_week.py::previous_review_week_label`. Screen, Review and
 Track now open on the week BEFORE the current one, because a week runs Monday to Sunday,
@@ -53,39 +53,64 @@ and `PipelinePage.tsx` selects it:
 setWeek((cur) => cur ?? w.current);
 ```
 
-So the React Pipeline opens on the current week and reproduces the bug exactly. This is
-the only one of the six that is wrong today.
+So the React Pipeline opened on the current week and reproduced the bug exactly.
 
-The fix is the default, not the list: the selector should still offer every week, and a
-week the user picks must still be honoured. Only the initial value moves.
+**Fixed at 9621372.** Measured before changing anything: on Monday 2026-11-09 the current
+week held 0 rows and the previous week 2, so the page was opening blank that morning.
 
-## 2. LATENT — `"nan"` is a value in this database
+The shape of the fix is worth recording. `current` and `defaultWeek` are both served rather
+than one replacing the other, because they answer different questions — `current` is the
+week we are in, which is what an empty state means by "this week", and `defaultWeek` is the
+week to open on. Collapsing them would leave the page unable to say "nothing found in the
+week you are looking at" without lying about which week that is.
 
-`core/pipeline.py::_txt` blanks the literal string `"nan"`:
+And a case neither of us had thought of: the route already prepended `current` when the
+viewed year did not contain it, and `defaultWeek` needs the same treatment. In the first
+days of January the week just gone belongs to the previous year, a `<select>` whose value
+is not among its options renders blank, and the page then fetches a week nobody chose.
+There is now an HTTP test driving a different year rather than faking the clock, plus two
+unit tests in `pipelines.test.mjs`, one walking 400 consecutive days.
 
-```python
-s = str(v).strip()
-return "" if s.lower() == "nan" else s.lower()
-```
+## 2. NOT A GAP — `"nan"`, and the asymmetry that makes it look like one
 
-Rows migrated from the workbook carry it where the cell was empty, and `str(float('nan'))`
-produces the same thing. React's `norm()` does not blank it.
+**This item was wrong when first written, and acting on it would have introduced a
+divergence rather than closed one.** Corrected 2026-11-09 after the frontend-migration
+session checked it. The correction is kept rather than deleted, because the mistake is
+instructive and the next reader will be tempted to make it again.
 
-It matters in exactly one place, because of an asymmetry worth understanding.
-`is_submitted` tests `donor_decision` against an ALLOWLIST — `{"", "not submitted"}` — so
-any value it has never seen counts as submitted. That is deliberate: a donor can only
-decide on a proposal it received. But it means a `"nan"` reads as blank in Python and as a
-real decision in TypeScript:
+`"nan"` really is a value in this database: rows migrated from the workbook carry the
+literal string where the cell was empty, and `str(float('nan'))` produces the same thing.
 
-* Python: `_txt("nan")` → `""` → unsubmitted → row stays on Track
-* React: `norm("nan")` → `"nan"` → submitted → row disappears from Track
+Python handles it in **two different ways on purpose**, and this is the part to understand
+before touching anything:
 
-The `decision` and `progress_status` tests are prefix/equality matches that `"nan"` fails
-either way, so only `donor_decision` flips.
+| Python | blanks `"nan"`? |
+|---|---|
+| `core/pipeline.py::_txt` — used by `is_submitted` / `is_active_proceed` | yes |
+| `core/records.py::drop_concluded` — `.fillna("").str.strip().str.lower()` | **no** |
 
-**Measured 2026-11-09: 0 of 267 rows carry a literal `"nan"` in any of those columns.** So
-this is latent. It is worth closing anyway, because the condition that creates it — an
-Excel import — is a thing this system does on purpose.
+React mirrors **both**:
+
+* `api/donor_decision.ts` has its own `txt()` and a `NO_ANSWER` set containing
+  `"", "none", "nan", "nat", "null", "not submitted"`. Every membership rule — Track, the
+  awaiting panel, Submitted, Outcome — routes through `isSubmitted`, which uses it. So a
+  row whose `donor_decision` is `"nan"` stays on Track, matching `_txt`.
+* `routes_pipelines.ts::norm` does **not** blank it, and must not: the only place it still
+  meets `donor_decision` is `dropConcluded`, which mirrors `drop_concluded` — and that
+  function does not blank it either.
+
+The original audit read `norm()`, found no `"nan"` handling, and called it a gap. The error
+was checking one helper and generalising: `is_submitted` had moved into its own module
+during the Submitted stage and carries its own. Making `norm()` blank `"nan"` would have
+made `dropConcluded` disagree with the Python function it exists to mirror.
+
+**Measured 2026-11-09: 0 of 267 rows carry a literal `"nan"`** in `decision`,
+`donor_decision`, `progress_status` or `date_completed` — confirmed independently by both
+sessions. Nothing is wrong in either app.
+
+The lesson worth keeping: when two Python functions handle the same value differently, a
+port that "fixes" one of them to match the other is not closing a gap. Check which rule the
+caller is actually on.
 
 ## 3. LATENT — a stored decline flag beside a live criteria grid
 
@@ -150,7 +175,15 @@ Those cover permissions, routing, the shell, scoring and Report. They do NOT cov
 Pipeline week default or `_txt`, which is why items 1 and 2 needed reading rather than
 running — a rule with no check on it is a rule that drifts quietly.
 
-## Ownership
+## Ownership, and how to read this file
 
-Items 1 and 2 are in `routes_pipelines.ts` and `PipelinePage.tsx`, which the
-frontend-migration session holds. Item 3 lands whenever the Review stage is ported.
+Item 3 lands whenever the Review stage is ported. Items 1 and 2 were in
+`routes_pipelines.ts` and `PipelinePage.tsx`, which the frontend-migration session holds;
+both are closed.
+
+**A caveat about the framing.** This audit was written from an instruction to carry the
+Streamlit backend fixes into React. That is a reason to LOOK at each one, not a reason to
+apply it: the two apps model several things differently on purpose, and item 2 is a worked
+example of a mechanical carry-across making things worse. Each item stands or falls on its
+own merits in the React app. Where a Streamlit fix and a React defect happen to coincide —
+item 1 — the React defect is the reason to change it, and the measurement is the evidence.
