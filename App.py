@@ -62,7 +62,8 @@ def _pages(include_admin: bool) -> list:
 
     Registered pages fall into two groups:
       * RAIL pages — shown in the sidebar nav: the six everyday work surfaces
-        (Home, Pipelines, Grants, Actions, Report, Donors) plus Settings
+        (Home, Funding Pipeline, Meeting Actions, Fundraising Report, Donor
+        Intelligence) plus Settings
         (admins only) as a first-class rail item.
       * MENU-only pages (Profile, Help, Search) — registered with st.navigation
         for stable URLs / st.page_link, but their sidebar nav links are HIDDEN by
@@ -72,15 +73,18 @@ def _pages(include_admin: bool) -> list:
     """
     pages = [
         st.Page("app_pages/home.py", title="Home", icon="🏠", default=True),
-        st.Page("app_pages/pipelines.py", title="Pipelines", icon="📚", url_path="pipelines"),
-        st.Page("app_pages/grants.py", title="Grants", icon="💼", url_path="grants"),
-        st.Page("app_pages/actions.py", title="Actions", icon="🗒️", url_path="actions"),
-        st.Page("app_pages/report.py", title="Report", icon="📊", url_path="report"),
-        st.Page("app_pages/donors.py", title="Donors", icon="🗺️", url_path="donors"),
+        st.Page("app_pages/pipelines.py", title="Funding Pipeline", icon="📚",
+                url_path="pipelines"),
+        st.Page("app_pages/actions.py", title="Meeting Actions", icon="🗒️",
+                url_path="actions"),
+        st.Page("app_pages/report.py", title="Fundraising Report", icon="📊",
+                url_path="report"),
+        st.Page("app_pages/donors.py", title="Donor Intelligence", icon="🗺️",
+                url_path="donors"),
         # ── Top-right user-menu pages (sidebar links hidden via CSS) ──
-        st.Page("app_pages/organization.py", title="Tenant", icon="🏢",
+        st.Page("app_pages/organization.py", title="My Organization", icon="🏢",
                 url_path="organization"),
-        st.Page("app_pages/submit_rfp.py", title="Submit", icon="📝",
+        st.Page("app_pages/submit_rfp.py", title="Submit New RFP", icon="📝",
                 url_path="submit-new-rfp"),
         # One opportunity on its own page (/opportunity?uid=…) — every title in the Live
         # Opportunity Feed links here. Menu-only, like the pages above: it is always

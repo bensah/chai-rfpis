@@ -213,13 +213,13 @@ with _main:
     # Headlines + one-line bodies kept to a similar length so every tile takes the same
     # height (paired with a fixed min-height in the CSS) — a uniform, tidy grid.
     CARDS = [
-        ("Pipelines", "app_pages/pipelines.py", "📚", "Pipeline",
+        ("Funding Pipeline", "app_pages/pipelines.py", "📚", "Pipeline",
          "Screen, review, track and summarise every opportunity across its lifecycle."),
-        ("Grants", "app_pages/grants.py", "💼", "Applied funding",
-         "Grants under donor review or already awarded, with their reporting deadlines."),
-        ("Actions", "app_pages/actions.py", "🗒️", "Check-ins & engagements",
+        ("Outcomes", "app_pages/pipelines.py", "💼", "Applied funding",
+         "What came of the applications we sent: awarded, under review, or not funded."),
+        ("Meeting Actions", "app_pages/actions.py", "🗒️", "Check-ins & engagements",
          "Weekly meeting notes, donor engagement touchpoints and pending follow-ups."),
-        ("Report", "app_pages/report.py", "📊", "KPI dashboard",
+        ("Fundraising Report", "app_pages/report.py", "📊", "KPI dashboard",
          "Activity from search and reviews through to grants secured, at a glance."),
         ("Organization", "app_pages/organization.py", "🏢", "Organization",
          "Your organisation — profile, bid-fitness, eligibility, partners and team."),

@@ -50,7 +50,10 @@ PAGE_SCRIPTS: dict[str, str] = {
     "": "app_pages/home.py",
     "home": "app_pages/home.py",
     "pipelines": "app_pages/pipelines.py",
-    "grants": "app_pages/grants.py",
+    # "Grants" is now the Outcomes TAB of the Funding Pipeline page; the old
+    # /grants slug still resolves so saved links and bookmarks keep working.
+    "grants": "app_pages/pipelines.py",
+    "outcomes": "app_pages/pipelines.py",
     "actions": "app_pages/actions.py",
     "report": "app_pages/report.py",
     "donors": "app_pages/donors.py",
@@ -222,9 +225,11 @@ _ROOT_PAGE = "home"
 
 # Human names for the trail, so a crumb can say where it goes.
 PAGE_TITLES: dict[str, str] = {
-    "": "Home", "home": "Home", "pipelines": "Pipelines", "grants": "Grants",
-    "actions": "Actions", "report": "Report", "donors": "Donors",
-    "organization": "Tenant", "submit-new-rfp": "Submit", "opportunity": "Opportunity",
+    "": "Home", "home": "Home", "pipelines": "Funding Pipeline",
+    "grants": "Outcomes", "outcomes": "Outcomes",
+    "actions": "Meeting Actions", "report": "Fundraising Report",
+    "donors": "Donor Intelligence", "organization": "My Organization",
+    "submit-new-rfp": "Submit New RFP", "opportunity": "Opportunity",
     "profile": "Profile", "help": "Help", "search": "Search", "settings": "Settings",
 }
 

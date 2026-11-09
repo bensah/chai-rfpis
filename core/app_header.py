@@ -1243,6 +1243,27 @@ def render_app_header() -> None:
         """
         <script>
         const doc = window.parent.document;
+
+        // Pages registered only for their URL, never for the rail. The CSS below hides
+        // them by href suffix, which leaves them showing in the COLLAPSED rail - the
+        // icons are still painted there, so the rail reads as a row of leftovers.
+        // Matching the LABEL instead works in both states and does not depend on how
+        // Streamlit spells the href (slug vs title, trailing slash, base path).
+        const HIDE = ['opportunity', 'profile', 'help', 'search',
+                      'sign in', 'activate', 'reset password'];
+
+        function hideLeftovers() {
+          doc.querySelectorAll('[data-testid="stSidebarNavLink"]').forEach(function (a) {
+            const lbl = a.querySelector('[data-testid="stMarkdownContainer"]');
+            const txt = (lbl ? lbl.textContent : (a.textContent || '')).trim().toLowerCase();
+            if (!txt || HIDE.indexOf(txt) === -1) return;
+            // Hide the whole row, not just the anchor, or the rail keeps its gap.
+            const row = a.closest('[data-testid="stSidebarNavLinkContainer"]')
+                     || a.closest('li') || a;
+            row.style.display = 'none';
+          });
+        }
+
         function stampTitles() {
           doc.querySelectorAll('[data-testid="stSidebarNavLink"]').forEach(function (a) {
             const lbl = a.querySelector('[data-testid="stMarkdownContainer"]');
@@ -1250,9 +1271,13 @@ def render_app_header() -> None:
             if (txt && a.getAttribute('title') !== txt) a.setAttribute('title', txt);
           });
         }
-        stampTitles();
+
+        function apply() { stampTitles(); hideLeftovers(); }
+        apply();
         try {
-          new MutationObserver(stampTitles).observe(doc.body, {childList: true, subtree: true});
+          // Streamlit rebuilds the nav on every rerun and when the rail collapses, so
+          // this has to re-run rather than fire once.
+          new MutationObserver(apply).observe(doc.body, {childList: true, subtree: true});
         } catch (e) {}
         </script>
         """,
