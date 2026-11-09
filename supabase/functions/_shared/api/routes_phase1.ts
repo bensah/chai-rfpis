@@ -1,13 +1,19 @@
 /**
  * Home, the opportunity rail and the Opportunity page.
  *
- * These routes FETCH, they do not decide. Anything with a rule in it — the feed's ranking,
- * the standard layout, the decision aid — runs in the browser's Python engine against the
- * snapshot this file assembles, so there is only one implementation of each rule.
+ * These routes mostly FETCH. What decides here is what was measured to need no scoring:
  *
- * The exception is Home's counters, which are plain arithmetic over a few columns and would
- * cost a 4-second engine boot to answer. They are ported here and held to the Python by
- * web/scripts/parity/check-home.mjs.
+ *   * Home's counters — plain arithmetic over a few columns, which would otherwise cost a
+ *     four-second engine boot to answer.
+ *   * The rail's four cards (`opportunitiesFeed`) — core/opportunity_feed.py ORDERS values
+ *     already stored on each row and computes none of them.
+ *
+ * What is left in the browser's Python engine, against the snapshot this file assembles,
+ * is the Opportunity page's decision aid: it computes nine criteria live, reaching most of
+ * core/criteria_derive.py and core/auto_scorer.py, and the stored alignment_score is
+ * measurably a different number from the one it shows.
+ *
+ * Both ports are held to the Python by web/scripts/parity/check-scoring.mjs.
  */
 import { q, type Db } from "./db.ts";
 import { json, gzipped, str } from "./http.ts";

@@ -87,12 +87,16 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/shell" && m === "GET") return shell.shell(ctx);
     if (path === "/notifications/read" && m === "POST") return shell.markRead(ctx);
     if (path === "/jobs" && m === "POST") return jobs.create(req, ctx);
-    // Phase 1. These fetch rows; the rules that act on them run in the browser's Python.
+    // Phase 1. The snapshot seeds the browser's Python engine, which is down to a single
+    // caller — the Opportunity page's decision aid. Everything else here decides in TS.
     if (path === "/scoring/snapshot" && m === "GET") return phase1.snapshot(req, ctx);
     if (path === "/home" && m === "GET") return phase1.home(ctx);
+    // The rail's RAW rows. No longer served to a browser: the rail is ranked below. It
+    // stays because web/scripts/parity/check-scoring.mjs feeds these exact rows to
+    // core/opportunity_feed.py to produce the Python side it compares against.
     if (path === "/feed" && m === "GET") return phase1.feed(req, ctx);
-    // The rail's finished cards. /feed returns the raw rows the browser's Python engine
-    // ranked; this ranks them here, because the ranking needs no scoring.
+    // The rail's finished cards, ranked here — the ranking orders values already stored on
+    // each row and computes no score, so it needs no Python.
     if (path === "/opportunities/feed" && m === "GET") return phase1.opportunitiesFeed(req, ctx);
     // Phase 2. Same division: these serve rows, the page scores and decides.
     if (path === "/report/periods" && m === "GET") return report.periods(req, ctx);
