@@ -147,9 +147,17 @@ class TheBrowserPageDoesNotAddASecondCopy(unittest.TestCase):
         with open(src, encoding="utf-8") as f:
             text = f.read()
         self.assertIn("_name_inline_gaps", text)
-        self.assertIn("_od.INLINE_PROSE", text,
+        self.assertIn("INLINE_PROSE.get(", text,
                       "the gap list must come from the Python's own INLINE_PROSE, not a "
                       "copy of it in the browser")
+        # The shim runs as ONE exec and imports core lazily inside each function, so a
+        # module-level reference to the module alias is a NameError at load. That is not
+        # hypothetical: this helper shipped that way for one commit, typechecked and
+        # unit-tested clean, and only the browser could see it.
+        helper = text[text.index("def _name_inline_gaps"):]
+        helper = helper[:helper.index("\ndef ", 1)]
+        self.assertIn("from core import opportunity_detail", helper,
+                      "_name_inline_gaps must import core itself")
 
     def test_the_worker_sends_the_composed_page_and_not_narrative_sections(self):
         src = os.path.join(_ROOT, "web", "src", "scoring", "worker.ts")
