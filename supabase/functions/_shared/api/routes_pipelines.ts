@@ -136,6 +136,23 @@ const OUTCOME_FIELDS = "uid,opportunity_title,funding_agency,call_award_value,cu
  */
 const isProceed = (v: unknown) => norm(v).startsWith("proceed");
 
+/**
+ * Strip and lower-case. DELIBERATELY DOES NOT BLANK THE LITERAL "nan", and that is the
+ * question a reader of this line will have, because Excel-migrated rows do carry it.
+ *
+ * Nothing that needs "nan" blanked still comes through here. The submission test moved to
+ * `api/donor_decision.ts::isSubmitted`, which has its own `txt()` mirroring
+ * `core/pipeline.py::_txt`, and every membership rule — Track, the awaiting panel,
+ * Submitted, Outcome — routes through that. What is left on this helper is `decision` and
+ * `progress_status`, which are prefix and equality tests that "nan" fails either way, and
+ * `dropConcluded`'s donor_decision test.
+ *
+ * THAT LAST ONE IS WHY THIS MUST STAY AS IT IS. `core/records.py::drop_concluded` strips
+ * and lower-cases and does no nan handling either, so the asymmetry between it and
+ * `core/pipeline._txt` is real in the Python and reproduced here on purpose. Teaching this
+ * helper about "nan" would make `dropConcluded` disagree with the function it mirrors —
+ * an audit proposed exactly that, from reading this line alone.
+ */
 const norm = (v: unknown) => str(v).trim().toLowerCase();
 
 /** core/review_week.py::week_bounds — the Monday of the ISO week containing `d`. */
