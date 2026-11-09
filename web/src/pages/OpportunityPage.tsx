@@ -174,6 +174,18 @@ function BlockView({ block }: { block: Block }) {
           ))}
         </div>
       )}
+      {/* …and the ones this call is silent on, which INLINE_PROSE would otherwise leave
+          unnamed anywhere on the page. The name is the whole content: it says the app
+          tracks this and the funder did not state it. */}
+      {block.missingInline.length > 0 && (
+        <div className="mt-3 border-t border-ink-100 pt-3">
+          {block.missingInline.map((t) => (
+            <p key={t} className="text-sm text-ink-400">
+              {t} <span className="italic">— not stated in this call.</span>
+            </p>
+          ))}
+        </div>
+      )}
     </>
   );
   return block.kind === "cards"

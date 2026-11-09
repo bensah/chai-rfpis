@@ -114,6 +114,43 @@ class TheBrowserPageDoesNotAddASecondCopy(unittest.TestCase):
     cannot see that, because they drive the Python the browser calls rather than the
     browser. This reads the source, the way tests/test_decline_is_remembered.py does."""
 
+    def test_a_blank_inline_prose_field_still_has_its_name_on_the_page(self):
+        """INLINE_PROSE appends a field's lines inside another block with no heading of its
+        own — deliberately, so "How to apply" is not followed by "How to apply in detail".
+        A BLANK one therefore appends nothing, and its name appears nowhere.
+
+        That is harmless for `how_to_apply`, whose block is titled "How to apply" anyway.
+        It is not harmless for `compliance_requirements`, which lives under "Eligibility
+        requirements": on a call that states none, the words never appear and a reader
+        cannot tell the app tracks them. The worker names the gaps (`_name_inline_gaps`);
+        this pins the condition that makes that necessary, so the day INLINE_PROSE grows a
+        third entry it is still covered.
+        """
+        page = rendered_text({})
+        block_titles = {b.get("title") for row in OD.page_rows({}) for col in row for b in col}
+        for title, fields in OD.INLINE_PROSE.items():
+            for field in fields:
+                heading = dict((f, h) for h, f in OD.NARRATIVE_FIELDS).get(field)
+                with self.subTest(block=title, field=field):
+                    self.assertIsNotNone(heading, f"{field} is not a NARRATIVE_FIELD")
+                    named_by_composition = heading in page or heading in block_titles
+                    # Either the composition already names it, or the worker must — and the
+                    # worker names exactly the ones the composition does not.
+                    if not named_by_composition:
+                        self.assertNotEqual(
+                            heading, title,
+                            "a gap the worker must name; see _name_inline_gaps in "
+                            "web/src/scoring/worker.ts")
+
+    def test_the_worker_names_the_inline_gaps(self):
+        src = os.path.join(_ROOT, "web", "src", "scoring", "worker.ts")
+        with open(src, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("_name_inline_gaps", text)
+        self.assertIn("_od.INLINE_PROSE", text,
+                      "the gap list must come from the Python's own INLINE_PROSE, not a "
+                      "copy of it in the browser")
+
     def test_the_worker_sends_the_composed_page_and_not_narrative_sections(self):
         src = os.path.join(_ROOT, "web", "src", "scoring", "worker.ts")
         with open(src, encoding="utf-8") as f:

@@ -34,7 +34,17 @@ export type OpportunityRequest = {
 
 /** A fact block or a prose block from core/opportunity_detail.page_rows. */
 export type Block =
-  | { kind: "cards" | "facts"; title: string; rows: [string, string][]; prose: string[] }
+  | {
+      kind: "cards" | "facts"; title: string; rows: [string, string][];
+      /** The subsection's own detail, under its rows and with no heading of its own —
+       *  INLINE_PROSE in core/opportunity_detail. */
+      prose: string[];
+      /** The names of this block's inline-prose fields the call says nothing about.
+       *  INLINE_PROSE appends nothing for a blank field, so without this the field's
+       *  name is nowhere on the page — which breaks the page's own rule that a tracked
+       *  field is always named. See _name_inline_gaps in worker.ts. */
+      missingInline: string[];
+    }
   | { kind: "prose"; title: string; lines: string[]; missing: boolean };
 
 /** One of the nine weighted criteria, as core/opportunity_scoring.analyse returns it.
