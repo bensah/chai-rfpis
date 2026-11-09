@@ -1356,3 +1356,29 @@ test("Outcome counts a tenant with more than 1000 answers in full", async () => 
   assert.equal(r.body.counts.approved, 1500);
   assert.equal(r.body.money.secured, 15000);
 });
+
+test("the week picker always offers the week it opens on", async () => {
+  // The failure this guards is silent: a <select> whose value is not among its options
+  // renders blank, and the page then fetches a week the reader never chose. It happens in
+  // the first days of January, when the week just gone belongs to the previous year and is
+  // absent from this year's labels â€” the one time of year nobody is watching for it.
+  //
+  // Driven through a different year rather than by faking the clock: asking for a year
+  // that is not the current one puts both `current` and `defaultWeek` outside the list,
+  // which is the same shape as the January case.
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const year = new Date().getUTCFullYear();
+
+  for (const y of [year, year + 1]) {
+    const r = await call("GET", `/pipelines/weeks?year=${y}`, null, col.token);
+    assert.equal(r.status, 200);
+    const { weeks, current, defaultWeek } = r.body;
+    assert.ok(weeks.includes(defaultWeek),
+      `year ${y}: the default week ${defaultWeek} must be selectable`);
+    assert.ok(weeks.includes(current), `year ${y}: the current week must be selectable`);
+    assert.notEqual(defaultWeek, current, "they are different questions");
+    assert.equal(new Set(weeks).size, weeks.length, `year ${y}: no duplicated label`);
+  }
+});
+

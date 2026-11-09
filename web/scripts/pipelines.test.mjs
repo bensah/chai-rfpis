@@ -16,7 +16,7 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
 const mod = await import(pathToFileURL(
   path.join(root, "supabase/functions/_shared/api/routes_pipelines.ts")).href);
 const { selectTrackRows, selectSubmittedRows, leadsFor, allWeeksForYear, reviewWeekLabel,
-        mondayFromWeekLabel, weekMondays } = mod;
+        previousReviewWeekLabel, mondayFromWeekLabel, weekMondays } = mod;
 
 const TODAY = "2026-10-27";
 
@@ -247,3 +247,46 @@ test("the track range is half-open, so months tile without overlap", () => {
   assert.deepEqual(uids(march), ["A"]);
   assert.deepEqual(uids(april), ["B"]);
 });
+
+// â”€â”€ The week a review screen opens on â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+test("the default week is the one just gone, not the one we are in", () => {
+  // core/review_week.py::previous_review_week_label. The team reviews a week on the
+  // Monday after it ends, when the current week is one day old: measured on the live
+  // table on Monday 2026-11-09, the current week held 0 rows and the previous one 2.
+  // Opening on `current` opens on nothing.
+  const mon = new Date(Date.UTC(2026, 10, 9));          // Monday 9 Nov 2026
+  assert.equal(reviewWeekLabel(mon), "Week 46 (9 Nov - 15 Nov)");
+  assert.equal(previousReviewWeekLabel(mon), "Week 45 (2 Nov - 8 Nov)");
+
+  // Every day of a week resolves to the same previous week â€” the default must not drift
+  // as the week goes on, or two people opening the page on different days compare
+  // different periods without noticing.
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(mon.getTime() + i * 86400_000);
+    assert.equal(previousReviewWeekLabel(d), "Week 45 (2 Nov - 8 Nov)", d.toISOString());
+  }
+});
+
+test("the default week is always one real week back, across a year boundary", () => {
+  // The case that would go unnoticed: in the first days of January the previous week
+  // belongs to the OLD year, so it is absent from this year's label list and the selector
+  // would be asked to show a value it has no option for.
+  const jan1 = new Date(Date.UTC(2026, 0, 1));          // Thursday
+  assert.equal(previousReviewWeekLabel(jan1), "Week 52 (22 Dec - 28 Dec)");
+  assert.ok(!allWeeksForYear(2026).includes(previousReviewWeekLabel(jan1)),
+    "and it is NOT in 2026's list, which is why the route prepends it");
+
+  // Always exactly seven days earlier than the current label's Monday, every week of a
+  // 53-week year included.
+  for (let i = 0; i < 400; i++) {
+    const d = new Date(Date.UTC(2025, 0, 1) + i * 86400_000);
+    const prevMonday = mondayFromWeekLabel(previousReviewWeekLabel(d), d.getUTCFullYear());
+    const curMonday = mondayFromWeekLabel(reviewWeekLabel(d), d.getUTCFullYear());
+    if (!prevMonday || !curMonday) continue;            // label from a neighbouring year
+    assert.equal(
+      (Date.parse(curMonday) - Date.parse(prevMonday)) / 86400_000, 7,
+      `${d.toISOString().slice(0, 10)}: ${previousReviewWeekLabel(d)} -> ${reviewWeekLabel(d)}`);
+  }
+});
+
