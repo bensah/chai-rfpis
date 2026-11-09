@@ -70,12 +70,13 @@ name: Deploy API
 #                          hosted, live database; CI has no business holding that.
 #
 #                      Name the token for this repo so it can be revoked without hunting.
-#   Expiry             pick the longest the dashboard offers. It defaults to 7 days, and an
-#                      expired token stops API deploys *while Cloudflare carries on
-#                      shipping the frontend* — which is precisely the drift this file
-#                      exists to prevent, arriving on a timer. If it must expire, diarise
-#                      the renewal; the job will fail loudly, but only after the frontend
-#                      has already moved.
+#   Expiry             THE CURRENT TOKEN EXPIRES 2027-02-07 (90 days, issued 2026-11-09).
+#                      On that date API deploys start failing while Cloudflare carries on
+#                      shipping the frontend — the exact drift this file exists to
+#                      prevent, arriving on a timer. Regenerate at the same scope and
+#                      update the secret before then. The deploy step prints this date on
+#                      any failure, so a February breakage explains itself rather than
+#                      sending someone back through the function's code.
 #
 # Until that secret exists the job fails loudly on its first step with instructions,
 # rather than reaching the CLI and failing somewhere less legible.
@@ -151,6 +152,7 @@ jobs:
           node-version: "20"
 
       - name: Deploy rfpis-api
+        id: deploy
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         # Character for character the command in web/README.md's "Deploy (free tiers)",
@@ -168,3 +170,25 @@ jobs:
             --project-ref "$SUPABASE_PROJECT_REF" \
             --no-verify-jwt \
             --use-api
+
+      # A failed deploy is not a neutral event: Cloudflare has already rebuilt the frontend
+      # from this same commit, so the site is now in the split state this workflow exists to
+      # prevent. Say so, and name the most likely cause — the access token has a fixed life
+      # and will expire long before anything else here goes wrong.
+      - name: Explain the failure
+        if: failure() && steps.deploy.outcome == 'failure'
+        run: |
+          echo "::error::rfpis-api was NOT deployed, but Cloudflare Pages has already"
+          echo "rebuilt the frontend from this commit. The live site is now a new frontend"
+          echo "against an older API: expect tiles reading '—' and a funnel reading NaN on"
+          echo "any page whose route or response shape changed in this push."
+          echo
+          echo "Most likely cause, if the log above shows an authentication or 401 error:"
+          echo "the Supabase access token expired. It was issued 2026-11-09 with a 90-day"
+          echo "life, so it expires 2027-02-07. Regenerate it at the same scope — RFPIS"
+          echo "project only, Edge Functions read-write, Project Settings read, everything"
+          echo "else None — then replace the secret and re-run this workflow:"
+          echo "  gh secret set SUPABASE_ACCESS_TOKEN --repo bensah/chai-rfpis"
+          echo
+          echo "To restore the site immediately, deploy by hand from a checkout of main:"
+          echo "  npx supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api"
