@@ -131,6 +131,14 @@ export function createApi(env: Env, deps: Deps) {
       if (!uid) return json({ error: "No RFP selected." }, 400);
       return pipelineWrites.patchRfp(req, ctx, uid);
     }
+    // Admin only, and it removes nothing by itself: it queues the job that tombstones the
+    // row for the scan and then deletes it. pipeline_writes.ts::deleteRfp says why that
+    // order cannot be reversed.
+    if (path.startsWith("/pipelines/rfp/") && m === "DELETE") {
+      const uid = decodeURIComponent(path.slice("/pipelines/rfp/".length)).trim();
+      if (!uid) return json({ error: "No RFP selected." }, 400);
+      return pipelineWrites.deleteRfp(ctx, uid);
+    }
     if (path === "/opportunity" && m === "GET") {
       const uid = new URL(req.url).searchParams.get("uid")?.trim() ?? "";
       if (!uid) return json({ error: "No opportunity selected." }, 400);
