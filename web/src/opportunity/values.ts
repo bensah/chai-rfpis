@@ -161,3 +161,25 @@ export const changedColumns = (now: Form, loaded: Form): string[] =>
       ? JSON.stringify(a) !== JSON.stringify(b)
       : a !== b;
   });
+
+/**
+ * The funder's own page, or nothing — never the ↗ icon over something that is not a link.
+ *
+ * `opportunity_link` is scraped, and live rows carry placeholders in it: measured on CHAI
+ * Cameroon's Submitted stage, one of twelve held the literal string `NA`. Rendered as an
+ * href that was a relative path, so the icon looked exactly like the eleven real ones and
+ * navigated to `/NA` — a dead end that claimed to be the call. Every stage had this,
+ * because every stage wrote `{r.opportunity_link && <a href={r.opportunity_link}>}` and a
+ * placeholder is a truthy string.
+ *
+ * A bare host is still a link and is given its scheme; `core/opportunity_detail` keeps a
+ * `_PLACEHOLDERS` set for the same family of values on the detail page.
+ */
+export function callHref(link: string | null | undefined): string | null {
+  const v = (link ?? "").trim();
+  if (!v || /\s/.test(v)) return null;
+  if (/^https?:\/\//i.test(v)) return v;
+  // Something that looks like a host: a dot, and a plausible TLD after it. "NA", "n/a",
+  // "none", "TBD" and "-" all fail this, which is the point.
+  return /^[\w-]+(\.[\w-]+)+(\/|$)/.test(v) ? `https://${v}` : null;
+}

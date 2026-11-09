@@ -20,6 +20,7 @@
  */
 import { ChevronDown, ChevronRight, ExternalLink, Pencil } from "lucide-react";
 import { hrefOf, Link } from "../router";
+import { callHref } from "./values";
 
 export type OpportunityCellProps = {
   uid: string;
@@ -38,6 +39,7 @@ export type OpportunityCellProps = {
 export default function OpportunityCell({
   uid, title, link, onEdit, onToggle, expanded = false, children,
 }: OpportunityCellProps) {
+  const call = callHref(link);
   return (
     <div className="flex items-start gap-1.5">
       {onToggle && (
@@ -60,9 +62,9 @@ export default function OpportunityCell({
           {title || uid}
         </Link>
         {children}
-        {link && (
+        {call && (
           <a
-            href={link} target="_blank" rel="noreferrer"
+            href={call} target="_blank" rel="noreferrer"
             className="ml-1.5 inline-flex text-ink-400 hover:text-accent-700"
             aria-label="Open the call on the funder's own site"
             title="Open the call on the funder's own site"
