@@ -57,9 +57,6 @@ def _today():
         return date.today()
 
 
-_NARRATIVE_HEADING = {f: h for h, f in _od.NARRATIVE_FIELDS}
-
-
 def _name_inline_gaps(rows, view):
     """Name the INLINE_PROSE fields this call is silent on, inside their own block.
 
@@ -80,15 +77,20 @@ def _name_inline_gaps(rows, view):
     So a blank inline field contributes its NAME and nothing else, and a filled one is
     untouched — the no-second-heading decision still holds wherever there is text.
     """
+    # Imported here, not at module scope: this shim runs as one exec and opportunity()
+    # imports core lazily, so a module-level reference to _od is a NameError at load —
+    # which is exactly how this first ran, and no test outside a browser could see it.
+    from core import opportunity_detail as _odl
+    heading = {f: h for h, f in _odl.NARRATIVE_FIELDS}
     for row in rows:
         for col in row:
             for b in col:
                 if b.get("kind") == "prose":
                     continue
                 b["missingInline"] = [
-                    _NARRATIVE_HEADING.get(f, f.replace("_", " ").capitalize())
-                    for f in _od.INLINE_PROSE.get(b.get("title"), ())
-                    if not _od.as_bullets(view.get(f))
+                    heading.get(f, f.replace("_", " ").capitalize())
+                    for f in _odl.INLINE_PROSE.get(b.get("title"), ())
+                    if not _odl.as_bullets(view.get(f))
                 ]
     return rows
 
