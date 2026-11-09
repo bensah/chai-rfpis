@@ -1480,6 +1480,56 @@ def is_multitenant_deploy(tenants: list[dict[str, Any]] | None = None) -> bool:
     return sum(1 for t in rows if not t.get("is_platform")) >= 2
 
 
+def tenant_screening_blocked(tenant_id: str) -> str:
+    """Why this tenant must NOT be auto-screened yet, or "" when it is safe to screen.
+
+    A TENANT THAT HAS DECLARED NO PROGRAMME AREAS HAS NO SECTOR FILTER AT ALL, and the
+    result is not a slightly noisy pipeline - it is an unfiltered one. `_blank_policies`
+    sets `themes.required_any = []`, `_seed_themes_from_profile` cannot repair it because
+    the profile names no programme areas, and `theme_eligible` short-circuits on an empty
+    list to "no theme requirements set", which is an unconditional PASS. Every call in the
+    shared store then reaches that tenant on its own merits of geography alone.
+
+    That is how one review week filled with 31 rows nobody could use: a trade-and-
+    investment scheme, an anti-slavery fund and a run of foreign procurement notices, in a
+    health organisation's pipeline. Roughly two thirds of them would have been rejected
+    outright by a theme list.
+
+    Blocking is the honest response. The alternative - screening anyway and inserting
+    whatever passes - asks a reviewer to hand-filter a list the system was supposed to
+    filter, and it buries the real cause: the profile is empty. An empty pipeline with a
+    stated reason is more useful than a full one that means nothing, because it names the
+    thing a human can fix.
+
+    Geography alone is NOT enough to unblock. A tier-open call ("LMICs", "Global South")
+    satisfies any tenant's geography, so without a theme list those pass too.
+    """
+    try:
+        from core.policies import get_policies
+        pol = get_policies(tenant_id=tenant_id) or {}
+    except Exception as exc:
+        # Fail CLOSED. A policy we could not read is not a policy we may screen against:
+        # get_setting returns the CODE default on a transient error, and for scan_policies
+        # that default is _blank_policies() - an empty theme list - so a single flaky read
+        # would otherwise give a fully-configured tenant an unfiltered run.
+        log.error("tenant_screening_blocked: cannot resolve policies for %s: %s",
+                  tenant_id, exc)
+        return "policies could not be read"
+    themes = (pol.get("themes") or {})
+    if themes.get("required_any"):
+        return ""
+    # NOTE an exclusion list does NOT unblock, and the first version of this guard got
+    # that wrong. `excluded_any` arrives pre-populated with ~20 shipped terms ("clinical
+    # trial", "preclinical", "anti-corruption"...), so treating it as a deliberate choice
+    # disabled the guard for every tenant, including the one it was written for. It also
+    # would not have helped: subtracting a few topics does not constrain a call to the
+    # tenant's sector, and neither the trade-and-investment scheme nor the anti-slavery
+    # fund matches any excluded term. Only a positive list says what this tenant funds.
+    return ("no programme areas declared, so the theme gate would pass every call - "
+            "set the tenant's programme areas (or an explicit scan policy) to enable "
+            "automatic screening")
+
+
 def screen_all_tenants(*, dry_run: bool = False, triggered_by: str = "cron",
                        status: str = "Open") -> dict[str, dict]:
     """Headless per-tenant screening (the cron's Option-C step). For each ACTIVE tenant,
@@ -1506,6 +1556,16 @@ def screen_all_tenants(*, dry_run: bool = False, triggered_by: str = "cron",
         # empty policy would flood it with Decline rows every run.
         if t.get("is_platform"):
             log.info("screen_all_tenants: skipping platform tenant %s", t.get("name"))
+            continue
+        # A tenant with no sector filter would be screened on geography alone, which a
+        # tier-open call satisfies for everyone. Skip it and say why, rather than filling
+        # its review week with rows the system could not judge.
+        _blocked = tenant_screening_blocked(str(tid))
+        if _blocked:
+            log.warning("screen_all_tenants: SKIPPING %s (%s) - %s",
+                        t.get("name"), tid, _blocked)
+            out[str(tid)] = {"skipped": True, "reason": _blocked,
+                             "found": 0, "added": 0}
             continue
         # Stamped the way _build_row stamps submitted_at (naive local clock labelled UTC),
         # so the digest's ">= since" compares like with like; a minute's slack either side.
