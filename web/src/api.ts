@@ -465,6 +465,60 @@ export type HomeKpis = {
 };
 export const fetchHome = () => call<HomeKpis>("/home");
 
+// ── The triage list ──────────────────────────────────────────────────────────
+
+/** One of the Dashboard's figures, as something you can open.
+ *
+ * `kind` matters and the page says it out loud: four of these weigh APPLICATIONS rather
+ * than count rows, because a proposal sent to the same funder twice is two applications
+ * and one call. So "Applications sent 24" opens a list of 21 opportunities, and the page
+ * reports both numbers instead of looking broken. */
+export type OpportunityBucket = {
+  key: string;
+  label: string;
+  kind: "rows" | "applications";
+  /** One line a reader can check the selection against. */
+  rule: string;
+  count: number;
+};
+
+export type OpportunityListRow = {
+  uid: string;
+  title: string;
+  funder: string;
+  link: string | null;
+  deadline: string | null;
+  found: string | null;
+  submitted: string | null;
+  decision: string | null;
+  donorDecision: string | null;
+  stage: string | null;
+  progress: string | null;
+  role: string | null;
+  lead: string | null;
+  score: number | null;
+  recommendation: string | null;
+  currency: string | null;
+  value: number | null;
+  usd: number;
+  requestedUsd: number;
+  securedUsd: number;
+  /** What this one row weighs in the application figures — 0 until it is Completed. */
+  applications: number;
+  /** The Dashboard figures this row belongs to. The page filters on THIS and owns no
+   *  definition of its own; the server computed it with the same code that counts the
+   *  tiles (supabase/functions/_shared/api/home_buckets.ts). */
+  buckets: string[];
+};
+
+export type OpportunityList = {
+  today: string;
+  buckets: OpportunityBucket[];
+  rows: OpportunityListRow[];
+};
+
+export const fetchOpportunityList = () => call<OpportunityList>("/opportunities/list");
+
 /** One item in the rail's four cards. supabase/functions/_shared/api/opportunity_feed.ts
  * builds these; core/opportunity_feed.py's `_item` / `catalog_item` are what it mirrors.
  *

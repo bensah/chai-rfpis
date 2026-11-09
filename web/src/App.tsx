@@ -8,6 +8,7 @@ import DonorsPage from "./pages/DonorsPage";
 import AlertsPage from "./pages/AlertsPage";
 import HomePage from "./pages/HomePage";
 import OpportunityPage from "./pages/OpportunityPage";
+import OpportunitiesPage from "./pages/OpportunitiesPage";
 import PipelinePage from "./pages/PipelinePage";
 import SettingsPage from "./pages/SettingsPage";
 import { EmptyState } from "./ui";
@@ -83,6 +84,8 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
     body = <HomePage user={user} />;
   } else if (shown === "opportunity") {
     body = <OpportunityPage uid={params.get("uid")?.trim() ?? ""} user={user} />;
+  } else if (shown === "opportunities") {
+    body = <OpportunitiesPage user={user} />;
   } else if (shown === "pipelines") {
     body = <PipelinePage user={user} />;
   } else if (shown === "alerts") {
