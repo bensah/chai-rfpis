@@ -1566,3 +1566,28 @@ test("the won-of-decided share has a denominator that does not drift", async () 
   assert.equal(k.pct_won_of_decided, 50,
     "50 of the 100 decided — not 5% of everything outstanding");
 });
+
+test("Closing soon lists the rows behind the count, soonest first", async () => {
+  // A count says there is work; the list is what lets somebody start it. Same membership
+  // as the count - liveProceeds - so the table cannot show a row the number did not count.
+  const { db, call, signIn } = setup();
+  const day = (n) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+  const base = { tenant_id: T1, is_duplicate: false, decision: "Proceed" };
+  db.tables.rfp_submissions.push(
+    { uid: "C-LATE", ...base, call_submission_deadline: day(10),
+      opportunity_title: "Later call", funding_agency: "F2" },
+    { uid: "C-SOON", ...base, call_submission_deadline: day(2),
+      opportunity_title: "Sooner call", funding_agency: "F1" },
+    // Outside the window, and already sent: neither belongs in the list.
+    { uid: "C-FAR", ...base, call_submission_deadline: day(40) },
+    { uid: "C-GONE", ...base, call_submission_deadline: day(3),
+      donor_decision: "Under Review" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const k = (await call("GET", "/home", null, col.token)).body;
+  assert.deepEqual(k.closing_soon.map((r) => r.uid), ["C-SOON", "C-LATE"],
+    "soonest first, and only the live bids inside the window");
+  assert.equal(k.closing_soon.length, k.due_in_14_days,
+    "the list and the count must not be able to disagree");
+  assert.equal(k.closing_soon[0].title, "Sooner call");
+});

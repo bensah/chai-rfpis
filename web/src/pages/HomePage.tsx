@@ -27,6 +27,9 @@ import { fetchHome, type HomeKpis, type User } from "../api";
 import OpportunityRail from "../components/OpportunityRail";
 import { hrefOf, Link } from "../router";
 import { Card, LinkButton, Notice, PageHeader } from "../ui";
+import {
+  DECISION_PARTS, Meter, SegmentedBar, StageBars,
+} from "../components/DashboardCharts";
 
 const dash = "—";
 
@@ -56,20 +59,6 @@ function Tile({ label, value, note, to, title }: {
   );
 }
 
-function Band({ title, hint, children }: {
-  title: string; hint?: string; children: React.ReactNode;
-}) {
-  return (
-    <section className="mt-7 first:mt-0">
-      <h2 className="text-sm font-semibold tracking-[0.04em] text-ink-500 uppercase">
-        {title}
-      </h2>
-      {hint && <p className="mt-0.5 text-xs text-ink-400">{hint}</p>}
-      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">{children}</div>
-    </section>
-  );
-}
-
 export default function HomePage({ user }: { user: User }) {
   const [k, setK] = useState<HomeKpis | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -89,37 +78,157 @@ export default function HomePage({ user }: { user: User }) {
         <PageHeader title={`Welcome, ${firstName}`} />
         {error && <Notice tone="warn" className="mb-4">{error}</Notice>}
 
-        <Band title="Calls found" hint="Everything the scan and the team have brought in.">
-          <Tile label="Calls found" value={k?.found ?? dash} />
+        {/* THE HEADLINE ROW STAYS CARDS. A handful of current values is a KPI row's job,
+            and a one-bar chart of a single number says less than the number does. The
+            plotted forms below are for the figures whose SHAPE carries meaning: a split,
+            a progression, a ratio. */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Tile label="Calls found" value={k?.found ?? dash} note="Non-duplicate" />
           <Tile label="Awaiting review" value={k?.awaiting_review ?? dash}
             note="No decision yet" />
-        </Band>
-
-        <Band title="Our decisions" hint="What the team decided to do about them.">
-          <Tile label="Proceed" value={k?.proceed ?? dash} />
-          <Tile label="Parked" value={k?.parked ?? dash} />
-          <Tile label="Declined" value={k?.declined ?? dash} />
+          <Tile label="Applications sent" value={k?.applications_sent ?? dash}
+            note="One call can be sent twice" />
           <Tile label="Due in 14 days" value={k?.due_in_14_days ?? dash}
             note={dueSoon > 0 ? "Open in Bidding" : "Live bids only"}
-            // `period=all` deliberately: this card counts across all time, while Bidding
-            // filters by WHEN A CALL WAS FOUND. Landing on Bidding's own default would
-            // show fewer rows than the number just clicked, which is the two-pages-
-            // disagree fault in a new place.
             to={dueSoon > 0 ? `${hrefOf("pipelines")}?stage=bidding&period=all` : undefined}
-            title="Open the live bids, newest deadlines first" />
-        </Band>
+            title="Open the live bids, soonest deadlines first" />
+        </div>
 
-        {/* APPLICATIONS, not calls - a proposal resubmitted to the same funder is two
-            attempts, and the Funding page has always counted it that way. The hint says
-            so, because a reader comparing this band with the one above would otherwise
-            find they do not reconcile and have no way to know that is correct. */}
-        <Band title="With funders"
-          hint="Applications sent, and what came back. One call can be applied for twice.">
-          <Tile label="Applications sent" value={k?.applications_sent ?? dash} />
-          <Tile label="Awaiting answer" value={k?.awaiting_answer ?? dash} />
-          <Tile label="Approved" value={k?.approved ?? dash} />
-          <Tile label="Not approved" value={k?.not_approved ?? dash} />
-        </Band>
+        <div className="mt-6 grid gap-4 lg:grid-cols-2">
+          <Card className="p-5">
+            <h2 className="text-sm font-semibold text-brand-700">What we decided</h2>
+            <p className="mt-0.5 mb-4 text-xs text-ink-400">
+              How the {k?.found ?? 0} calls found split, once a person had looked.
+            </p>
+            {k && (
+              <SegmentedBar
+                total={k.found} unit="calls"
+                parts={[
+                  { label: "Proceed", value: k.proceed, className: DECISION_PARTS.good },
+                  { label: "Parked", value: k.parked, className: DECISION_PARTS.holding },
+                  { label: "Declined", value: k.declined, className: DECISION_PARTS.bad },
+                  { label: "Not yet reviewed", value: k.awaiting_review,
+                    className: "bg-ink-300" },
+                ]}
+              />
+            )}
+          </Card>
+
+          <Card className="p-5">
+            <h2 className="text-sm font-semibold text-brand-700">What funders said</h2>
+            <p className="mt-0.5 mb-4 text-xs text-ink-400">
+              Of {k?.applications_sent ?? 0} applications sent. Same three colours, same
+              three meanings as above.
+            </p>
+            {k && (
+              <SegmentedBar
+                total={k.applications_sent} unit="applications"
+                parts={[
+                  { label: "Approved", value: k.approved, className: DECISION_PARTS.good },
+                  { label: "Awaiting answer", value: k.awaiting_answer,
+                    className: DECISION_PARTS.holding },
+                  { label: "Not approved", value: k.not_approved,
+                    className: DECISION_PARTS.bad },
+                ]}
+              />
+            )}
+          </Card>
+
+          <Card className="p-5">
+            <h2 className="text-sm font-semibold text-brand-700">Down the pipeline</h2>
+            <p className="mt-0.5 mb-4 text-xs text-ink-400">
+              The same work measured at five points. Stage order, not size order — the
+              drop between stages is the thing worth seeing.
+            </p>
+            {k && (
+              <StageBars stages={[
+                { label: "Found", value: k.found },
+                { label: "Reviewed", value: k.proceed + k.parked + k.declined },
+                { label: "Proceed", value: k.proceed },
+                { label: "Sent", value: k.applications_sent },
+                { label: "Approved", value: k.approved },
+              ]} />
+            )}
+          </Card>
+
+          <Card className="p-5">
+            <h2 className="text-sm font-semibold text-brand-700">Funding</h2>
+            <p className="mt-0.5 mb-4 text-xs text-ink-400">
+              Converted to USD at today's rates.
+            </p>
+            <div className="mb-4 grid grid-cols-2 gap-3">
+              <div>
+                <div className="text-xs text-ink-500">Requested</div>
+                <div className="text-xl font-bold text-brand-700 tabular-nums">
+                  {usd(k?.usd_requested)}
+                </div>
+                <div className="text-xs text-ink-400">Everything sent</div>
+              </div>
+              <div>
+                <div className="text-xs text-ink-500">Secured</div>
+                <div className="text-xl font-bold text-brand-700 tabular-nums">
+                  {usd(k?.usd_secured)}
+                </div>
+              </div>
+            </div>
+            {/* A ratio against a limit is a meter, not a two-slice pie - and the caption
+                names the population, because over everything sent the same share reads
+                28.8% where over decided applications it reads 62.0%. */}
+            <Meter
+              value={k?.usd_secured ?? 0} limit={k?.usd_requested_decided ?? 0}
+              caption={k?.pct_won_of_decided == null
+                ? "Nothing answered yet"
+                : `${k.pct_won_of_decided}% of ${usd(k.usd_requested_decided)} a funder has answered`}
+            />
+          </Card>
+        </div>
+
+        {/* A TABLE, because each row carries a name, a funder, a date and a value - four
+            classes that all mean something, which is past where a chart helps. */}
+        {!!k?.closing_soon?.length && (
+          <Card className="mt-4 overflow-hidden">
+            <div className="flex items-baseline justify-between gap-3 px-5 pt-5 pb-3">
+              <h2 className="text-sm font-semibold text-brand-700">Closing soon</h2>
+              <Link to={`${hrefOf("pipelines")}?stage=bidding&period=all`}
+                className="text-xs text-accent-700 hover:underline">
+                All live bids
+              </Link>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[34rem] table-fixed text-sm">
+                <colgroup>
+                  <col className="w-[46%]" /><col className="w-[26%]" />
+                  <col className="w-[14%]" /><col className="w-[14%]" />
+                </colgroup>
+                <thead>
+                  <tr className="border-y border-ink-200 bg-ink-50 text-left text-[0.7rem] font-semibold tracking-[0.06em] text-ink-500 uppercase">
+                    <th className="px-5 py-2">Opportunity</th>
+                    <th className="px-3 py-2">Funder</th>
+                    <th className="px-3 py-2">Closes</th>
+                    <th className="px-3 py-2 text-right">Value</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-ink-100">
+                  {k.closing_soon.map((r) => (
+                    <tr key={r.uid} className="align-top hover:bg-ink-50/60">
+                      <td className="px-5 py-2.5">
+                        <Link to={`${hrefOf("opportunity")}?uid=${encodeURIComponent(r.uid)}`}
+                          className="font-medium text-brand-700 hover:text-accent-700 hover:underline">
+                          {r.title || r.uid}
+                        </Link>
+                      </td>
+                      <td className="px-3 py-2.5 break-words text-ink-600">{r.funder || dash}</td>
+                      <td className="px-3 py-2.5 text-ink-600 tabular-nums">{r.deadline || dash}</td>
+                      <td className="px-3 py-2.5 text-right text-ink-600 tabular-nums">
+                        {r.usd ? usd(r.usd) : dash}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
         {!!k?.ledger_gap && (
           <Notice tone="warn" className="mt-3">
             {k.ledger_gap === 1
@@ -129,19 +238,6 @@ export default function HomePage({ user }: { user: User }) {
           </Notice>
         )}
 
-        <Band title="Funding" hint="Converted to USD at today's rates.">
-          <Tile label="Requested" value={usd(k?.usd_requested)}
-            note="Everything we have sent" />
-          <Tile label="Secured" value={usd(k?.usd_secured)} />
-          {/* The ratio states its own population. Over everything sent it would drift
-              down on every submission and jump on every answer - live, the two readings
-              are 28.8% and 62.0%, so an unlabelled share is worse than none. */}
-          <Tile label="Won of decided"
-            value={k?.pct_won_of_decided == null ? dash : `${k.pct_won_of_decided}%`}
-            note={k?.usd_requested_decided
-              ? `of ${usd(k.usd_requested_decided)} answered`
-              : "Of applications answered"} />
-        </Band>
       </div>
 
       <div className="flex w-full shrink-0 flex-col gap-3 lg:w-80">

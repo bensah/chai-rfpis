@@ -436,6 +436,12 @@ export type HomeKpis = {
   /** Answered by a funder yet weighing zero applications, because progress_status never
    *  reached Completed. Surfaced so the arithmetic can be trusted when it does not add up. */
   ledger_gap: number;
+  /** The rows behind "Due in 14 days", soonest first. A count says there is
+   *  work; the list is what lets somebody start it. */
+  closing_soon: {
+    uid: string; title: string; funder: string;
+    deadline: string | null; usd: number;
+  }[];
   usd_requested: number; usd_secured: number;
   /** Requested over applications a funder has ANSWERED - the ratio's own
    *  denominator. Over everything sent the share drifts down on every

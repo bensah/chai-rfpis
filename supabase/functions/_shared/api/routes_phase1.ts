@@ -51,7 +51,8 @@ const CATALOG_FIELDS = "uid,opportunity_name,opportunity_url,funder_name,deadlin
 /** app_pages/home.py::_kpis */
 const HOME_FIELDS = "uid,decision,donor_decision,progress_status," +
   "call_submission_deadline,is_duplicate,amount_requested,amount_secured," +
-  "currency,currency_secured,submissions,date_completed";
+  "currency,currency_secured,submissions,date_completed," +
+  "opportunity_title,funding_agency,call_award_value";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -189,6 +190,15 @@ export function createPhase1Routes(db: Db) {
     ]);
     const sum = (rs: Json[], pick: (r: Json) => number) =>
       Math.round(rs.reduce((a, r) => a + pick(r), 0));
+
+    // Soonest first: this list exists to be worked down, so the order IS the priority.
+    const closing = liveProceeds(unique, t)
+      .filter((r) => {
+        const d = asDate(r.call_submission_deadline);
+        return d !== null && d >= t && d <= soon;
+      })
+      .sort((a, b) =>
+        str(a.call_submission_deadline) < str(b.call_submission_deadline) ? -1 : 1);
     const requested = sum(sent, (r) =>
       usdValue(r.amount_requested, requestedCurrency(r), rates, table));
     const secured = sum(sent, (r) =>
@@ -228,10 +238,17 @@ export function createPhase1Routes(db: Db) {
       // drops duplicates in its QUERY (`is_duplicate=is.false`) before calling it.
       // Passing every row here counted a duplicate as actionable work and made the
       // card read one higher than the stage it links to.
-      due_in_14_days: liveProceeds(unique, t).filter((r) => {
-        const d = asDate(r.call_submission_deadline);
-        return d !== null && d >= t && d <= soon;
-      }).length,
+      due_in_14_days: closing.length,
+      // The rows behind that number. A count tells somebody there is work; the list is
+      // what lets them start it, and a table is the right form once each item carries a
+      // name, a funder, a date and a value rather than one magnitude.
+      closing_soon: closing.slice(0, 6).map((r) => ({
+        uid: str(r.uid),
+        title: str(r.opportunity_title),
+        funder: str(r.funding_agency),
+        deadline: asDate(r.call_submission_deadline),
+        usd: Math.round(usdValue(r.call_award_value, r.currency, rates, table)),
+      })),
       // ── Sent, and what came back. APPLICATIONS, not calls ──────────────────
       applications_sent: weigh(sent),
       awaiting_answer: weigh(awaitingRows),
