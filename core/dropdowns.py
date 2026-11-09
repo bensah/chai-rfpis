@@ -112,3 +112,50 @@ def usd_rate(currency: str | None) -> float:
         if entry.get("code") == first:
             return _rate(entry)
     return 1.0
+
+
+def usd_rate_known(currency: str | None) -> float | None:
+    """Same as usd_rate, but None when the currency is genuinely UNKNOWN.
+
+    `usd_rate` answers 1.0 for a currency it cannot place, which reads as "no conversion
+    needed" - i.e. the amount is already USD. For display that is a tolerable guess. For
+    SCORING it is not: an award in an unplaceable currency would be compared against the
+    org's funding band at face value, so a 5,000,000-unit award reads as USD 5,000,000
+    whatever the unit actually is, and PREFER-6's ceiling test returns a confident wrong
+    answer instead of declining to answer.
+
+    This is the same rule the criteria already follow elsewhere - a value we do not have
+    is excluded from scoring, never counted as a failure - so the caller can treat an
+    unknown rate as an unknown award size.
+
+    The gap is narrow but real: `usd_rate` tries a LIVE rate first, and the static table
+    is replaced wholesale by `app_settings.currencies_json` rather than merged over the
+    YAML, so an entry pruned in Admin -> Settings disappears from the table entirely.
+    Unknown then means both lookups missed.
+    """
+    if not currency:
+        return None
+    cur = str(currency).strip()
+    if not cur:
+        return None
+    if cur.upper() == "USD":
+        return 1.0
+    try:
+        from core.fx import _erapi_rate
+        _live, _ = _erapi_rate(cur.split()[0].upper())
+        if _live:
+            return float(_live)
+    except Exception:
+        pass
+    currencies = load().get("currencies", []) or []
+    first = cur.split()[0] if cur else ""
+    for entry in currencies:
+        if (entry.get("code") == cur or entry.get("label") == cur
+                or cur in (entry.get("donor_aliases") or [])
+                or entry.get("code") == first):
+            try:
+                _r = entry.get("usd_rate")
+                return float(_r) if _r else None
+            except (TypeError, ValueError):
+                return None
+    return None
