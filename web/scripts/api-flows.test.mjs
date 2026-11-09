@@ -1951,3 +1951,111 @@ test("a row on the old criterion vocabulary opens on the right answer", async ()
     }
   }
 });
+
+// ── The Dashboard's figures, as doors ────────────────────────────────────────
+// Every number on the Dashboard opens the rows behind it. The whole design rests on the
+// tile and the list coming from ONE selection, so that is what these check — not that the
+// route returns something, but that it returns the same thing the tile counted.
+
+test("every Dashboard figure equals the list it opens", async () => {
+  // The regression this prevents: a tile saying 17 over a page listing 19. A reader has no
+  // way to tell which one lied, and a figure that cannot be trusted is worse than absent.
+  const { call, signIn, db } = setup();
+  const today = new Date().toISOString().slice(0, 10);
+  const soon = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    // nobody has looked at it yet
+    { uid: "A1", tenant_id: T1, opportunity_title: "Undecided", is_duplicate: false },
+    // decided, bidding, deadline inside the fortnight
+    { uid: "A2", tenant_id: T1, opportunity_title: "Live bid", decision: "Proceed",
+      call_submission_deadline: soon, is_duplicate: false },
+    // "Proceed as sub" is proceeding — prefix, not equality
+    { uid: "A3", tenant_id: T1, opportunity_title: "Sub bid", decision: "Proceed as sub",
+      is_duplicate: false },
+    { uid: "A4", tenant_id: T1, opportunity_title: "Set aside", decision: "Park", is_duplicate: false },
+    { uid: "A5", tenant_id: T1, opportunity_title: "Dropped", decision: "Decline", is_duplicate: false },
+    // sent twice, funder has not answered: ONE row, TWO applications
+    { uid: "A6", tenant_id: T1, opportunity_title: "With the funder", decision: "Proceed",
+      progress_status: "Completed", submissions: 2, donor_decision: "Under Review",
+      date_completed: today, is_duplicate: false },
+    // answered
+    { uid: "A7", tenant_id: T1, opportunity_title: "Won", decision: "Proceed",
+      progress_status: "Completed", submissions: 1, donor_decision: "Approved",
+      date_completed: today, is_duplicate: false },
+    { uid: "A8", tenant_id: T1, opportunity_title: "Lost", decision: "Proceed",
+      progress_status: "Completed", submissions: 1, donor_decision: "Not Approved",
+      date_completed: today, is_duplicate: false },
+    // a duplicate must not be counted, and must not be offered for triage either
+    { uid: "A9", tenant_id: T1, opportunity_title: "Same call again", is_duplicate: true },
+  );
+
+  const col = await signIn("col@x.org", "col pass 1");
+  const home = await call("GET", "/home", null, col.token);
+  const list = await call("GET", "/opportunities/list", null, col.token);
+  assert.equal(home.status, 200);
+  assert.equal(list.status, 200);
+
+  const byKey = Object.fromEntries(list.body.buckets.map((b) => [b.key, b]));
+  // The figure the list reports and the figure the tile shows are the same number.
+  for (const key of ["found", "awaiting_review", "proceed", "parked", "declined",
+                     "due_in_14_days", "applications_sent", "awaiting_answer",
+                     "approved", "not_approved", "ledger_gap"]) {
+    assert.equal(byKey[key].count, home.body[key], `${key}: tile and list disagree`);
+  }
+
+  // And the membership the page filters on reproduces that figure, in the bucket's own
+  // unit. This is the half a shared count alone would not prove.
+  for (const b of list.body.buckets) {
+    const rows = list.body.rows.filter((r) => r.buckets.includes(b.key));
+    const got = b.kind === "applications"
+      ? rows.reduce((t, r) => t + r.applications, 0)
+      : rows.length;
+    assert.equal(got, b.count, `${b.key}: ${b.kind} behind the figure do not add up`);
+  }
+
+  assert.equal(byKey.found.count, 8, "the duplicate is not a call found");
+  assert.ok(!list.body.rows.some((r) => r.uid === "A9"), "a duplicate is not offered for triage");
+});
+
+test("a figure counted in applications can list fewer opportunities", async () => {
+  // The one place this page could mislead: "Applications sent 24" opening 21 rows. It is
+  // not a bug — a proposal sent to the same funder twice is two applications and one call
+  // — so the numbers must differ HERE, in a test, or somebody will later "fix" it.
+  const { call, signIn, db } = setup();
+  const today = new Date().toISOString().slice(0, 10);
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    { uid: "B1", tenant_id: T1, opportunity_title: "Sent three times", decision: "Proceed",
+      progress_status: "Completed", submissions: 3, donor_decision: "Under Review",
+      date_completed: today, is_duplicate: false },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const list = await call("GET", "/opportunities/list", null, col.token);
+  const sent = list.body.buckets.find((b) => b.key === "applications_sent");
+  assert.equal(sent.kind, "applications");
+  assert.equal(sent.count, 3, "three applications");
+  assert.equal(list.body.rows.filter((r) => r.buckets.includes("applications_sent")).length, 1,
+    "…across one opportunity");
+  assert.equal(list.body.rows[0].applications, 3, "the row carries its own weight");
+});
+
+test("Reviewed is the same set counted from either side", async () => {
+  // The Dashboard's funnel shows Reviewed as proceed + parked + declined; the list's own
+  // bucket is "a decision is recorded". Those must be the same rows, or the bar and the
+  // page it opens disagree.
+  const { call, signIn, db } = setup();
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    { uid: "C1", tenant_id: T1, decision: "Proceed", is_duplicate: false },
+    { uid: "C2", tenant_id: T1, decision: "Park", is_duplicate: false },
+    { uid: "C3", tenant_id: T1, decision: "Decline", is_duplicate: false },
+    { uid: "C4", tenant_id: T1, decision: "", is_duplicate: false },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const home = await call("GET", "/home", null, col.token);
+  const list = await call("GET", "/opportunities/list", null, col.token);
+  const reviewed = list.body.buckets.find((b) => b.key === "reviewed");
+  assert.equal(reviewed.count, home.body.proceed + home.body.parked + home.body.declined);
+  assert.equal(reviewed.count, 3);
+});

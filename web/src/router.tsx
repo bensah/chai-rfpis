@@ -4,7 +4,8 @@ import { useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent } from
 
 export type PageKey =
   | "home" | "pipelines" | "grants" | "actions" | "report" | "donors" | "organization"
-  | "submit-new-rfp" | "alerts" | "opportunity" | "profile" | "help" | "search" | "settings"
+  | "submit-new-rfp" | "alerts" | "opportunity" | "opportunities" | "profile" | "help"
+  | "search" | "settings"
   | "login" | "activate-account" | "password-reset";
 
 type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boolean; public?: boolean };
@@ -91,6 +92,12 @@ export const PAGES: Record<PageKey, PageInfo> = {
   // and it is deliberately nowhere near a hide list.
   alerts: { title: "Alerts", icon: "🔔", rail: true },
   opportunity: { title: "Opportunity", icon: "🎯" },
+  // NOT in the rail, like `opportunity` and `search`: it exists so the Dashboard's figures
+  // can be links. Every tile and every bar segment opens it with ?bucket=<figure>, which
+  // is the owner's ask — "clicking 17 Awaiting review opens the 17 listed". Whether it
+  // also deserves a sidebar entry of its own is a placement decision, and placement in
+  // this rail has been the owner's throughout; it is not taken here.
+  opportunities: { title: "Triage", icon: "🗂" },
   profile: { title: "Profile", icon: "👤" },
   help: { title: "Help", icon: "❓" },
   search: { title: "Search", icon: "🔍" },
