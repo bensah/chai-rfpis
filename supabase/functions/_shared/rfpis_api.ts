@@ -100,6 +100,10 @@ export function createApi(env: Env, deps: Deps) {
     // The rail's finished cards, ranked here — the ranking orders values already stored on
     // each row and computes no score, so it needs no Python.
     if (path === "/opportunities/feed" && m === "GET") return phase1.opportunitiesFeed(req, ctx);
+    // The Dashboard's other half: every call, tagged with the figures it belongs to, so a
+    // tile can open the rows behind its number without the page owning a second
+    // definition of what that number means. See api/home_buckets.ts.
+    if (path === "/opportunities/list" && m === "GET") return phase1.opportunityList(req, ctx);
     // Phase 2. Same division: these serve rows, the page scores and decides.
     if (path === "/report/periods" && m === "GET") return report.periods(req, ctx);
     if (path === "/report/section1" && m === "GET") return report.section1(req, ctx);

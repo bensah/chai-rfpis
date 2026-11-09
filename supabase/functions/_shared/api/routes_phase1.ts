@@ -18,8 +18,9 @@
 import { q, type Db } from "./db.ts";
 import { json, gzipped, str } from "./http.ts";
 import { ratesFor } from "./fx.ts";
+import { BUCKET, BUCKETS, measure, membership } from "./home_buckets.ts";
 import {
-  ledgerGap, loadCurrencies, requestedCurrency, submissionWeight, usdValue,
+  loadCurrencies, requestedCurrency, submissionWeight, usdValue,
 } from "./money.ts";
 import {
   liveProceeds, selectOutcomeRows, selectSubmittedRows,
@@ -54,6 +55,12 @@ const HOME_FIELDS = "uid,decision,donor_decision,progress_status," +
   "currency,currency_secured,submissions,date_completed," +
   "opportunity_title,funding_agency,call_award_value";
 
+/** HOME_FIELDS plus what a triage LIST needs to be worth reading: who owns it, where it
+ *  has got to, what the engine thought, and when it arrived. Still a projection — the
+ *  editor's own route is the one that fetches every column. */
+const LIST_FIELDS = HOME_FIELDS + ",alignment_score,auto_recommendation,stage," +
+  "search_date,opportunity_link,assigned_to,proposal_lead,applicant_role";
+
 const today = () => new Date().toISOString().slice(0, 10);
 
 /** pandas.to_datetime(v).date() for the values these columns actually hold: an ISO date, an
@@ -67,7 +74,6 @@ function asDate(v: unknown): string | null {
   return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : null;
 }
 
-const norm = (v: unknown) => str(v).trim().toLowerCase();
 /** pandas' truthiness for the is_duplicate column: real booleans, plus the strings Supabase
  * can return for a nullable boolean. */
 const truthy = (v: unknown) => v === true || v === "true" || v === "t" || v === 1;
@@ -148,9 +154,13 @@ export function createPhase1Routes(db: Db) {
     const t = today();
     const soon = new Date(Date.parse(t) + 14 * 86400_000).toISOString().slice(0, 10);
 
+    // EVERY FIGURE BELOW IS A SELECTION, not a count written here. api/home_buckets.ts
+    // owns each one, and /opportunities/list tags rows with the same selections, so a
+    // tile and the list it opens cannot disagree about what they are showing. `measure`
+    // also owns the UNIT: four of these weigh applications rather than count rows.
+    const n = (key: string) => measure(BUCKET.get(key)!, rows, t);
+
     const unique = rows.filter((r) => !truthy(r.is_duplicate));
-    const decision = (r: Json) => norm(r.decision);
-    const proceed = unique.filter((r) => decision(r).startsWith("proceed"));
 
     // APPLICATIONS, NOT ROWS, and through the STAGES' OWN SELECTORS rather than a second
     // opinion written here. Both halves of that mattered, measured live:
@@ -166,17 +176,11 @@ export function createPhase1Routes(db: Db) {
     //     "Not submitted".
     const awaitingRows = selectSubmittedRows(rows);   // sent, funder has not answered
     const answeredRows = selectOutcomeRows(rows);     // funder has answered
-    const weigh = (rs: Json[]) =>
-      rs.reduce((a, r) => a + submissionWeight(r as never), 0);
-    const approvedW = weigh(answeredRows.filter((r) => norm(r.donor_decision) === "approved"));
-    const notApprovedW = weigh(
-      answeredRows.filter((r) => norm(r.donor_decision) === "not approved"));
     // ANSWERED YET WEIGHING NOTHING. `submissionWeight` is zero unless progress_status
     // reached Completed, so a row the funder has decided on but nobody marked Completed
     // contributes 0 applications. One live row is in exactly that state. Reported rather
     // than absorbed: writing Completed here because a decision implies it is the
     // resurrection migration 089 undid, so the number is surfaced and a person decides.
-    const ledger_gap = ledgerGap(answeredRows as never[]).length;
     const sent = [...awaitingRows, ...answeredRows];
 
     // Money is in MIXED currencies - USD, "USD $", "CAD $", GBP, "GBP £" all appear in one
@@ -218,12 +222,12 @@ export function createPhase1Routes(db: Db) {
 
     return json({
       // ── Found ──────────────────────────────────────────────────────────────
-      found: unique.length,
-      awaiting_review: unique.filter((r) => decision(r) === "").length,
+      found: n("found"),
+      awaiting_review: n("awaiting_review"),
       // ── Decided ────────────────────────────────────────────────────────────
-      proceed: proceed.length,
-      parked: unique.filter((r) => decision(r) === "park").length,
-      declined: unique.filter((r) => decision(r) === "decline").length,
+      proceed: n("proceed"),
+      parked: n("parked"),
+      declined: n("declined"),
       // BIDDING'S QUESTION, ASKED BIDDING'S WAY. This card is an action prompt, and a
       // call already with the funder, discontinued, or duplicated needs no action - so it
       // counts `liveProceeds`, the Bidding stage's own membership, rather than every row
@@ -238,7 +242,7 @@ export function createPhase1Routes(db: Db) {
       // drops duplicates in its QUERY (`is_duplicate=is.false`) before calling it.
       // Passing every row here counted a duplicate as actionable work and made the
       // card read one higher than the stage it links to.
-      due_in_14_days: closing.length,
+      due_in_14_days: n("due_in_14_days"),
       // The rows behind that number. A count tells somebody there is work; the list is
       // what lets them start it, and a table is the right form once each item carries a
       // name, a funder, a date and a value rather than one magnitude.
@@ -250,13 +254,13 @@ export function createPhase1Routes(db: Db) {
         usd: Math.round(usdValue(r.call_award_value, r.currency, rates, table)),
       })),
       // ── Sent, and what came back. APPLICATIONS, not calls ──────────────────
-      applications_sent: weigh(sent),
-      awaiting_answer: weigh(awaitingRows),
-      approved: approvedW,
-      not_approved: notApprovedW,
+      applications_sent: n("applications_sent"),
+      awaiting_answer: n("awaiting_answer"),
+      approved: n("approved"),
+      not_approved: n("not_approved"),
       // Answered but weighing zero — shown so the arithmetic can be trusted when it does
       // not add up, instead of quietly under-reporting.
-      ledger_gap,
+      ledger_gap: n("ledger_gap"),
       // ── Money ──────────────────────────────────────────────────────────────
       usd_requested: requested,
       usd_secured: secured,
@@ -376,5 +380,84 @@ export function createPhase1Routes(db: Db) {
     }));
   }
 
-  return { snapshot, home, feed, opportunitiesFeed, opportunity };
+
+  /**
+   * GET /opportunities/list — every call this tenant can see, each tagged with the
+   * Dashboard figures it belongs to.
+   *
+   * THIS IS THE DASHBOARD'S OTHER HALF. Each tile is a door now: click "Awaiting review
+   * 17" and you get those seventeen. The tile's number and the list behind it come from
+   * ONE selection (api/home_buckets.ts), and the membership is computed HERE rather than
+   * in the browser for the same reason: a `filter` in the page would be a second
+   * definition of "awaiting review", which is exactly the drift the shared module exists
+   * to stop. The page filters on `buckets`, a list of keys, and owns no rule at all.
+   *
+   * One fetch, not one per bucket. The whole set is a few hundred rows at most and the
+   * reader's first move after opening a filter is usually to change it; re-fetching for
+   * that would make triage feel like navigation. It also lets the page show the OTHER
+   * counts while a filter is on, which is what makes it a triage screen rather than a
+   * saved search.
+   *
+   * `counts` is served rather than left to be counted off `rows`, because four buckets
+   * weigh APPLICATIONS rather than count rows: a proposal sent twice is two applications
+   * and one row, so "Applications sent 24" can honestly open a list of 21 opportunities.
+   * `kind` tells the page which unit it is in so it can say so.
+   */
+  async function opportunityList(req: Request, ctx: Ctx): Promise<Response> {
+    const sb = db.as(ctx.scope);
+    const rows = await sb.getAll("rfp_submissions", `select=${LIST_FIELDS}`, "uid");
+    const t = today();
+    const inBucket = membership(rows, t);
+
+    const [rates, table] = await Promise.all([
+      ratesFor(rows.flatMap((r) => [r.currency_secured, r.currency])),
+      loadCurrencies(db),
+    ]);
+
+    // Only rows that belong to at least one bucket are listed. In practice that is every
+    // non-duplicate row (they are all `found`), and it means a duplicate is not offered
+    // for triage — the Screened stage says duplicates are excluded from the counts, and a
+    // list that disagreed with the count it was opened from would be the original bug.
+    const out = rows
+      .filter((r) => (inBucket.get(str(r.uid)) ?? []).length > 0)
+      .map((r) => ({
+        uid: str(r.uid),
+        title: str(r.opportunity_title),
+        funder: str(r.funding_agency),
+        link: str(r.opportunity_link) || null,
+        deadline: asDate(r.call_submission_deadline),
+        found: asDate(r.search_date),
+        submitted: asDate(r.date_completed),
+        decision: str(r.decision) || null,
+        donorDecision: str(r.donor_decision) || null,
+        stage: str(r.stage) || null,
+        progress: str(r.progress_status) || null,
+        role: str(r.applicant_role) || null,
+        lead: str(r.proposal_lead) || str(r.assigned_to) || null,
+        score: r.alignment_score == null ? null : Number(r.alignment_score),
+        recommendation: str(r.auto_recommendation) || null,
+        currency: str(r.currency) || null,
+        value: r.call_award_value == null ? null : Number(r.call_award_value),
+        // Converted so a sort by size compares like with like. The column holds USD,
+        // "USD $", "CAD $" and GBP in one tenant, so a raw sort is a sort of unlike things.
+        usd: Math.round(usdValue(r.call_award_value, r.currency, rates, table)),
+        requestedUsd: Math.round(
+          usdValue(r.amount_requested, requestedCurrency(r), rates, table)),
+        securedUsd: Math.round(usdValue(r.amount_secured, r.currency_secured, rates, table)),
+        /** How many applications this one row weighs — 0 until it is Completed. */
+        applications: submissionWeight(r as never),
+        buckets: inBucket.get(str(r.uid)) ?? [],
+      }));
+
+    return gzipped(req, json({
+      today: t,
+      buckets: BUCKETS.map((b) => ({
+        key: b.key, label: b.label, kind: b.kind, rule: b.rule,
+        count: measure(b, rows, t),
+      })),
+      rows: out,
+    }));
+  }
+
+  return { snapshot, home, feed, opportunitiesFeed, opportunity, opportunityList };
 }
