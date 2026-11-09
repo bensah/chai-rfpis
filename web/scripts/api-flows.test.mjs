@@ -2016,6 +2016,12 @@ test("every Dashboard figure equals the list it opens", async () => {
 
   assert.equal(byKey.found.count, 8, "the duplicate is not a call found");
   assert.ok(!list.body.rows.some((r) => r.uid === "A9"), "a duplicate is not offered for triage");
+
+  // The card that shows a number AND the rows under it must show rows of that number.
+  // closing_soon used to filter liveProceeds a second time, beside the count.
+  assert.equal(home.body.due_in_14_days, 1);
+  assert.deepEqual(home.body.closing_soon.map((r) => r.uid), ["A2"],
+    "the rows under the figure are the rows of the figure");
 });
 
 test("a figure counted in applications can list fewer opportunities", async () => {
