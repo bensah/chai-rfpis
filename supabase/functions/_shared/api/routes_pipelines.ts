@@ -823,16 +823,27 @@ export function createPipelineRoutes(db: Db) {
    * decisions. A stage that hides what people decided is worse than one that might someday
    * show an imported recommendation.
    *
-   * WHICH DATE A DECISION COUNTS UNDER, best evidence first:
-   *   decision_date            stamped by POST /pipelines/decision — the real thing
-   *   decision_overridden_at   stamped by any save; close enough to when it was decided
-   *   submitted_at            the row's own date, so a dated row is never lost entirely
-   * A row with none of the three has no position in time; it is counted in `undated`
-   * rather than dropped, because dropping is the bug this route just had.
+   * WHICH WEEK A ROW IS REVIEWED UNDER: the week it was FOUND in — `foundOn`, keyed on
+   * the write-once `search_date`. Not when it was decided, and never a save stamp.
+   *
+   * This paragraph used to describe the opposite, and the stale version is worth naming
+   * rather than quietly replacing. It read "WHICH DATE A DECISION COUNTS UNDER, best
+   * evidence first: decision_date, decision_overridden_at, submitted_at" — and
+   * `decision_overridden_at` is an UPDATE timestamp. Editing an RFP found in September
+   * re-filed it under the current week, so over half this stage (47 of 87 decided rows
+   * carried a later save stamp than their found date) was eligible to move every time
+   * somebody touched it. The owner reported it as rows jumping weeks.
+   *
+   * The comment outliving the behaviour is the second half of that failure. `submittedOn`
+   * had already refused the save stamp and said why, and this docstring sat above it
+   * asserting the save stamp was "close enough" — so a reader fixing the code would have
+   * found a neighbouring comment telling them to put it back. Read `foundOn` for the rule
+   * and the write-once argument; `decidedOn` survives ONLY as its fallback, for a row with
+   * no found date at all, which no live row is.
    *
    * Windowed HERE rather than in PostgREST because that fallback is a coalesce across
-   * three columns, which query syntax expresses badly, and because a tenant's whole
-   * history is small — the same reasoning /pipelines/track already runs on.
+   * columns, which query syntax expresses badly, and because a tenant's whole history is
+   * small — the same reasoning /pipelines/track already runs on.
    *
    * Duplicates are kept rather than dropped: deciding on a row is a thing that happened to
    * THAT row, and hiding it would make a decision disappear from the stage that exists to
