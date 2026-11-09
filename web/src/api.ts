@@ -512,6 +512,64 @@ export const fetchOpportunityRows = (uid: string) =>
  * permissions and tenant scope already applied. */
 export const fetchSnapshot = () => call<import("./scoring/protocol").ScoringSnapshot>("/scoring/snapshot");
 
+// ── The RFP editor ───────────────────────────────────────────────────────────
+// One record and one vocabulary list, both feeding the single editor in
+// src/opportunity/RfpEditor.tsx. Every screen that edits an opportunity opens that
+// component, which is why these are not per-screen shapes.
+
+/** One opportunity, every column, plus its linked grant when the Reporting tab is open.
+ *
+ * Unprojected on purpose — the editor writes about sixty columns, so a projection would be
+ * a list of nearly the whole table that then has to be kept in step with the form. The row
+ * is typed loosely for the same reason: the form reads it by column name and the server
+ * already refuses any name that is not editable. */
+export type RfpRecord = {
+  row: Record<string, unknown>;
+  grant: Record<string, unknown> | null;
+};
+
+export const fetchRfp = (uid: string, reporting = false) =>
+  call<RfpRecord>(
+    `/pipelines/rfp/${encodeURIComponent(uid)}${reporting ? "?reporting=1" : ""}`);
+
+/**
+ * What the editor's dropdowns offer — `core/dropdowns.py::load` for the browser.
+ *
+ * Fetched rather than bundled because two of these are per-deployment settings rather than
+ * repo data: the team roster is tenant-scoped and deliberately absent from the repo, and
+ * the currency table can be overridden in Admin → Settings. The rest are generated from
+ * the Python that owns them (scripts/gen_form_vocab.py).
+ */
+export type FormOptions = {
+  dropdowns: Record<string, string[]>;
+  programAreas: string[];
+  geoOptions: string[];
+  criterionAnswers: Record<string, string[]>;
+  opportunityTypes: string[];
+  solicitationTypes: string[];
+  instrumentTypes: string[];
+  teamMembers: string[];
+  currencies: string[];
+};
+
+export const fetchFormOptions = () => call<FormOptions>("/pipelines/form-options");
+
+/** The editor's save. Sparse, and `reporting` only when that tab was shown — the server
+ *  must not guess at tab visibility, so an absent key means "do not touch the grant". */
+export const saveRfp = (
+  uid: string,
+  fields: Record<string, unknown>,
+  reporting?: Record<string, unknown>,
+) =>
+  patch<{
+    row: Record<string, unknown>;
+    warnings: Warning[];
+    rescore: { job_id: string } | null;
+  }>(`/pipelines/rfp/${encodeURIComponent(uid)}`, {
+    fields,
+    ...(reporting === undefined ? {} : { reporting }),
+  });
+
 // ── Donors ───────────────────────────────────────────────────────────────────
 export const fetchDonors = () => call<{ donors: Donor[] }>("/donors").then((r) => {
   try {
