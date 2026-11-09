@@ -57,6 +57,43 @@ def _today():
         return date.today()
 
 
+def _for_web(a):
+    """core.opportunity_scoring.analyse, with its keys renamed for the TypeScript page.
+
+    A RENAME AND NOTHING ELSE. Every value is passed through untouched — no rounding, no
+    defaulting, no derived field — because the moment this computes anything it becomes a
+    second implementation of the scoring rules, which is the drift the whole migration
+    exists to end. The names it drops -- composite, labels, blockers, unscored -- are all
+    recoverable from the criteria list, which is carried whole.
+    """
+    if not isinstance(a, dict) or a.get("error"):
+        return a
+    c = a.get("confidence") or {}
+    return {
+        "bidStrength": a.get("bid_strength"),
+        "fit": a.get("fit"),
+        "systemDecision": a.get("system_decision"),
+        "suggestedDecision": a.get("suggested_decision"),
+        "confidenceNote": a.get("confidence_note") or "",
+        "fatal": bool(a.get("fatal")),
+        "fatalTrigger": a.get("fatal_trigger") or "",
+        "belowAwardFloor": bool(a.get("below_award_floor")),
+        "screenedOut": bool(a.get("screened_out")),
+        "screenReason": a.get("screen_reason") or "",
+        "confidence": {
+            "band": c.get("band") or "", "pct": c.get("pct"),
+            "callPct": c.get("call_pct"), "donorPct": c.get("donor_pct"),
+            "donorMatched": bool(c.get("donor_matched")),
+        },
+        "criteria": [{
+            "key": x.get("key"), "title": x.get("title"), "label": x.get("label"),
+            "band": x.get("band"), "countText": x.get("count_text") or "",
+            "scored": bool(x.get("scored")), "weight": x.get("weight"),
+            "points": x.get("points"),
+        } for x in (a.get("criteria") or [])],
+    }
+
+
 def opportunity(payload):
     """app_pages/opportunity.py: resolve the uid, lay the call out in the standard format,
     and score it against this tenant."""
@@ -95,6 +132,12 @@ def opportunity(payload):
 
     # The decision aid. A catalogue call has no screened row, so score the candidate built
     # from its extraction: same derivation, so the two paths cannot disagree.
+    #
+    # _for_web only RENAMES — it computes nothing. analyse() speaks snake_case and the
+    # page is TypeScript; the alternative was a TS type full of snake_case keys, or the
+    # page reading a Record<string, unknown> and casting every field, which is what it did
+    # while protocol.ts still described a shape (name/tone/caption) the Python had stopped
+    # returning. Renaming here keeps one declaration that is true.
     analysis = None
     try:
         from core import org_profile as _orgp
@@ -119,9 +162,9 @@ def opportunity(payload):
                 ov = json.loads(ov or "{}")
             except Exception:
                 ov = {}
-        analysis = _osc.analyse(scored, _orgp.get_profile(), donor, _settings.get_org(),
-                                rfp_compliance=flags,
-                                overrides=ov if isinstance(ov, dict) else {})
+        analysis = _for_web(_osc.analyse(
+            scored, _orgp.get_profile(), donor, _settings.get_org(),
+            rfp_compliance=flags, overrides=ov if isinstance(ov, dict) else {}))
     except Exception as exc:
         analysis = {"error": str(exc)}
 
@@ -134,8 +177,13 @@ def opportunity(payload):
         "reference": _od.display_value(view.get("call_reference")) if view.get("call_reference") else "",
         "awardHeadline": _od.award_headline(view),
         "overview": _od.overview_blocks(view),
+        "overviewTruncated": _od.overview_is_truncated(view),
         "pageRows": _od.page_rows(view),
-        "narrative": _od.narrative_sections(view),
+        # NOT narrative_sections. page_rows + overview_blocks already place every
+        # NARRATIVE_FIELD (INLINE_PROSE, PROSE_ROWS, OVERVIEW_FIELDS), so sending it too
+        # rendered all five of them a second time under their own headings.
+        # app_pages/opportunity.py renders overview_text + page_rows and stops.
+        "coverage": dict(zip(("filled", "total"), _od.coverage(view)[:2])),
         "analysis": analysis,
         "orgName": (_sc.SNAPSHOT.get("org_identity") or {}).get("name") or "",
         "link": view.get("opportunity_link") or view.get("opportunity_url") or "",
