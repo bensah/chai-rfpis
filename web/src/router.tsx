@@ -45,14 +45,19 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
  *
  * SEVEN pages are registered only so their URLs resolve — opportunity, profile, help,
  * search and the three public auth pages: an emailed activation link, a feed item's
- * /opportunity deep link, the account menu. SETTINGS is the eighth page without the flag
- * and is not one of them: it is a real destination, reached from the account menu, and it
- * left the rail because the menu moved to the foot of the sidebar and a rail entry became
- * the same destination twice a few centimetres apart. It keeps `adminOnly`, which is the
- * permission rather than the placement.
+ * /opportunity deep link, the account menu.
  *
- * THE DIFFERENCE MATTERS FOR THE PARAGRAPH BELOW: do not add Settings to any hide list.
- * `test_settings_is_not_hidden` asserts exactly that on the Streamlit side. The
+ * THREE MORE ARE REAL DESTINATIONS THAT LIVE IN THE ACCOUNT MENU: Settings,
+ * My Organization and Submit New Notice. They are not registered-only and they are not
+ * hidden — they are simply reached from the menu at the foot of the sidebar rather than
+ * from the rail above it. The owner removed all three for one reason: once the account
+ * menu moved down there, a rail entry was the same destination listed twice, a few
+ * centimetres apart. Settings keeps `adminOnly`, which is the permission rather than the
+ * placement, and the menu entry reads it. This also matches the Streamlit app, where all
+ * three have always been menu-only.
+ *
+ * THE DIFFERENCE MATTERS FOR THE PARAGRAPH BELOW: do not add any of those three to a hide
+ * list. `test_settings_is_not_hidden` asserts exactly that on the Streamlit side. The
  * Streamlit app registers the same set and then HIDES them with CSS, which failed in the
  * COLLAPSED rail, where the icons are still painted: the owner saw a column of unexplained
  * glyphs. Rendering from this flag cannot fail that way — a page without it never reaches
@@ -82,10 +87,10 @@ export const PAGES: Record<PageKey, PageInfo> = {
   actions: { title: "Meeting Actions", icon: "🗒️", rail: true },
   report: { title: "Funding Report", icon: "📊", rail: true },
   donors: { title: "Donor Intelligence", icon: "🗺️", rail: true },
-  organization: { title: "My Organization", icon: "🏢", rail: true },
+  organization: { title: "My Organization", icon: "🏢" },
   // The slug stays `submit-new-rfp`. The page is named for what it takes in now, but a
   // bookmark or an emailed link still has to resolve.
-  "submit-new-rfp": { title: "Submit New Notice", icon: "📝", rail: true },
+  "submit-new-rfp": { title: "Submit New Notice", icon: "📝" },
   opportunity: { title: "Opportunity", icon: "🎯" },
   profile: { title: "Profile", icon: "👤" },
   help: { title: "Help", icon: "❓" },
