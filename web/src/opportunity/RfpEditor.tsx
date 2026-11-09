@@ -164,6 +164,37 @@ const PREFER: [string, string][] = [
   ["bid_effort", "PREFER 9 — Bid effort"],
 ];
 
+const CRITERIA = [...MUST, ...PREFER].map(([k]) => k);
+
+/**
+ * Open a criterion on the answer its stored value means, not on the string itself.
+ *
+ * Live rows carry the LEGACY vocabulary — plain "Yes" / "Partial" / "No", and the
+ * per-criterion labels that preceded the current ones. Shown raw, such a value became a
+ * tenth, stray option in a nine-option dropdown and was written straight back on save, so
+ * the vocabulary could never converge. `views/rfp_editor.py` has always resolved it
+ * through `core/scorer.default_response`.
+ *
+ * The mapping is resolved SERVER-SIDE (`criterionDefaults`) because `default_response`
+ * runs through `criterion_score` — the rule that turns a label into 2/1/0 — and a second
+ * implementation of a scoring rule is exactly what this migration exists to avoid.
+ *
+ * A spelling the table does not know (free text somebody typed) is left exactly as it is:
+ * `Choice` keeps an unrecognised stored value selectable, so nothing is lost and the odd
+ * value stays visible rather than being quietly replaced by a guess.
+ */
+function resolveCriteria(f: Form, o: FormOptions): Form {
+  const out = { ...f };
+  for (const key of CRITERIA) {
+    const stored = txt(out[key]).trim();
+    if (!stored) continue;
+    if ((o.criterionAnswers[key] ?? []).includes(stored)) continue;
+    const mapped = o.criterionDefaults[key]?.[stored.toLowerCase()];
+    if (mapped) out[key] = mapped;
+  }
+  return out;
+}
+
 const TABS = [
   "Opportunity", "Eligibility", "Decision & Pipeline", "Team", "Submission & Award",
   "Application", "Reporting",
@@ -211,7 +242,10 @@ export default function RfpEditor({
     Promise.all([fetchRfp(uid, showReporting), fetchFormOptions()])
       .then(([rec, o]) => {
         if (!live) return;
-        const f = readRow(rec.row);
+        // Resolved into BOTH the baseline and the working copy, so a legacy row opens on
+        // the right answer without the dialog claiming nine edits nobody made. The stored
+        // string is upgraded when somebody actually touches that criterion.
+        const f = resolveCriteria(readRow(rec.row), o);
         setLoaded(f);
         setForm({ ...f });
         setMeta(rec.row);
@@ -324,7 +358,7 @@ export default function RfpEditor({
         setSaving(false);
         return;
       }
-      const next = readRow(row);
+      const next = opts ? resolveCriteria(readRow(row), opts) : readRow(row);
       setLoaded(next);
       setForm(next);
       setMeta(row);

@@ -545,6 +545,10 @@ export type FormOptions = {
   programAreas: string[];
   geoOptions: string[];
   criterionAnswers: Record<string, string[]>;
+  /** Stored value (lower-cased) → the answer it pre-selects, as
+   *  core/scorer.default_response resolves it. Resolved server-side because it
+   *  runs through criterion_score, which is a scoring rule. */
+  criterionDefaults: Record<string, Record<string, string>>;
   opportunityTypes: string[];
   solicitationTypes: string[];
   instrumentTypes: string[];

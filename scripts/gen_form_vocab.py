@@ -43,7 +43,8 @@ sys.path.insert(0, str(ROOT))
 
 from core import dropdowns                       # noqa: E402
 from core import type_detect as td               # noqa: E402
-from core.scorer import CRITERIA, CRITERION_RESPONSES   # noqa: E402
+from core.scorer import (                        # noqa: E402
+    CRITERIA, CRITERION_RESPONSES, _SCORE_MAP, default_response)
 
 OUT = ROOT / "supabase/functions/_shared/api/form_vocab.ts"
 
@@ -71,6 +72,28 @@ def main() -> None:
     # same options core/scorer.default_response maps a stored value back onto.
     responses = {k: list(CRITERION_RESPONSES.get(k) or []) for k in CRITERIA}
 
+    # WHICH OPTION A STORED VALUE PRE-SELECTS, resolved here rather than in the browser.
+    #
+    # Live rows carry the LEGACY vocabulary — plain "Yes" / "Partial" / "No", and the
+    # per-criterion labels that preceded the current ones ("Yes, none required",
+    # "Strong - priorities + experience"). `views/rfp_editor.py` runs each through
+    # `default_response`, so such a row opens on the matching rich option and SAVES the
+    # rich one; without that the editor would show the legacy string as a tenth, stray
+    # option and write it straight back, leaving the vocabulary never to converge.
+    #
+    # `default_response` resolves through `criterion_score`, which is a SCORING rule — the
+    # one that turns a label into 2/1/0 — and restating it in TypeScript is exactly the
+    # drift this repo keeps out. So the ANSWERS are computed here, by the Python, for every
+    # spelling `_SCORE_MAP` has ever recognised, and the browser only looks them up.
+    #
+    # A value in no table at all (free text somebody typed) is deliberately absent: the
+    # editor then keeps showing it as it is rather than guessing, which is visible and
+    # loses nothing.
+    defaults = {
+        k: {s: default_response(k, s) for s in sorted(_SCORE_MAP)}
+        for k in CRITERIA
+    }
+
     body = f'''/**
  * The RFP editor's controlled vocabularies. GENERATED — do not edit.
  *
@@ -96,6 +119,12 @@ export const GEO_OPTIONS: string[] = {js(geo_options)};
 
 /** core/scorer.CRITERION_RESPONSES — criterion key → its rich answers, best first. */
 export const CRITERION_ANSWERS: Record<string, string[]> = {js(responses)};
+
+/** criterion key → lower-cased stored value → the option it pre-selects, as
+ * core/scorer.default_response resolves it. Lets a row carrying the legacy vocabulary
+ * open on the right rich answer and save that, instead of writing the legacy string back
+ * for ever. A spelling absent here is shown as it is rather than guessed at. */
+export const CRITERION_DEFAULTS: Record<string, Record<string, string>> = {js(defaults)};
 
 /** core/type_detect.OPPORTUNITY_TYPES — what pursuing this IS. The eligibility gate
  * rejects Procurement / Consultancy / Training / Loan for a grant-seeking org. */

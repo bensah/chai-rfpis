@@ -1819,3 +1819,35 @@ test("a column the editor must not write is refused, not dropped", async () => {
   assert.equal(r.status, 400, "a typo should fail where it is made, not look like a no-op");
   assert.deepEqual(r.body.problems, ["not_a_column"]);
 });
+
+test("a row on the old criterion vocabulary opens on the right answer", async () => {
+  // Live rows carry plain "Yes"/"Partial"/"No" and the per-criterion labels that preceded
+  // the current ones. Shown raw, such a value became a tenth, stray option in a
+  // nine-option dropdown and was written straight back on save, so the vocabulary could
+  // never converge. views/rfp_editor.py has always resolved it through
+  // core/scorer.default_response; that resolution runs through criterion_score — a
+  // SCORING rule — so it is precomputed in Python and served, never restated here.
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/form-options", null, col.token);
+  const d = r.body.criterionDefaults;
+
+  assert.equal(d.qualification.yes, "Yes, fully");
+  assert.equal(d.qualification.partial, "Mostly, one item unclear");
+  assert.equal(d.qualification.no, "No, not eligible");
+  assert.equal(d.funding_quality["1"], "High", "the legacy numeric spelling too");
+
+  // bid_effort is the criterion with no "Not sure": an undeterminable value there must
+  // land on the Park midpoint, never on the worst option — core/scorer says so at length,
+  // because that turned "we never captured a deadline" into "Not enough time, no team".
+  assert.ok(!r.body.criterionAnswers.bid_effort.includes("Not sure"));
+  assert.notEqual(d.bid_effort.no, "Not enough time, no team");
+
+  // Every criterion resolves every legacy spelling onto one of its OWN answers.
+  for (const [key, answers] of Object.entries(r.body.criterionAnswers)) {
+    for (const [stored, picked] of Object.entries(d[key] ?? {})) {
+      assert.ok(answers.includes(picked),
+        `${key}: "${stored}" resolved to "${picked}", which it does not offer`);
+    }
+  }
+});

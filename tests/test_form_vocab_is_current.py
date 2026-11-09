@@ -32,7 +32,8 @@ os.environ.setdefault("SUPABASE_KEY", "sb_secret_dummy")
 
 from core import dropdowns                                    # noqa: E402
 from core import type_detect as td                            # noqa: E402
-from core.scorer import CRITERIA, CRITERION_RESPONSES         # noqa: E402
+from core.scorer import (                                     # noqa: E402
+    CRITERIA, CRITERION_RESPONSES, _SCORE_MAP, default_response)
 
 _TS = os.path.join(_ROOT, "supabase", "functions", "_shared", "api", "form_vocab.ts")
 # The keys gen_form_vocab.py emits, which is also the set the editor's tabs read.
@@ -84,6 +85,25 @@ class GeneratedListsMatchThePython(unittest.TestCase):
             with self.subTest(criterion=key):
                 self.assertEqual(list(CRITERION_RESPONSES.get(key) or []), got[key])
                 self.assertTrue(got[key], f"{key} would render an empty dropdown")
+
+    def test_every_legacy_spelling_resolves_the_way_default_response_does(self):
+        """The editor must not restate `default_response`, because it runs through
+        `criterion_score` — the rule that turns a label into 2/1/0. The ANSWERS are
+        precomputed here instead, so the browser only looks them up. If that table drifts,
+        a row on the old vocabulary opens on the wrong option and saves it."""
+        got = emitted("CRITERION_DEFAULTS")
+        self.assertEqual(sorted(CRITERIA), sorted(got))
+        for key in CRITERIA:
+            for stored in _SCORE_MAP:
+                with self.subTest(criterion=key, stored=stored):
+                    self.assertEqual(default_response(key, stored), got[key][stored])
+
+    def test_a_resolved_answer_is_always_one_the_criterion_offers(self):
+        answers = emitted("CRITERION_ANSWERS")
+        for key, table in emitted("CRITERION_DEFAULTS").items():
+            for stored, picked in table.items():
+                with self.subTest(criterion=key, stored=stored):
+                    self.assertIn(picked, answers[key])
 
     def test_the_three_type_axes_match_type_detect(self):
         self.assertEqual(list(td.OPPORTUNITY_TYPES), emitted("OPPORTUNITY_TYPES"))
