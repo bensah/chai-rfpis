@@ -1,7 +1,10 @@
 // Supabase Edge Function entry for the RFPIS web API (Deno). All logic lives in
 // ../_shared/rfpis_api.ts, which the Vite dev server also runs locally.
 //
-// Deploy (free tier):
+// Deploy: a push to main that touches supabase/functions/** redeploys this function from
+// GitHub Actions (.github/workflows/deploy-api.yml), so it cannot be left behind by the
+// frontend, which Cloudflare Pages rebuilds on every push. The secrets below are set once
+// on the Supabase project and CI does not touch them. By hand, for a branch:
 //   supabase secrets set RFPIS_JWT_SECRET=<Dashboard → Settings → JWT Keys → legacy secret>
 //   supabase secrets set RFPIS_WEB_ORIGINS=https://<your-project>.pages.dev
 //   supabase secrets set RFPIS_GH_DISPATCH_TOKEN=<fine-grained PAT: this repo, Actions: write>
