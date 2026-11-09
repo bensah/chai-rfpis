@@ -1780,6 +1780,34 @@ def _norm_rel(s: Any) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip().lower())
 
 
+def _no_relationship_data(org: dict, engaged_score: float | None) -> bool:
+    """True when the org profile holds NOTHING to judge a funder relationship by.
+
+    The distinction this draws is the whole point of PREFER-7's "Not sure" state:
+
+        "None"  we HOLD relationship data and it shows no relationship   → scores 0
+         None   we hold NO relationship data                             → Not sure
+
+    It is shared by `derive_funder_relationship` and `_relationship_factors` because the
+    two used to disagree about it, and the disagreement was expensive. The derivation had
+    this test; the components did not, so `rel_grantee` and `rel_contact` reported
+    `met=False` — a measured "we are not a past grantee of this funder" — for a tenant
+    whose funder history was simply empty. The component roll-up (`criteria_review._rel_rule`)
+    then labelled the criterion "None", and since that is a SCORING label rather than an
+    unknown one, every row lost PREFER-7's half credit: 0.08 × 50 = exactly 4.0 points.
+
+    That is the whole of the gap between the stored `alignment_score` (auto_scorer, which
+    reads the derivation) and what the Opportunity page computed (which reads the labels) —
+    measured at a flat +4.0 on all 60 sampled RFPIS rows. One rule, one place, so the two
+    cannot drift apart again.
+    """
+    return (not [h for h in (org.get("org_funder_history") or []) if h]
+            and not (org.get("org_donor_registrations") or [])
+            and not (org.get("trusted_partners") or [])
+            and engaged_score is None
+            and not (org.get("org_engaged_donors") or []))
+
+
 def derive_funder_relationship(org: dict, rfp: dict, donor: dict | None = None,
                                graph=None) -> str | None:
     """FUNDER OR PARTNER relationship (PREFER 7). Past grantee of this donor
@@ -1790,17 +1818,13 @@ def derive_funder_relationship(org: dict, rfp: dict, donor: dict | None = None,
     only when we hold no relationship data. `graph`: grantee / engaged / shared are
     parent+consortium-transferable, so the same fact held by the parent org / Prime /
     a co-Sub counts (label + components share the graph helpers → never disagree)."""
-    hist = [h for h in (org.get("org_funder_history") or []) if h]
     if _grantee_graph(org, rfp, donor, graph):
         return "Current/past grantee"
     _eng, _ = _engaged_graph(org, rfp, donor, graph)
     if ((_eng is not None and _eng > 0.0)
             or _shared_graph(org, donor, graph) or _registered_on_portal(org, rfp, donor)):
         return "Some contact"
-    if (not hist and not (org.get("org_donor_registrations") or [])
-            and not (org.get("trusted_partners") or [])
-            and _eng is None
-            and not (org.get("org_engaged_donors") or [])):
+    if _no_relationship_data(org, _eng):
         return None                    # no relationship data on file → Not sure
     return "None"
 
@@ -2471,12 +2495,37 @@ def _relationship_factors(org: dict, rfp: dict, donor: dict | None = None,
         eng["_detail"] = {1.0: "yes — we have engaged this funder about this call",
                           0.5: "partially — engaged via a third party on our behalf",
                           0.0: "no — no contact about this call"}[sc] + f" ({src})"
+    # NO RELATIONSHIP DATA IS NOT A MEASURED "NO". `rel_engaged` already knew this — it
+    # carries `active=sc is not None`, so it stands down when there is nothing to judge.
+    # Its two siblings did not: they reported `met=False` whether the org's funder history
+    # said "not this funder" or was simply EMPTY, and `_rel_rule` cannot tell those apart
+    # because an absent component and one scored 0 both read as 0.0 to it.
+    #
+    # The cost was exact and universal. The roll-up labelled the criterion "None", which is
+    # a scoring label rather than an unknown one, so a tenant that had not filled in its
+    # funder history was told it has no relationship with every funder on earth — and lost
+    # PREFER-7's half credit, 0.08 × 50 = 4.0 points, on every row. See
+    # `_no_relationship_data`, which is the derivation's own test, now shared.
+    #
+    # Inactive is the honest state: the Review card shows these as not-applicable and
+    # leaves them out of the won/total denominator, the roll-up declines to name the
+    # criterion, and the label falls through to "Not sure" — which is what the derivation
+    # was saying all along.
+    #
+    # The positive tiers are checked FIRST, exactly as `derive_funder_relationship` checks
+    # them before its own no-data test. A grantee or shared-collaborator fact that reaches
+    # us through the APPLICANT GRAPH — held by the parent org, the Prime or a co-Sub — is
+    # relationship data even when this org's own profile fields are empty, and standing the
+    # components down on the profile alone would have thrown it away.
+    unknown = not grantee and not contact and _no_relationship_data(org, sc)
     # OR-tiers: any one satisfies PREFER 7 (grantee is the strongest). Tagged
     # so the Review panel shows them as alternative routes, not all-required.
     return [
-        _factor("rel_grantee", "Past / current grantee of this donor", "DO", grantee),
+        _factor("rel_grantee", "Past / current grantee of this donor", "DO",
+                None if unknown else grantee, active=not unknown),
         eng,
-        _factor("rel_contact", "Shared collaborator with this funder", "DO", contact),
+        _factor("rel_contact", "Shared collaborator with this funder", "DO",
+                None if unknown else contact, active=not unknown),
     ]
 
 
