@@ -49,11 +49,20 @@ name: Deploy API
 #                      → New repository secret (NOT an environment or Dependabot secret)
 #   Value              a Supabase personal access token, from
 #                      https://supabase.com/dashboard/account/tokens
-#   Scope              it inherits the full account access of whoever creates it — Supabase
-#                      access tokens cannot be narrowed to one project, so create it from
-#                      an account that administers only what it needs to, name it for this
-#                      repo so it can be revoked without hunting, and revoke it there if
-#                      this repo is ever handed on.
+#   Scope              narrow it. Resource access -> Project -> the CHAI org -> RFPIS
+#                      Project, so the token reaches one project and not the account. Then
+#                      drop the "Full access" preset and grant only the Edge Functions
+#                      permissions a deploy actually uses. Full access includes write
+#                      access to the database, the project's API keys and organization
+#                      members; this repo is public and that database holds real client
+#                      data, so it is a far wider blast radius than deploying a function
+#                      needs. Name it for this repo so it can be revoked without hunting.
+#   Expiry             pick the longest the dashboard offers. It defaults to 7 days, and an
+#                      expired token stops API deploys *while Cloudflare carries on
+#                      shipping the frontend* — which is precisely the drift this file
+#                      exists to prevent, arriving on a timer. If it must expire, diarise
+#                      the renewal; the job will fail loudly, but only after the frontend
+#                      has already moved.
 #
 # Until that secret exists the job fails loudly on its first step with instructions,
 # rather than reaching the CLI and failing somewhere less legible.

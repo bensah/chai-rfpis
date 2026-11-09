@@ -155,9 +155,13 @@ workflow fails on its first step with these instructions rather than half-deploy
 
 - **`SUPABASE_ACCESS_TOKEN`** — a Supabase personal access token from
   <https://supabase.com/dashboard/account/tokens>, added at GitHub → this repo → Settings →
-  Secrets and variables → Actions → New **repository** secret. Supabase access tokens carry
-  the full account access of whoever creates them and cannot be narrowed to one project, so
-  name it for this repo and revoke it there when it is no longer needed.
+  Secrets and variables → Actions → New **repository** secret. Scope the token to the RFPIS
+  project alone (Resource access → Project) and grant only the Edge Functions permissions,
+  not the "Full access" preset — that preset carries database write, API keys and
+  organization members, and this repo is public while the database holds real client data.
+  Give it the longest expiry offered: the dashboard defaults to 7 days, and an expired
+  token stops API deploys while Cloudflare keeps shipping the frontend, which is the drift
+  this workflow exists to prevent.
 
 One setting on **Cloudflare Pages**, in its own dashboard:
 `VITE_API_BASE=https://<project-ref>.supabase.co/functions/v1/rfpis-api`.
