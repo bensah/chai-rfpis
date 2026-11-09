@@ -19,10 +19,12 @@
  * a bid is deliberate rather than something to do by mistake while scanning.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarClock, Check, ExternalLink, Layers } from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, Layers } from "lucide-react";
 import {
   fetchTrack, saveRfpFields, type Track, type TrackRow, type Warning,
 } from "../api";
+import OpportunityCell from "../opportunity/OpportunityCell";
+import RfpEditor from "../opportunity/RfpEditor";
 import { labelOf, rangeOf, type Period } from "./period";
 import { Badge, Button, Card, EmptyState, Notice, Spinner, fieldClass } from "../ui";
 
@@ -70,6 +72,7 @@ export default function BiddingStage({ period }: { period: Period }) {
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<string | null>(null);
+  const [editUid, setEditUid] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [notices, setNotices] = useState<Warning[]>([]);
 
@@ -230,20 +233,9 @@ export default function BiddingStage({ period }: { period: Period }) {
                     className={`border-b border-ink-100 transition-colors last:border-0 ${
                       on ? "bg-brand-50" : "hover:bg-ink-50"}`}>
                     <td className="px-4 py-3">
-                      <button
-                        onClick={() => setOpen(on ? null : r.uid)}
-                        aria-expanded={on}
-                        className="text-left font-medium text-brand-700 hover:text-accent-700 hover:underline"
-                      >
-                        {r.opportunity_title || r.uid}
-                      </button>
-                      {r.opportunity_link && (
-                        <a href={r.opportunity_link} target="_blank" rel="noreferrer"
-                          className="ml-1.5 inline-flex text-ink-400 hover:text-accent-700"
-                          aria-label="Open the call">
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      )}
+                      <OpportunityCell uid={r.uid} title={r.opportunity_title}
+                        link={r.opportunity_link} onEdit={setEditUid}
+                        expanded={on} onToggle={() => setOpen(on ? null : r.uid)} />
                     </td>
                     <td className="px-4 py-3 text-ink-600">{r.funding_agency || "—"}</td>
                     <td className="px-4 py-3 text-ink-600">
@@ -274,6 +266,9 @@ export default function BiddingStage({ period }: { period: Period }) {
 
       {awaiting.length > 0 && (
         <div className="mt-6"><AwaitingSubmission rows={awaiting} onSave={save} saving={saving} /></div>
+      )}
+      {editUid && (
+        <RfpEditor uid={editUid} onClose={() => setEditUid(null)} onSaved={load} />
       )}
     </>
   );

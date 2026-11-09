@@ -41,8 +41,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, X } from "lucide-react";
 import {
-  fetchFormOptions, fetchRfp, recordDecision, saveRfp,
-  type FormOptions, type User, type Warning,
+  currentSession, fetchFormOptions, fetchRfp, recordDecision, saveRfp,
+  type FormOptions, type Warning,
 } from "../api";
 import MultiSelect from "../components/MultiSelect";
 import { Button, IconButton, Notice, Select, Spinner, fieldClass } from "../ui";
@@ -311,7 +311,6 @@ type TabName = (typeof TABS)[number];
 
 export type RfpEditorProps = {
   uid: string;
-  user: User;
   onClose: () => void;
   /** The saved row, so the screen behind can update without a refetch. */
   onSaved?: (row: Record<string, unknown>) => void;
@@ -324,8 +323,12 @@ export type RfpEditorProps = {
 };
 
 export default function RfpEditor({
-  uid, user, onClose, onSaved, showApplication = true, showReporting = false,
+  uid, onClose, onSaved, showApplication = true, showReporting = false,
 }: RfpEditorProps) {
+  // Read rather than threaded through a prop: five Pipeline stages open this dialog and
+  // none of them is given the user, so a prop would have had four components carrying a
+  // value only the footer line below uses.
+  const viewingAs = currentSession()?.user.view ?? null;
   const [opts, setOpts] = useState<FormOptions | null>(null);
   const [loaded, setLoaded] = useState<Form | null>(null);
   const [form, setForm] = useState<Form | null>(null);
@@ -850,7 +853,7 @@ export default function RfpEditor({
               ? `${dirty.length + (reportingDirty ? 1 : 0)} change${
                 dirty.length + (reportingDirty ? 1 : 0) === 1 ? "" : "s"} not yet saved`
               : "No unsaved changes"}
-            {user.view && <> · editing as {user.view.name}</>}
+            {viewingAs && <> · editing as {viewingAs.name}</>}
           </p>
           <div className="flex gap-2">
             <Button variant="secondary" onClick={onClose}>Close</Button>

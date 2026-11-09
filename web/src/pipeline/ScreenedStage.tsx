@@ -12,9 +12,11 @@
  *     at other weeks must not inflate the banner, and the KPI denominators use canonical
  *     rows only.
  */
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { fetchScreen, type ScreenRow, type Weeks } from "../api";
+import OpportunityCell from "../opportunity/OpportunityCell";
+import RfpEditor from "../opportunity/RfpEditor";
 import { Badge, Button, Card, EmptyState, Notice, Spinner, fieldClass } from "../ui";
 
 const lower = (v: unknown) => String(v ?? "").trim().toLowerCase();
@@ -30,8 +32,9 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState("");
+  const [editUid, setEditUid] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (!week) return;
     setLoading(true);
     setError(null);
@@ -40,6 +43,8 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
       .catch((e) => setError(e instanceof Error ? e.message : "Couldn't load this week."))
       .finally(() => setLoading(false));
   }, [week]);
+
+  useEffect(load, [load]);
 
   const all = useMemo(() => rows ?? [], [rows]);
   // Canonical rows are what was actually screened; a duplicate of another week's row
@@ -159,16 +164,8 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
                 return (
                   <tr key={r.uid} className="border-b border-ink-100 transition-colors last:border-0 hover:bg-ink-50">
                     <td className="px-4 py-3">
-                      <a href={`/opportunity?uid=${encodeURIComponent(r.uid)}`}
-                        className="font-medium text-brand-700 hover:text-accent-700 hover:underline">
-                        {r.opportunity_title || r.uid}
-                      </a>
-                      {r.opportunity_link && (
-                        <a href={r.opportunity_link} target="_blank" rel="noreferrer"
-                          className="ml-1.5 inline-flex text-ink-400 hover:text-accent-700" aria-label="Open the call">
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      )}
+                      <OpportunityCell uid={r.uid} title={r.opportunity_title}
+                        link={r.opportunity_link} onEdit={setEditUid} />
                     </td>
                     <td className="px-4 py-3 text-ink-600">{r.funding_agency || "—"}</td>
                     <td className="px-4 py-3 text-ink-600">{r.applicant_role || "—"}</td>
@@ -194,6 +191,9 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
         Proceed first, then parked; highest score first within each. A decision nobody has made yet
         shows the engine's recommendation, marked <em>auto</em>.
       </p>
+      {editUid && (
+        <RfpEditor uid={editUid} onClose={() => setEditUid(null)} onSaved={load} />
+      )}
     </>
   );
 }
