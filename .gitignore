@@ -51,6 +51,17 @@ data/team_roster.local.json
 # Per-tenant uploaded Excel workbooks (tenant data, never committed)
 .workbooks/
 
+# Backups written before a destructive purge — every column of the rows that were
+# deleted, which is live tenant data in a folder that is NOT otherwise ignored (only
+# data/team_roster.local.json was, and four fixtures under data/verify are tracked).
+# Three were sitting untracked during a 50-commit push: one `git add -A` from reaching
+# GitHub with a tenant's own opportunities, funders and award values in them.
+#
+# They are kept, not deleted — a purge is only reversible while its backup exists — and
+# the pattern is deliberately `purged_*` rather than the two filenames, because the next
+# purge will write the next one and nobody will remember to add it.
+data/purged_*
+
 # Local secrets crib sheet - real API keys in plaintext, never committed.
 # The authoritative values live in the deployment's own secrets store.
 docs/secrets_database
