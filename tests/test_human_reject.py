@@ -46,6 +46,27 @@ class _Capture:
 
 
 class LogHumanRejectTests(unittest.TestCase):
+    """Every test here mocks the client, because none of them is about the database.
+
+    One path was missed, and it cost CI 900 seconds a run. `_base_record` calls
+    `_features`, which reaches the database for the tenant's feature vector — BEFORE the
+    mocked `get_client` is ever touched, so patching the client did not cover it. With a
+    database to talk to it is a one-off 24 seconds and then cached; on CI, where
+    SUPABASE_URL is the dummy this module sets and nothing answers, it simply never
+    returns. The module reported "0 tests, TIMEOUT after 900s" and the whole suite went
+    red, which is why it reads as a hang rather than a failure.
+
+    `_features` is best-effort by design ("telemetry must never break a scan or a save")
+    and returns None on any error, so standing it down here changes nothing these tests
+    assert: not one of them looks at `features`. What it buys is a module with no network
+    in it at all, which is what every other test in it already assumed.
+    """
+
+    def setUp(self):
+        patch = mock.patch.object(decision_log, "_features", return_value=None)
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def test_a_removal_is_recorded_as_a_human_reject(self):
         cap = _Capture()
         with mock.patch.object(decision_log, "get_client", return_value=cap):
