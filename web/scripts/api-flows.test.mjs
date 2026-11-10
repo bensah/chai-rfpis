@@ -643,8 +643,9 @@ test("recording a decision stamps it and queues what the scan needs", async () =
   assert.equal(jobs[0].status, "dispatched");
   assert.deepEqual(jobs[0].params,
     { tenant_id: T1, uid: "R1", decision: "Decline", by: "col@x.org" });
-  // Its own group, so a decision does not wait behind a whole-tenant re-score.
-  assert.deepEqual(dispatched.map((d) => d.group), [`decision-${T1}`]);
+  // Its own group, so a decision does not wait behind a whole-tenant re-score — and keyed
+  // by ROW, so decisions on different rows cannot cancel each other's pending run.
+  assert.deepEqual(dispatched.map((d) => d.group), [`decision-${T1}-R1`]);
 });
 
 test("a decision the app does not offer is refused, and named", async () => {
@@ -695,8 +696,9 @@ test("deleting an opportunity queues the removal and removes nothing itself", as
   assert.deepEqual(jobs[0].params, { tenant_id: T2, uid: "DEL-1", by: "admin@x.org" },
     "the runner is given the tenant explicitly — it refuses work it cannot scope");
   // The decision group, not one of its own: a delete and a decision on the same row both
-  // write rfp_seen, and the delete ends by removing the row the other is reading.
-  assert.deepEqual(dispatched.map((d) => d.group), [`decision-${T2}`]);
+  // write rfp_seen, and the delete ends by removing the row the other is reading. Same
+  // ROW, same group — which is the collision; different rows are independent.
+  assert.deepEqual(dispatched.map((d) => d.group), [`decision-${T2}-DEL-1`]);
 });
 
 test("only an admin can delete, and the refusal reveals nothing", async () => {
@@ -1075,8 +1077,9 @@ test("saving an RFP queues the re-score that owns its score", async () => {
   // Passed explicitly: the runner refuses a re-score it cannot scope, and scoring one
   // tenant's rows against another's profile is wrong in a way nothing downstream can see.
   assert.equal(jobs[0].params.tenant_id, T1);
-  assert.deepEqual(dispatched.map((d) => d.group), [`rescore-${T1}`],
-    "one group per tenant, so a save queued mid-run waits rather than racing it");
+  assert.deepEqual(dispatched.map((d) => d.group), [`rescore-${T1}-R1`],
+    "one group per ROW: two re-scores of one row write the same number, so the race was "
+    + "never the hazard — the cancelled pending run was");
 
   // And a save that only records what the team is doing costs no run at all.
   const w = await call("PATCH", "/pipelines/rfp/R1",
@@ -2064,4 +2067,158 @@ test("Reviewed is the same set counted from either side", async () => {
   const reviewed = list.body.buckets.find((b) => b.key === "reviewed");
   assert.equal(reviewed.count, home.body.proceed + home.body.parked + home.body.declined);
   assert.equal(reviewed.count, 3);
+});
+
+// ── The Archive ──────────────────────────────────────────────────────────────
+
+test("an expired call stops asking for a decision but is not hidden", async () => {
+  // The owner's rule, 2026-11-10: "flagging undecided should only be for those calls that
+  // are still live and open". The danger in acting on it is archiving work that is still
+  // live, so these assert both halves.
+  const { call, signIn, db } = setup();
+  const today = new Date().toISOString().slice(0, 10);
+  const past = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+  const future = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    { uid: "E1", tenant_id: T1, opportunity_title: "Open, undecided",
+      call_submission_deadline: future, is_duplicate: false },
+    { uid: "E2", tenant_id: T1, opportunity_title: "Expired, never looked at",
+      call_submission_deadline: past, is_duplicate: false },
+    { uid: "E3", tenant_id: T1, opportunity_title: "Expired, declined",
+      call_submission_deadline: past, decision: "Decline", is_duplicate: false },
+    // No deadline at all: an absent date is not a passed one.
+    { uid: "E4", tenant_id: T1, opportunity_title: "Rolling, no deadline",
+      is_duplicate: false },
+    // Submitted before the deadline, funder has not answered. Still live work.
+    { uid: "E5", tenant_id: T1, opportunity_title: "With the funder", decision: "Proceed",
+      call_submission_deadline: past, progress_status: "Completed", submissions: 1,
+      donor_decision: "Under Review", date_completed: today, is_duplicate: false },
+  );
+
+  const col = await signIn("col@x.org", "col pass 1");
+  const home = await call("GET", "/home", null, col.token);
+  const list = await call("GET", "/opportunities/list", null, col.token);
+  const inB = (k) => list.body.rows.filter((r) => r.buckets.includes(k)).map((r) => r.uid).sort();
+
+  // The undecided calls that are still OPEN are the prompt — which includes the rolling
+  // one with no deadline at all. It has not expired; there is simply no date to pass.
+  assert.deepEqual(inB("awaiting_review"), ["E1", "E4"]);
+  assert.equal(home.body.awaiting_review, 2);
+  // The one that expired unlooked-at is counted, separately, so the bar still adds up.
+  assert.deepEqual(inB("expired_unreviewed"), ["E2"]);
+  assert.equal(home.body.found,
+    home.body.proceed + home.body.parked + home.body.declined
+    + home.body.awaiting_review + home.body.expired_unreviewed,
+    "the decision bar must still partition every call found");
+
+  // Everything past its deadline is archived, decided or not…
+  assert.deepEqual(inB("archived"), ["E2", "E3", "E5"]);
+  // …and a call with no deadline is NOT, because an absent date is not a passed one.
+  assert.ok(!inB("archived").includes("E4"));
+
+  // THE ONE THAT MATTERS: archiving describes the call, not our work on it. E5's deadline
+  // has gone, but the proposal is with a funder — it must still appear as awaiting an
+  // answer, or an exclusive archive would bury live applications.
+  assert.ok(inB("awaiting_answer").includes("E5"),
+    "a submitted proposal stays live even though its call has closed");
+  assert.equal(home.body.awaiting_answer, 1);
+});
+
+test("the archive is reachable, and counts what it lists", async () => {
+  const { call, signIn, db } = setup();
+  const past = new Date(Date.now() - 10 * 864e5).toISOString().slice(0, 10);
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    { uid: "A1", tenant_id: T1, call_submission_deadline: past, is_duplicate: false },
+    { uid: "A2", tenant_id: T1, call_submission_deadline: past, decision: "Park", is_duplicate: false },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const home = await call("GET", "/home", null, col.token);
+  const list = await call("GET", "/opportunities/list", null, col.token);
+  const bucket = list.body.buckets.find((b) => b.key === "archived");
+  assert.ok(bucket, "the archive is a bucket the Triage page can open");
+  assert.equal(bucket.count, 2);
+  assert.equal(bucket.count, home.body.archived, "Settings and the list show one number");
+  assert.equal(list.body.rows.filter((r) => r.buckets.includes("archived")).length, 2);
+});
+
+test("Screened keeps counting a closed call but stops queueing it", async () => {
+  // The owner's rule applied to the stage, not just the Dashboard. The two halves pull in
+  // opposite directions and both matter: the KPI is history (what the scan found that
+  // week) and must not shrink as deadlines pass, while the queue is work somebody can
+  // still do and must not ask for a decision nobody can make.
+  const { call, signIn, db } = setup();
+  const past = new Date(Date.now() - 20 * 864e5).toISOString().slice(0, 10);
+  const future = new Date(Date.now() + 20 * 864e5).toISOString().slice(0, 10);
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    { uid: "S1", tenant_id: T1, review_week: "Week 45 (2 Nov - 8 Nov)", is_duplicate: false,
+      auto_recommendation: "Proceed", call_submission_deadline: future },
+    { uid: "S2", tenant_id: T1, review_week: "Week 45 (2 Nov - 8 Nov)", is_duplicate: false,
+      auto_recommendation: "Proceed", call_submission_deadline: past },
+    // No deadline: not expired, so it stays in the queue.
+    { uid: "S3", tenant_id: T1, review_week: "Week 45 (2 Nov - 8 Nov)", is_duplicate: false,
+      auto_recommendation: "Park" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/screen?week=Week%2045%20(2%20Nov%20-%208%20Nov)",
+    null, col.token);
+  assert.equal(r.status, 200);
+
+  // Every row is still returned — the week's record is intact…
+  assert.deepEqual(r.body.rows.map((x) => x.uid).sort(), ["S1", "S2", "S3"]);
+  // …each tagged by the SERVER, so the page owns no definition of "expired".
+  const by = Object.fromEntries(r.body.rows.map((x) => [x.uid, x.expired]));
+  assert.equal(by.S1, false);
+  assert.equal(by.S2, true);
+  assert.equal(by.S3, false, "an absent deadline is not a passed one");
+});
+
+// ── Concurrency groups ───────────────────────────────────────────────────────
+
+test("two rows never share a concurrency group, one row always does", async () => {
+  // GitHub holds ONE pending run per group: a third dispatch into a busy group cancels
+  // the second rather than queueing behind it, leaving the job `queued` for ever with
+  // nothing to say so. Measured live on 2026-11-10 — three decisions dispatched, two ran,
+  // one stranded, which is a lost tombstone.
+  //
+  // So the group must be as narrow as the hazard, and the hazard is per ROW: a delete and
+  // a decision on the same row write the same two tables and the delete removes the row
+  // out from under the other.
+  const { call, signIn, db, dispatched } = setup();
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    { uid: "G1", tenant_id: T1, opportunity_title: "One", is_duplicate: false },
+    { uid: "G2", tenant_id: T1, opportunity_title: "Two", is_duplicate: false },
+  );
+  const admin = await signIn("admin@x.org", "correct horse 1");
+  await call("POST", "/session/tenant", { tenantId: T1 }, admin.token);
+  const a = await signIn("admin@x.org", "correct horse 1");
+
+  await call("POST", "/pipelines/decision", { uid: "G1", decision: "Decline" }, a.token);
+  await call("POST", "/pipelines/decision", { uid: "G2", decision: "Decline" }, a.token);
+  await call("PATCH", "/pipelines/rfp/G1", { fields: { key_risks: "x" } }, a.token);
+  await call("DELETE", "/pipelines/rfp/G1", null, a.token);
+
+  const groups = Object.fromEntries(dispatched.map((d, i) => [i, d.group]));
+  const all = Object.values(groups);
+  assert.ok(all.length >= 3, `expected several dispatches, got ${all.length}`);
+
+  const forG1Decision = all.filter((g) => g.startsWith("decision-") && g.endsWith("-G1"));
+  const forG2Decision = all.filter((g) => g.startsWith("decision-") && g.endsWith("-G2"));
+  assert.ok(forG1Decision.length, "a decision on G1 is grouped by G1");
+  assert.ok(forG2Decision.length, "a decision on G2 is grouped by G2");
+  assert.notDeepEqual(forG1Decision[0], forG2Decision[0],
+    "decisions on different rows must not be able to cancel each other");
+
+  // …and the delete shares the decision group FOR ITS OWN ROW, which is the collision the
+  // shared group existed to prevent.
+  assert.ok(all.includes(forG1Decision[0]),
+    "a delete and a decision on one row stay serialised against each other");
+
+  // A re-score is keyed by its row too, so saving two rows quickly cannot drop one.
+  const rescores = all.filter((g) => g.startsWith("rescore-"));
+  assert.ok(rescores.every((g) => g.endsWith("-G1") || g.endsWith("-G2") || g.endsWith("-all")),
+    `a re-score is grouped by row: ${rescores.join(", ")}`);
 });

@@ -35,7 +35,9 @@ import { isAdmin, type PermUser } from "./permissions.ts";
 import type { Ctx } from "./session.ts";
 
 /** Queue work for the Actions runner. `routes_jobs.ts::enqueue`, narrowed to what is used. */
-export type Enqueue = (kind: string, params: Json, ctx: Ctx) => Promise<string | null>;
+export type Enqueue =
+  (kind: string, params: Json, ctx: Ctx) =>
+    Promise<{ id: string; dispatched: boolean } | null>;
 
 /** core/scorer.py's CRITERIA — the nine weighted criteria from scoring_weights.yaml. */
 const CRITERIA = [
@@ -260,8 +262,13 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
     };
     if (!enqueue || /^0{8}-/.test(tenantId)) return { jobId: null, warning: stale };
     try {
-      const jobId = await enqueue("rescore", { tenant_id: tenantId, uid }, ctx);
-      return jobId ? { jobId, warning: null } : { jobId: null, warning: stale };
+      const queued = await enqueue("rescore", { tenant_id: tenantId, uid }, ctx);
+      // `dispatched`, not merely an id: a job row that exists but never reached the runner
+      // leaves the score exactly as stale as no job at all, and saying otherwise is how the
+      // editor came to report a recalculation that had already failed.
+      return queued?.dispatched
+        ? { jobId: queued.id, warning: null }
+        : { jobId: null, warning: stale };
     } catch (e) {
       console.error("rescore enqueue failed", uid, e);
       return { jobId: null, warning: stale };
@@ -453,9 +460,9 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
       warnings.push(NOT_RECORDED);
     } else {
       try {
-        const jobId = await enqueue("record_decision",
+        const queued = await enqueue("record_decision",
           { tenant_id: tenantId, uid, decision, by: ctx.session.email }, ctx);
-        if (jobId) recorded = { job_id: jobId };
+        if (queued?.dispatched) recorded = { job_id: queued.id };
         else warnings.push(NOT_RECORDED);
       } catch (e) {
         console.error("record_decision enqueue failed", uid, e);
@@ -519,20 +526,18 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
     let jobId: string | null = null;
     if (enqueue && !/^0{8}-/.test(tenantId)) {
       try {
-        jobId = await enqueue("delete_rfp",
+        // `dispatched` is the whole question here. Answering 202 over a job that never
+        // reached the runner would send somebody off to watch a delete that is never going
+        // to happen. This used to need a second read of the job row, because `enqueue`
+        // returned an id whether or not it had started anything; it says so now.
+        const queued = await enqueue("delete_rfp",
           { tenant_id: tenantId, uid, by: ctx.session.email }, ctx);
+        if (queued?.dispatched) jobId = queued.id;
       } catch (e) {
         console.error("delete_rfp enqueue failed", uid, e);
       }
     }
     if (!jobId) return json(NOT_DELETED, 503);
-
-    // `enqueue` never throws: a job it could not hand to the runner comes back as an id
-    // pointing at a row already marked `failed`. For a save that is a warning to carry;
-    // here it is the whole request, and answering 202 would send somebody off to watch a
-    // job that is never going to run. Read it back and say so now.
-    const [job] = await db.service.get("web_jobs", `select=status&id=eq.${q(jobId)}&limit=1`);
-    if (!job || str(job.status) === "failed") return json(NOT_DELETED, 503);
 
     return json({
       uid,

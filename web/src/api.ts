@@ -146,6 +146,10 @@ export const requestReset = (email: string) =>
 /** A screened row, as `/pipelines/screen` projects it. Fields the projection does not yet
  *  carry are optional rather than assumed: the page renders a dash and keeps working. */
 export type ScreenRow = {
+  /** This call's own deadline has gone by — `deadlinePassed`, decided server-side so the
+   *  page does not own a second definition of "expired". The row is still counted, because
+   *  what the scan found that week is history; it just leaves the review queue. */
+  expired?: boolean;
   uid: string;
   opportunity_title: string | null;
   funding_agency: string | null;
@@ -441,7 +445,15 @@ export const fetchJob = (id: string) => call<{ job: Job }>(`/jobs/${encodeURICom
  *  so a reader can check the sums by eye. routes_phase1.ts::home says why "submitted"
  *  became `sent_to_funder` and which of its four possible meanings won. */
 export type HomeKpis = {
-  found: number; awaiting_review: number;
+  found: number;
+  /** Still OPEN and undecided. A call whose deadline has passed is not awaiting a decision
+   *  anybody can act on, so it is counted below instead. */
+  awaiting_review: number;
+  /** Undecided, deadline gone. Not a prompt — but the bar still has to add up. */
+  expired_unreviewed: number;
+  /** Every call whose deadline has passed, decided or not. Overlaps the others on
+   *  purpose: a submitted proposal still awaiting its funder is archived AND awaiting. */
+  archived: number;
   proceed: number; parked: number; declined: number; due_in_14_days: number;
   // APPLICATIONS, not calls: a proposal resubmitted to the same funder is two attempts
   // (core/records.py::submission_weight). Counting rows made the Dashboard disagree with

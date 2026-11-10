@@ -277,6 +277,20 @@ export function weekMondays(year: number): { label: string; monday: string }[] {
  * with. Those live under Funding and must not clutter the active lists. Blank and "not
  * submitted" are the only donor decisions that count as still open, which is the Python's
  * set and not a judgement made here. */
+/**
+ * Tag each row with whether its own call has closed.
+ *
+ * Computed HERE rather than in the browser so `deadlinePassed` stays the one definition —
+ * the same rule Bidding's rule 6 and the Archive ask. The Screened page needs to keep
+ * counting these rows (what the scan found that week is history, and a KPI that shrank
+ * as deadlines passed would rewrite it) while keeping them OUT of the review queue, which
+ * is a list of decisions somebody can still act on.
+ */
+function tagExpired(rows: Json[]): Json[] {
+  const today = new Date().toISOString().slice(0, 10);
+  return rows.map((r) => ({ ...r, expired: deadlinePassed(r, today) }));
+}
+
 function dropConcluded(rows: Json[]): Json[] {
   return rows.filter((r) => {
     const dd = norm(r.donor_decision);
@@ -339,9 +353,24 @@ export function liveProceeds(rows: Json[], today: string): Json[] {
     if (ps === "completed" || ps === "discontinued") return false;
 
     // 6. No deadline, or one that has not passed.
-    const dl = str(r.call_submission_deadline).slice(0, 10);
-    return dl === "" || dl >= today;
+    return !deadlinePassed(r, today);
   });
+}
+
+/**
+ * Has this call's own deadline gone by? Rule 6 of the Bidding stage, lifted out so the
+ * Archive can ask the same question rather than a second one that agrees today and drifts
+ * later.
+ *
+ * A MISSING DEADLINE IS NOT AN EXPIRED ONE, and that is the whole subtlety. Plenty of
+ * rows carry no `call_submission_deadline` at all — a rolling fund, or a call whose date
+ * was never extracted — and treating absence as "past" would sweep live opportunities
+ * into the Archive on the strength of a field nobody filled in. Bidding has always read
+ * it this way; the Archive now reads it the same way.
+ */
+export function deadlinePassed(row: Json, today: string): boolean {
+  const dl = str(row.call_submission_deadline).slice(0, 10);
+  return dl !== "" && dl < today;
 }
 
 /**
@@ -588,7 +617,7 @@ export function createPipelineRoutes(db: Db) {
         `select=${SCREEN_FIELDS}&review_week=eq.${q(week)}`,
         "uid",
       );
-      return gzipped(req, json({ week, rows: dropConcluded(rows) }));
+      return gzipped(req, json({ week, rows: tagExpired(dropConcluded(rows)) }));
     }
 
     if (!from || !to) {
@@ -616,7 +645,9 @@ export function createPipelineRoutes(db: Db) {
       `select=${SCREEN_FIELDS}&review_week=in.(${encodeURI(list)})`,
       "uid",
     );
-    return gzipped(req, json({ from, to, weeks: labels, rows: dropConcluded(rows) }));
+    return gzipped(req, json({
+      from, to, weeks: labels, rows: tagExpired(dropConcluded(rows)),
+    }));
   }
 
   /** Summary: rows for a date window, aggregated in the browser.
