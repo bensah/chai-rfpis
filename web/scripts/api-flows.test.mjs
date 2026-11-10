@@ -2139,3 +2139,35 @@ test("the archive is reachable, and counts what it lists", async () => {
   assert.equal(bucket.count, home.body.archived, "Settings and the list show one number");
   assert.equal(list.body.rows.filter((r) => r.buckets.includes("archived")).length, 2);
 });
+
+test("Screened keeps counting a closed call but stops queueing it", async () => {
+  // The owner's rule applied to the stage, not just the Dashboard. The two halves pull in
+  // opposite directions and both matter: the KPI is history (what the scan found that
+  // week) and must not shrink as deadlines pass, while the queue is work somebody can
+  // still do and must not ask for a decision nobody can make.
+  const { call, signIn, db } = setup();
+  const past = new Date(Date.now() - 20 * 864e5).toISOString().slice(0, 10);
+  const future = new Date(Date.now() + 20 * 864e5).toISOString().slice(0, 10);
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    { uid: "S1", tenant_id: T1, review_week: "Week 45 (2 Nov - 8 Nov)", is_duplicate: false,
+      auto_recommendation: "Proceed", call_submission_deadline: future },
+    { uid: "S2", tenant_id: T1, review_week: "Week 45 (2 Nov - 8 Nov)", is_duplicate: false,
+      auto_recommendation: "Proceed", call_submission_deadline: past },
+    // No deadline: not expired, so it stays in the queue.
+    { uid: "S3", tenant_id: T1, review_week: "Week 45 (2 Nov - 8 Nov)", is_duplicate: false,
+      auto_recommendation: "Park" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/screen?week=Week%2045%20(2%20Nov%20-%208%20Nov)",
+    null, col.token);
+  assert.equal(r.status, 200);
+
+  // Every row is still returned — the week's record is intact…
+  assert.deepEqual(r.body.rows.map((x) => x.uid).sort(), ["S1", "S2", "S3"]);
+  // …each tagged by the SERVER, so the page owns no definition of "expired".
+  const by = Object.fromEntries(r.body.rows.map((x) => [x.uid, x.expired]));
+  assert.equal(by.S1, false);
+  assert.equal(by.S2, true);
+  assert.equal(by.S3, false, "an absent deadline is not a passed one");
+});

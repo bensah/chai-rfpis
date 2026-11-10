@@ -146,6 +146,10 @@ export const requestReset = (email: string) =>
 /** A screened row, as `/pipelines/screen` projects it. Fields the projection does not yet
  *  carry are optional rather than assumed: the page renders a dash and keeps working. */
 export type ScreenRow = {
+  /** This call's own deadline has gone by — `deadlinePassed`, decided server-side so the
+   *  page does not own a second definition of "expired". The row is still counted, because
+   *  what the scan found that week is history; it just leaves the review queue. */
+  expired?: boolean;
   uid: string;
   opportunity_title: string | null;
   funding_agency: string | null;
