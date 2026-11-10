@@ -96,8 +96,20 @@ export function createJobRoutes(db: Db, dispatch: Dispatch | null) {
    * Never throws. A job that could not be dispatched is recorded as failed rather than
    * lost, and the caller decides whether that matters: it is fatal to `POST /jobs`, whose
    * whole purpose was to start it, and not to a save, which succeeded.
+   *
+   * WHICH IS WHY IT RETURNS `dispatched` AND NOT JUST AN ID. For a long time it returned
+   * the id either way, so no caller could actually make that decision — and the one that
+   * tried, `deleteRfp`, had to re-read the job row to find out. The editor's save could
+   * not, and told people "the score is being recalculated" over a job that had already
+   * failed. Measured live on 2026-11-10, with the dispatch token missing: four jobs failed
+   * and the UI reported two of them as queued.
+   *
+   * Returns null only for an unknown kind — "nothing was created", which is different
+   * from "created but not started".
    */
-  async function enqueue(kind: string, params: Json, ctx: Ctx): Promise<string | null> {
+  async function enqueue(
+    kind: string, params: Json, ctx: Ctx,
+  ): Promise<{ id: string; dispatched: boolean } | null> {
     const spec = KINDS[kind];
     if (!spec) return null;
     const tenantId = db.scopeTid(ctx.scope);
@@ -111,7 +123,7 @@ export function createJobRoutes(db: Db, dispatch: Dispatch | null) {
         status: "failed", message: "Background jobs are not configured on this server.",
         finished_at: new Date().toISOString(),
       });
-      return id;
+      return { id, dispatched: false };
     }
     try {
       await dispatch(id, spec.group(ctx, id));
@@ -122,8 +134,9 @@ export function createJobRoutes(db: Db, dispatch: Dispatch | null) {
         status: "failed", message: "Could not start the background job. Try again.",
         finished_at: new Date().toISOString(),
       });
+      return { id, dispatched: false };
     }
-    return id;
+    return { id, dispatched: true };
   }
 
   async function create(req: Request, ctx: Ctx): Promise<Response> {
@@ -134,9 +147,13 @@ export function createJobRoutes(db: Db, dispatch: Dispatch | null) {
     const u = ctx.user as PermUser;
     if (!(await spec.allowed(u, ctx))) return json({ error: "You don't have access to this action." }, 403);
     const params = b.params && typeof b.params === "object" && !Array.isArray(b.params) ? b.params : {};
-    const id = await enqueue(kind, params as Json, ctx);
-    if (!id) return json({ error: `Unknown job kind '${kind}'.` }, 400);
-    return json({ job: await read(id) }, 202);
+    const queued = await enqueue(kind, params as Json, ctx);
+    if (!queued) return json({ error: `Unknown job kind '${kind}'.` }, 400);
+    // Starting it WAS the request, so a job that never reached the runner is a failure of
+    // this call, not a footnote on it. The row is returned either way, so the caller can
+    // still see its status and message rather than being told only that something broke.
+    const job = await read(queued.id);
+    return json({ job }, queued.dispatched ? 202 : 503);
   }
 
   async function read(id: string): Promise<Json | null> {
