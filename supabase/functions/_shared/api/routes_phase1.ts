@@ -218,7 +218,12 @@ export function createPhase1Routes(db: Db) {
     return json({
       // ── Found ──────────────────────────────────────────────────────────────
       found: n("found"),
+      // Still OPEN and undecided — the prompt. What expired before anybody looked is
+      // counted separately rather than folded in, so the decision bar still adds up to
+      // `found` and nobody is asked for a decision they can no longer act on.
       awaiting_review: n("awaiting_review"),
+      expired_unreviewed: n("expired_unreviewed"),
+      archived: n("archived"),
       // ── Decided ────────────────────────────────────────────────────────────
       proceed: n("proceed"),
       parked: n("parked"),

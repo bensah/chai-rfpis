@@ -2065,3 +2065,77 @@ test("Reviewed is the same set counted from either side", async () => {
   assert.equal(reviewed.count, home.body.proceed + home.body.parked + home.body.declined);
   assert.equal(reviewed.count, 3);
 });
+
+// ── The Archive ──────────────────────────────────────────────────────────────
+
+test("an expired call stops asking for a decision but is not hidden", async () => {
+  // The owner's rule, 2026-11-10: "flagging undecided should only be for those calls that
+  // are still live and open". The danger in acting on it is archiving work that is still
+  // live, so these assert both halves.
+  const { call, signIn, db } = setup();
+  const today = new Date().toISOString().slice(0, 10);
+  const past = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+  const future = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    { uid: "E1", tenant_id: T1, opportunity_title: "Open, undecided",
+      call_submission_deadline: future, is_duplicate: false },
+    { uid: "E2", tenant_id: T1, opportunity_title: "Expired, never looked at",
+      call_submission_deadline: past, is_duplicate: false },
+    { uid: "E3", tenant_id: T1, opportunity_title: "Expired, declined",
+      call_submission_deadline: past, decision: "Decline", is_duplicate: false },
+    // No deadline at all: an absent date is not a passed one.
+    { uid: "E4", tenant_id: T1, opportunity_title: "Rolling, no deadline",
+      is_duplicate: false },
+    // Submitted before the deadline, funder has not answered. Still live work.
+    { uid: "E5", tenant_id: T1, opportunity_title: "With the funder", decision: "Proceed",
+      call_submission_deadline: past, progress_status: "Completed", submissions: 1,
+      donor_decision: "Under Review", date_completed: today, is_duplicate: false },
+  );
+
+  const col = await signIn("col@x.org", "col pass 1");
+  const home = await call("GET", "/home", null, col.token);
+  const list = await call("GET", "/opportunities/list", null, col.token);
+  const inB = (k) => list.body.rows.filter((r) => r.buckets.includes(k)).map((r) => r.uid).sort();
+
+  // The undecided calls that are still OPEN are the prompt — which includes the rolling
+  // one with no deadline at all. It has not expired; there is simply no date to pass.
+  assert.deepEqual(inB("awaiting_review"), ["E1", "E4"]);
+  assert.equal(home.body.awaiting_review, 2);
+  // The one that expired unlooked-at is counted, separately, so the bar still adds up.
+  assert.deepEqual(inB("expired_unreviewed"), ["E2"]);
+  assert.equal(home.body.found,
+    home.body.proceed + home.body.parked + home.body.declined
+    + home.body.awaiting_review + home.body.expired_unreviewed,
+    "the decision bar must still partition every call found");
+
+  // Everything past its deadline is archived, decided or not…
+  assert.deepEqual(inB("archived"), ["E2", "E3", "E5"]);
+  // …and a call with no deadline is NOT, because an absent date is not a passed one.
+  assert.ok(!inB("archived").includes("E4"));
+
+  // THE ONE THAT MATTERS: archiving describes the call, not our work on it. E5's deadline
+  // has gone, but the proposal is with a funder — it must still appear as awaiting an
+  // answer, or an exclusive archive would bury live applications.
+  assert.ok(inB("awaiting_answer").includes("E5"),
+    "a submitted proposal stays live even though its call has closed");
+  assert.equal(home.body.awaiting_answer, 1);
+});
+
+test("the archive is reachable, and counts what it lists", async () => {
+  const { call, signIn, db } = setup();
+  const past = new Date(Date.now() - 10 * 864e5).toISOString().slice(0, 10);
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    { uid: "A1", tenant_id: T1, call_submission_deadline: past, is_duplicate: false },
+    { uid: "A2", tenant_id: T1, call_submission_deadline: past, decision: "Park", is_duplicate: false },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const home = await call("GET", "/home", null, col.token);
+  const list = await call("GET", "/opportunities/list", null, col.token);
+  const bucket = list.body.buckets.find((b) => b.key === "archived");
+  assert.ok(bucket, "the archive is a bucket the Triage page can open");
+  assert.equal(bucket.count, 2);
+  assert.equal(bucket.count, home.body.archived, "Settings and the list show one number");
+  assert.equal(list.body.rows.filter((r) => r.buckets.includes("archived")).length, 2);
+});

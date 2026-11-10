@@ -339,9 +339,24 @@ export function liveProceeds(rows: Json[], today: string): Json[] {
     if (ps === "completed" || ps === "discontinued") return false;
 
     // 6. No deadline, or one that has not passed.
-    const dl = str(r.call_submission_deadline).slice(0, 10);
-    return dl === "" || dl >= today;
+    return !deadlinePassed(r, today);
   });
+}
+
+/**
+ * Has this call's own deadline gone by? Rule 6 of the Bidding stage, lifted out so the
+ * Archive can ask the same question rather than a second one that agrees today and drifts
+ * later.
+ *
+ * A MISSING DEADLINE IS NOT AN EXPIRED ONE, and that is the whole subtlety. Plenty of
+ * rows carry no `call_submission_deadline` at all — a rolling fund, or a call whose date
+ * was never extracted — and treating absence as "past" would sweep live opportunities
+ * into the Archive on the strength of a field nobody filled in. Bidding has always read
+ * it this way; the Archive now reads it the same way.
+ */
+export function deadlinePassed(row: Json, today: string): boolean {
+  const dl = str(row.call_submission_deadline).slice(0, 10);
+  return dl !== "" && dl < today;
 }
 
 /**

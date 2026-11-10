@@ -93,8 +93,8 @@ export default function HomePage({ user }: { user: User }) {
           <Tile label="Calls found" value={k?.found ?? dash} note="Non-duplicate"
             to={rowsOf("found")} title="Show every call found" />
           <Tile label="Awaiting review" value={k?.awaiting_review ?? dash}
-            note="No decision yet" to={rowsOf("awaiting_review")}
-            title="Show the calls nobody has decided on yet" />
+            note="Still open, no decision" to={rowsOf("awaiting_review")}
+            title="Show the open calls nobody has decided on yet" />
           <Tile label="Applications sent" value={k?.applications_sent ?? dash}
             note="One call can be sent twice" to={rowsOf("applications_sent")}
             title="Show everything that reached a funder" />
@@ -126,6 +126,11 @@ export default function HomePage({ user }: { user: User }) {
                     to: rowsOf("declined") },
                   { label: "Not yet reviewed", value: k.awaiting_review,
                     className: "bg-ink-300", to: rowsOf("awaiting_review") },
+                  // Expired before anybody looked. Its own segment rather than folded into
+                  // the one above, because the two call for opposite things: one is work
+                  // waiting to be done, the other is work that can no longer be done.
+                  { label: "Expired unreviewed", value: k.expired_unreviewed,
+                    className: "bg-ink-200", to: rowsOf("expired_unreviewed") },
                 ]}
               />
             )}
