@@ -174,11 +174,29 @@ One setting on **Cloudflare Pages**, in its own dashboard:
 
 Still possible, and still the way to put a function change on the project without a push to
 `main` — testing a branch against the real project, or recovering when the workflow itself
-cannot run:
+cannot run.
+
+**Not from `D:\Apps\chai-rfpis`.** The CLI uploads the files in the checkout you run it
+from, not a git ref. That tree runs well ahead of `origin/main` and is reliably dirty with
+several sessions' work, so a deploy from there publishes every unreviewed commit — and
+anything uncommitted — straight to production. To recover the live site, deploy the ref the
+live frontend was actually built from, in a throwaway checkout:
 
 ```bash
-npx --yes supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api --yes
+git worktree add --detach .claude/worktrees/deploy-origin-main origin/main
 ```
+
+```bash
+cd .claude/worktrees/deploy-origin-main && npx --yes supabase@latest functions deploy rfpis-api --remote=hbpsoslcrasvakbxwkns --no-verify-jwt --use-api --yes
+```
+
+```bash
+cd D:/Apps/chai-rfpis && git worktree remove .claude/worktrees/deploy-origin-main --force
+```
+
+`--remote=<ref>` needs the equals sign, and the throwaway checkout needs the flag at all:
+it is not linked to a project the way your main checkout is. To deploy a *branch* rather
+than recover, run the same command in that branch's own worktree.
 
 Both `--yes` are required whenever nothing is attached to a terminal — and that includes an
 agent running this for you, not just CI. CLI 3.1.0 asks "Confirmation required: Deploy 1
