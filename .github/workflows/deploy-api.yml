@@ -49,11 +49,34 @@ name: Deploy API
 #                      → New repository secret (NOT an environment or Dependabot secret)
 #   Value              a Supabase personal access token, from
 #                      https://supabase.com/dashboard/account/tokens
-#   Scope              it inherits the full account access of whoever creates it — Supabase
-#                      access tokens cannot be narrowed to one project, so create it from
-#                      an account that administers only what it needs to, name it for this
-#                      repo so it can be revoked without hunting, and revoke it there if
-#                      this repo is ever handed on.
+#   Scope              narrow it twice over. Resource access -> Project -> the CHAI org ->
+#                      RFPIS Project, so the token reaches one project and not the account.
+#                      Then drop the "Full access" preset and set every permission to None
+#                      except these two:
+#
+#                        Application services -> Edge Functions     Read-write
+#                        Project -> Project Settings                Read
+#
+#                      Three of the Nones are worth being deliberate about:
+#
+#                        * Edge Function Secrets. The section above promises this workflow
+#                          does not touch RFPIS_JWT_SECRET and friends. Leaving this at
+#                          None makes that a property of the token rather than a promise
+#                          in a comment — CI then cannot rewrite them even by mistake.
+#                        * API Key Secrets. Read there yields the service-role key, which
+#                          bypasses RLS on a database holding real client data.
+#                        * The whole Database category: SQL access, migrations, backups.
+#                          Migrations here are hand-numbered and applied to a shared,
+#                          hosted, live database; CI has no business holding that.
+#
+#                      Name the token for this repo so it can be revoked without hunting.
+#   Expiry             THE CURRENT TOKEN EXPIRES 2027-02-07 (90 days, issued 2026-11-09).
+#                      On that date API deploys start failing while Cloudflare carries on
+#                      shipping the frontend — the exact drift this file exists to
+#                      prevent, arriving on a timer. Regenerate at the same scope and
+#                      update the secret before then. The deploy step prints this date on
+#                      any failure, so a February breakage explains itself rather than
+#                      sending someone back through the function's code.
 #
 # Until that secret exists the job fails loudly on its first step with instructions,
 # rather than reaching the CLI and failing somewhere less legible.
@@ -129,12 +152,32 @@ jobs:
           node-version: "20"
 
       - name: Deploy rfpis-api
+        id: deploy
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         # Character for character the command in web/README.md's "Deploy (free tiers)",
-        # plus --project-ref (see SUPABASE_PROJECT_REF above). Keep the two spellings
+        # plus --remote (see SUPABASE_PROJECT_REF above). Keep the two spellings
         # identical, @latest included, so the documented manual fallback and what CI
         # actually runs cannot drift apart.
+        #
+        # THE TWO --yes ARE LOAD-BEARING, and the first run of this workflow proved it by
+        # failing: CLI 3.1.0 asks "Confirmation required: Deploy 1 Function" and, finding
+        # stdout is not a terminal, exits 1 having changed nothing. Cloudflare had already
+        # shipped the frontend from that same commit, so the live site spent the gap in
+        # exactly the split state this file exists to prevent. `npx --yes` answers npx's
+        # own install prompt; the trailing `--yes` answers the CLI's. Neither is optional
+        # in CI and removing either reintroduces that outage silently — the job does not
+        # fail slowly, it fails before it has deployed anything.
+        #
+        # --remote replaces --project-ref, which the same run warned is "deprecated and
+        # will be removed in v4". This pins @latest, so v4 arrives here on Supabase's
+        # schedule rather than ours; the flag was changed at the first warning rather than
+        # at the breakage.
+        #
+        # IT MUST BE --remote=<ref>, WITH THE EQUALS SIGN. Written `--remote "<ref>"` the
+        # CLI treats the ref as an operand and refuses: "looks like a project ref ... To
+        # keep it as an operand, put --remote last". That cost this workflow a second
+        # failed run, in the same window as the first, for a space.
         #
         # --no-verify-jwt is REQUIRED and must never be dropped. The browser sends an RFPIS
         # session token that is deliberately NOT a Supabase JWT — it is signed with a key
@@ -142,7 +185,41 @@ jobs:
         # own JWT gate in front, every request is rejected before the handler sees it and
         # the whole app fails to sign in.
         run: |
-          npx supabase@latest functions deploy rfpis-api \
-            --project-ref "$SUPABASE_PROJECT_REF" \
+          npx --yes supabase@latest functions deploy rfpis-api \
+            --remote="$SUPABASE_PROJECT_REF" \
             --no-verify-jwt \
-            --use-api
+            --use-api \
+            --yes
+
+      # A failed deploy is not a neutral event: Cloudflare has already rebuilt the frontend
+      # from this same commit, so the site is now in the split state this workflow exists to
+      # prevent. Say so, and name the most likely cause — the access token has a fixed life
+      # and will expire long before anything else here goes wrong.
+      - name: Explain the failure
+        if: failure() && steps.deploy.outcome == 'failure'
+        run: |
+          echo "::error::rfpis-api was NOT deployed, but Cloudflare Pages has already"
+          echo "rebuilt the frontend from this commit. The live site is now a new frontend"
+          echo "against an older API: expect tiles reading '—' and a funnel reading NaN on"
+          echo "any page whose route or response shape changed in this push."
+          echo
+          echo "Most likely cause, if the log above shows an authentication or 401 error:"
+          echo "the Supabase access token expired. It was issued 2026-11-09 with a 90-day"
+          echo "life, so it expires 2027-02-07. Regenerate it at the same scope — RFPIS"
+          echo "project only, Edge Functions read-write, Project Settings read, everything"
+          echo "else None — then replace the secret and re-run this workflow:"
+          echo "  gh secret set SUPABASE_ACCESS_TOKEN --repo bensah/chai-rfpis"
+          echo
+          echo
+          echo 'To restore the site immediately, deploy by hand -- but NOT from'
+          echo 'D:\Apps\chai-rfpis. The CLI uploads the files in the checkout you run it'
+          echo 'from, not a git ref. That tree runs well ahead of origin/main and carries'
+          echo 'other sessions uncommitted work, so deploying there would publish all of'
+          echo 'it to production. Use a throwaway checkout of the ref the live frontend'
+          echo 'was built from:'
+          echo '  git worktree add --detach .claude/worktrees/deploy-origin-main origin/main'
+          echo '  cd .claude/worktrees/deploy-origin-main'
+          echo '  npx --yes supabase@latest functions deploy rfpis-api \'
+          echo '      --remote=hbpsoslcrasvakbxwkns --no-verify-jwt --use-api --yes'
+          echo '  cd D:/Apps/chai-rfpis'
+          echo '  git worktree remove .claude/worktrees/deploy-origin-main --force'

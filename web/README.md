@@ -129,7 +129,7 @@ for an ordinary change.
 | Half | Deployed by | On | From |
 |---|---|---|---|
 | Frontend | Cloudflare Pages, connected to the GitHub repo | every push to `main` | `web/`, `npm run build`, output `dist` |
-| API — Edge Function `rfpis-api` | GitHub Actions, [`.github/workflows/deploy-api.yml`](../.github/workflows/deploy-api.yml) | a push to `main` that touches `supabase/functions/**` | `npx supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api` |
+| API — Edge Function `rfpis-api` | GitHub Actions, [`.github/workflows/deploy-api.yml`](../.github/workflows/deploy-api.yml) | a push to `main` that touches `supabase/functions/**` | `npx --yes supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api --yes` |
 
 The API half used to be the manual one, and that asymmetry is what broke the live site on
 2026-11-09: the function was several commits behind the frontend, so the rail asked for a
@@ -155,9 +155,16 @@ workflow fails on its first step with these instructions rather than half-deploy
 
 - **`SUPABASE_ACCESS_TOKEN`** — a Supabase personal access token from
   <https://supabase.com/dashboard/account/tokens>, added at GitHub → this repo → Settings →
-  Secrets and variables → Actions → New **repository** secret. Supabase access tokens carry
-  the full account access of whoever creates them and cannot be narrowed to one project, so
-  name it for this repo and revoke it there when it is no longer needed.
+  Secrets and variables → Actions → New **repository** secret. Scope the token to the RFPIS
+  project alone (Resource access → Project), then drop the "Full access" preset and set
+  every permission to None except **Application services → Edge Functions: Read-write** and
+  **Project → Project Settings: Read**. Leaving *Edge Function Secrets* at None is what
+  makes "CI does not touch the function's secrets" true of the token and not just of the
+  workflow; leaving *API Key Secrets* and the whole *Database* category at None keeps the
+  service-role key and the migration surface away from a public repo's CI.
+  Give it the longest expiry offered: the dashboard defaults to 7 days, and an expired
+  token stops API deploys while Cloudflare keeps shipping the frontend, which is the drift
+  this workflow exists to prevent.
 
 One setting on **Cloudflare Pages**, in its own dashboard:
 `VITE_API_BASE=https://<project-ref>.supabase.co/functions/v1/rfpis-api`.
@@ -167,11 +174,34 @@ One setting on **Cloudflare Pages**, in its own dashboard:
 
 Still possible, and still the way to put a function change on the project without a push to
 `main` — testing a branch against the real project, or recovering when the workflow itself
-cannot run:
+cannot run.
+
+**Not from `D:\Apps\chai-rfpis`.** The CLI uploads the files in the checkout you run it
+from, not a git ref. That tree runs well ahead of `origin/main` and is reliably dirty with
+several sessions' work, so a deploy from there publishes every unreviewed commit — and
+anything uncommitted — straight to production. To recover the live site, deploy the ref the
+live frontend was actually built from, in a throwaway checkout:
 
 ```bash
-npx supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api
+git worktree add --detach .claude/worktrees/deploy-origin-main origin/main
 ```
+
+```bash
+cd .claude/worktrees/deploy-origin-main && npx --yes supabase@latest functions deploy rfpis-api --remote=hbpsoslcrasvakbxwkns --no-verify-jwt --use-api --yes
+```
+
+```bash
+cd D:/Apps/chai-rfpis && git worktree remove .claude/worktrees/deploy-origin-main --force
+```
+
+`--remote=<ref>` needs the equals sign, and the throwaway checkout needs the flag at all:
+it is not linked to a project the way your main checkout is. To deploy a *branch* rather
+than recover, run the same command in that branch's own worktree.
+
+Both `--yes` are required whenever nothing is attached to a terminal — and that includes an
+agent running this for you, not just CI. CLI 3.1.0 asks "Confirmation required: Deploy 1
+Function", finds it cannot ask, and exits having changed nothing. The first CI run of
+`deploy-api.yml` failed exactly there while Cloudflare shipped the frontend regardless.
 
 `--no-verify-jwt` is required, in CI and here: the function checks its own session tokens,
 which are deliberately not Supabase JWTs. With Supabase's gate in front, every request is
