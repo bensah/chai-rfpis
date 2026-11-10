@@ -277,6 +277,20 @@ export function weekMondays(year: number): { label: string; monday: string }[] {
  * with. Those live under Funding and must not clutter the active lists. Blank and "not
  * submitted" are the only donor decisions that count as still open, which is the Python's
  * set and not a judgement made here. */
+/**
+ * Tag each row with whether its own call has closed.
+ *
+ * Computed HERE rather than in the browser so `deadlinePassed` stays the one definition —
+ * the same rule Bidding's rule 6 and the Archive ask. The Screened page needs to keep
+ * counting these rows (what the scan found that week is history, and a KPI that shrank
+ * as deadlines passed would rewrite it) while keeping them OUT of the review queue, which
+ * is a list of decisions somebody can still act on.
+ */
+function tagExpired(rows: Json[]): Json[] {
+  const today = new Date().toISOString().slice(0, 10);
+  return rows.map((r) => ({ ...r, expired: deadlinePassed(r, today) }));
+}
+
 function dropConcluded(rows: Json[]): Json[] {
   return rows.filter((r) => {
     const dd = norm(r.donor_decision);
@@ -603,7 +617,7 @@ export function createPipelineRoutes(db: Db) {
         `select=${SCREEN_FIELDS}&review_week=eq.${q(week)}`,
         "uid",
       );
-      return gzipped(req, json({ week, rows: dropConcluded(rows) }));
+      return gzipped(req, json({ week, rows: tagExpired(dropConcluded(rows)) }));
     }
 
     if (!from || !to) {
@@ -631,7 +645,9 @@ export function createPipelineRoutes(db: Db) {
       `select=${SCREEN_FIELDS}&review_week=in.(${encodeURI(list)})`,
       "uid",
     );
-    return gzipped(req, json({ from, to, weeks: labels, rows: dropConcluded(rows) }));
+    return gzipped(req, json({
+      from, to, weeks: labels, rows: tagExpired(dropConcluded(rows)),
+    }));
   }
 
   /** Summary: rows for a date window, aggregated in the browser.
