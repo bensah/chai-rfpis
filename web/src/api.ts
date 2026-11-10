@@ -441,7 +441,15 @@ export const fetchJob = (id: string) => call<{ job: Job }>(`/jobs/${encodeURICom
  *  so a reader can check the sums by eye. routes_phase1.ts::home says why "submitted"
  *  became `sent_to_funder` and which of its four possible meanings won. */
 export type HomeKpis = {
-  found: number; awaiting_review: number;
+  found: number;
+  /** Still OPEN and undecided. A call whose deadline has passed is not awaiting a decision
+   *  anybody can act on, so it is counted below instead. */
+  awaiting_review: number;
+  /** Undecided, deadline gone. Not a prompt — but the bar still has to add up. */
+  expired_unreviewed: number;
+  /** Every call whose deadline has passed, decided or not. Overlaps the others on
+   *  purpose: a submitted proposal still awaiting its funder is archived AND awaiting. */
+  archived: number;
   proceed: number; parked: number; declined: number; due_in_14_days: number;
   // APPLICATIONS, not calls: a proposal resubmitted to the same funder is two attempts
   // (core/records.py::submission_weight). Counting rows made the Dashboard disagree with

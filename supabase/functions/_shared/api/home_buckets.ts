@@ -25,7 +25,9 @@
 import type { Json } from "./jwt.ts";
 import { str } from "./http.ts";
 import { ledgerGap, submissionWeight } from "./money.ts";
-import { liveProceeds, selectOutcomeRows, selectSubmittedRows } from "./routes_pipelines.ts";
+import {
+  deadlinePassed, liveProceeds, selectOutcomeRows, selectSubmittedRows,
+} from "./routes_pipelines.ts";
 
 const norm = (v: unknown) => str(v).trim().toLowerCase();
 /** routes_phase1's `truthy`, not `=== true`.
@@ -77,9 +79,40 @@ export const BUCKETS: Bucket[] = [
     select: (rows) => rows.filter(notDuplicate),
   },
   {
+    // STILL OPEN, which is the owner's rule (2026-11-10): "flagging undecided should only
+    // be for those calls that are still live and open". A call whose deadline went by
+    // months ago is not work anybody can do, and listing it as awaiting a decision asks
+    // for one that cannot be acted on. It moves to `expired_unreviewed` instead, so the
+    // count of what was never looked at is still there to be read — just not as a prompt.
     key: "awaiting_review", label: "Awaiting review", kind: "rows",
-    rule: "Found and scored, but nobody has recorded a decision yet.",
-    select: (rows) => rows.filter((r) => notDuplicate(r) && norm(r.decision) === ""),
+    rule: "Still open, and nobody has recorded a decision yet.",
+    select: (rows, today) => rows.filter((r) =>
+      notDuplicate(r) && norm(r.decision) === "" && !deadlinePassed(r, today)),
+  },
+  {
+    key: "expired_unreviewed", label: "Expired unreviewed", kind: "rows",
+    rule: "The deadline passed before anybody decided. Nothing to do, but worth knowing.",
+    select: (rows, today) => rows.filter((r) =>
+      notDuplicate(r) && norm(r.decision) === "" && deadlinePassed(r, today)),
+  },
+  {
+    /**
+     * THE ARCHIVE. Every call whose deadline has gone by, decided or not — the owner's
+     * ask, in their words: "move all deadline expired rfps to Archive whether decision is
+     * taken or not".
+     *
+     * IT HIDES NOTHING, because a row belongs to as many buckets as describe it. A
+     * proposal submitted before the deadline and still with the funder is archived AND
+     * awaiting an answer, so it keeps appearing under `awaiting_answer` and on the
+     * Submitted stage. Archiving is a statement about the CALL — its door is shut — not
+     * about our work on it, and an exclusive bucket would have quietly buried live
+     * applications the moment their deadline passed.
+     *
+     * A call with no deadline is never archived: see `deadlinePassed`.
+     */
+    key: "archived", label: "Archived", kind: "rows",
+    rule: "The call's deadline has passed. Kept for the record; no longer asking for a decision.",
+    select: (rows, today) => rows.filter((r) => notDuplicate(r) && deadlinePassed(r, today)),
   },
   {
     key: "reviewed", label: "Reviewed", kind: "rows",
