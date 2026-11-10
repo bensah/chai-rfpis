@@ -129,7 +129,7 @@ for an ordinary change.
 | Half | Deployed by | On | From |
 |---|---|---|---|
 | Frontend | Cloudflare Pages, connected to the GitHub repo | every push to `main` | `web/`, `npm run build`, output `dist` |
-| API — Edge Function `rfpis-api` | GitHub Actions, [`.github/workflows/deploy-api.yml`](../.github/workflows/deploy-api.yml) | a push to `main` that touches `supabase/functions/**` | `npx supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api` |
+| API — Edge Function `rfpis-api` | GitHub Actions, [`.github/workflows/deploy-api.yml`](../.github/workflows/deploy-api.yml) | a push to `main` that touches `supabase/functions/**` | `npx --yes supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api --yes` |
 
 The API half used to be the manual one, and that asymmetry is what broke the live site on
 2026-11-09: the function was several commits behind the frontend, so the rail asked for a
@@ -177,8 +177,13 @@ Still possible, and still the way to put a function change on the project withou
 cannot run:
 
 ```bash
-npx supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api
+npx --yes supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api --yes
 ```
+
+Both `--yes` are required whenever nothing is attached to a terminal — and that includes an
+agent running this for you, not just CI. CLI 3.1.0 asks "Confirmation required: Deploy 1
+Function", finds it cannot ask, and exits having changed nothing. The first CI run of
+`deploy-api.yml` failed exactly there while Cloudflare shipped the frontend regardless.
 
 `--no-verify-jwt` is required, in CI and here: the function checks its own session tokens,
 which are deliberately not Supabase JWTs. With Supabase's gate in front, every request is
