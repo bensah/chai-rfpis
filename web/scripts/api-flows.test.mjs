@@ -643,8 +643,9 @@ test("recording a decision stamps it and queues what the scan needs", async () =
   assert.equal(jobs[0].status, "dispatched");
   assert.deepEqual(jobs[0].params,
     { tenant_id: T1, uid: "R1", decision: "Decline", by: "col@x.org" });
-  // Its own group, so a decision does not wait behind a whole-tenant re-score.
-  assert.deepEqual(dispatched.map((d) => d.group), [`decision-${T1}`]);
+  // Its own group, so a decision does not wait behind a whole-tenant re-score — and keyed
+  // by ROW, so decisions on different rows cannot cancel each other's pending run.
+  assert.deepEqual(dispatched.map((d) => d.group), [`decision-${T1}-R1`]);
 });
 
 test("a decision the app does not offer is refused, and named", async () => {
@@ -695,8 +696,9 @@ test("deleting an opportunity queues the removal and removes nothing itself", as
   assert.deepEqual(jobs[0].params, { tenant_id: T2, uid: "DEL-1", by: "admin@x.org" },
     "the runner is given the tenant explicitly — it refuses work it cannot scope");
   // The decision group, not one of its own: a delete and a decision on the same row both
-  // write rfp_seen, and the delete ends by removing the row the other is reading.
-  assert.deepEqual(dispatched.map((d) => d.group), [`decision-${T2}`]);
+  // write rfp_seen, and the delete ends by removing the row the other is reading. Same
+  // ROW, same group — which is the collision; different rows are independent.
+  assert.deepEqual(dispatched.map((d) => d.group), [`decision-${T2}-DEL-1`]);
 });
 
 test("only an admin can delete, and the refusal reveals nothing", async () => {
@@ -1075,8 +1077,9 @@ test("saving an RFP queues the re-score that owns its score", async () => {
   // Passed explicitly: the runner refuses a re-score it cannot scope, and scoring one
   // tenant's rows against another's profile is wrong in a way nothing downstream can see.
   assert.equal(jobs[0].params.tenant_id, T1);
-  assert.deepEqual(dispatched.map((d) => d.group), [`rescore-${T1}`],
-    "one group per tenant, so a save queued mid-run waits rather than racing it");
+  assert.deepEqual(dispatched.map((d) => d.group), [`rescore-${T1}-R1`],
+    "one group per ROW: two re-scores of one row write the same number, so the race was "
+    + "never the hazard — the cancelled pending run was");
 
   // And a save that only records what the team is doing costs no run at all.
   const w = await call("PATCH", "/pipelines/rfp/R1",
@@ -2170,4 +2173,52 @@ test("Screened keeps counting a closed call but stops queueing it", async () => 
   assert.equal(by.S1, false);
   assert.equal(by.S2, true);
   assert.equal(by.S3, false, "an absent deadline is not a passed one");
+});
+
+// ── Concurrency groups ───────────────────────────────────────────────────────
+
+test("two rows never share a concurrency group, one row always does", async () => {
+  // GitHub holds ONE pending run per group: a third dispatch into a busy group cancels
+  // the second rather than queueing behind it, leaving the job `queued` for ever with
+  // nothing to say so. Measured live on 2026-11-10 — three decisions dispatched, two ran,
+  // one stranded, which is a lost tombstone.
+  //
+  // So the group must be as narrow as the hazard, and the hazard is per ROW: a delete and
+  // a decision on the same row write the same two tables and the delete removes the row
+  // out from under the other.
+  const { call, signIn, db, dispatched } = setup();
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    { uid: "G1", tenant_id: T1, opportunity_title: "One", is_duplicate: false },
+    { uid: "G2", tenant_id: T1, opportunity_title: "Two", is_duplicate: false },
+  );
+  const admin = await signIn("admin@x.org", "correct horse 1");
+  await call("POST", "/session/tenant", { tenantId: T1 }, admin.token);
+  const a = await signIn("admin@x.org", "correct horse 1");
+
+  await call("POST", "/pipelines/decision", { uid: "G1", decision: "Decline" }, a.token);
+  await call("POST", "/pipelines/decision", { uid: "G2", decision: "Decline" }, a.token);
+  await call("PATCH", "/pipelines/rfp/G1", { fields: { key_risks: "x" } }, a.token);
+  await call("DELETE", "/pipelines/rfp/G1", null, a.token);
+
+  const groups = Object.fromEntries(dispatched.map((d, i) => [i, d.group]));
+  const all = Object.values(groups);
+  assert.ok(all.length >= 3, `expected several dispatches, got ${all.length}`);
+
+  const forG1Decision = all.filter((g) => g.startsWith("decision-") && g.endsWith("-G1"));
+  const forG2Decision = all.filter((g) => g.startsWith("decision-") && g.endsWith("-G2"));
+  assert.ok(forG1Decision.length, "a decision on G1 is grouped by G1");
+  assert.ok(forG2Decision.length, "a decision on G2 is grouped by G2");
+  assert.notDeepEqual(forG1Decision[0], forG2Decision[0],
+    "decisions on different rows must not be able to cancel each other");
+
+  // …and the delete shares the decision group FOR ITS OWN ROW, which is the collision the
+  // shared group existed to prevent.
+  assert.ok(all.includes(forG1Decision[0]),
+    "a delete and a decision on one row stay serialised against each other");
+
+  // A re-score is keyed by its row too, so saving two rows quickly cannot drop one.
+  const rescores = all.filter((g) => g.startsWith("rescore-"));
+  assert.ok(rescores.every((g) => g.endsWith("-G1") || g.endsWith("-G2") || g.endsWith("-all")),
+    `a re-score is grouped by row: ${rescores.join(", ")}`);
 });
