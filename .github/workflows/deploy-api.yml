@@ -156,9 +156,23 @@ jobs:
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         # Character for character the command in web/README.md's "Deploy (free tiers)",
-        # plus --project-ref (see SUPABASE_PROJECT_REF above). Keep the two spellings
+        # plus --remote (see SUPABASE_PROJECT_REF above). Keep the two spellings
         # identical, @latest included, so the documented manual fallback and what CI
         # actually runs cannot drift apart.
+        #
+        # THE TWO --yes ARE LOAD-BEARING, and the first run of this workflow proved it by
+        # failing: CLI 3.1.0 asks "Confirmation required: Deploy 1 Function" and, finding
+        # stdout is not a terminal, exits 1 having changed nothing. Cloudflare had already
+        # shipped the frontend from that same commit, so the live site spent the gap in
+        # exactly the split state this file exists to prevent. `npx --yes` answers npx's
+        # own install prompt; the trailing `--yes` answers the CLI's. Neither is optional
+        # in CI and removing either reintroduces that outage silently — the job does not
+        # fail slowly, it fails before it has deployed anything.
+        #
+        # --remote replaces --project-ref, which the same run warned is "deprecated and
+        # will be removed in v4". This pins @latest, so v4 arrives here on Supabase's
+        # schedule rather than ours; the flag was changed at the first warning rather than
+        # at the breakage.
         #
         # --no-verify-jwt is REQUIRED and must never be dropped. The browser sends an RFPIS
         # session token that is deliberately NOT a Supabase JWT — it is signed with a key
@@ -166,10 +180,11 @@ jobs:
         # own JWT gate in front, every request is rejected before the handler sees it and
         # the whole app fails to sign in.
         run: |
-          npx supabase@latest functions deploy rfpis-api \
-            --project-ref "$SUPABASE_PROJECT_REF" \
+          npx --yes supabase@latest functions deploy rfpis-api \
+            --remote "$SUPABASE_PROJECT_REF" \
             --no-verify-jwt \
-            --use-api
+            --use-api \
+            --yes
 
       # A failed deploy is not a neutral event: Cloudflare has already rebuilt the frontend
       # from this same commit, so the site is now in the split state this workflow exists to
@@ -191,4 +206,4 @@ jobs:
           echo "  gh secret set SUPABASE_ACCESS_TOKEN --repo bensah/chai-rfpis"
           echo
           echo "To restore the site immediately, deploy by hand from a checkout of main:"
-          echo "  npx supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api"
+          echo "  npx --yes supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api --yes"
