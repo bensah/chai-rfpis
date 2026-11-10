@@ -214,7 +214,11 @@ function fixture() {
   };
 }
 
-function setup() {
+/**
+ * `jobs: false` builds the API with no job dispatcher, as a deployment that has not been
+ * given one. Everything else is unchanged.
+ */
+function setup({ jobs = true } = {}) {
   const db = fakeDb(fixture());
   globalThis.fetch = db.fetch;
   const dispatched = [];
@@ -226,7 +230,7 @@ function setup() {
     {
       bcryptCompare: (p, h) => bcrypt.compare(p, h),
       bcryptHash: (p) => bcrypt.hash(p, 4),
-      dispatchJob: async (id, group) => void dispatched.push({ id, group }),
+      dispatchJob: jobs ? async (id, group) => void dispatched.push({ id, group }) : null,
     },
   );
   async function call(method, route, body, token, headers = {}) {
@@ -656,6 +660,102 @@ test("a decision the app does not offer is refused, and named", async () => {
   const unknown = await call("POST", "/pipelines/decision",
     { uid: "nope", decision: "Park" }, col.token);
   assert.equal(unknown.status, 404);
+});
+
+// ── Deleting an opportunity ──────────────────────────────────────────────────
+// Four tests for one button, because the thing that makes a delete correct is not that
+// the row goes away. `views/rfp_editor.py` tombstones FIRST and its comment says why: a
+// delete that removed the row without recording it took away the only live record the
+// deduplicator matches against, and the next scan found the call and inserted it afresh —
+// the reported "we keep declining this and it keeps coming back".
+
+test("deleting an opportunity queues the removal and removes nothing itself", async () => {
+  const { call, signIn, db, dispatched } = setup();
+  db.tables.rfp_submissions.push({
+    uid: "DEL-1", opportunity_title: "Expired TB call", funding_agency: "Global Fund",
+    tenant_id: T2,
+  });
+  // The admin account's last tenant is T2, which is where this row is.
+  const adm = await signIn("admin@x.org", "correct horse 1");
+
+  const r = await call("DELETE", "/pipelines/rfp/DEL-1", null, adm.token);
+  assert.equal(r.status, 202, "202, not 200 — the row is still there when this answers");
+  assert.ok(r.body.queued.job_id, "and the caller is told what to wait for");
+  assert.equal(r.body.title, "Expired TB call", "named, so the caller can say what went");
+
+  // THE WHOLE POINT. The tombstone is made FROM this row, so the API must not be the one
+  // that removes it: a row deleted here and a job that then fails, or simply runs a minute
+  // later, is an opportunity with no tombstone and nothing left to make one from.
+  assert.ok(db.tables.rfp_submissions.some((x) => x.uid === "DEL-1"),
+    "the route must leave the row for the runner to read, tombstone and then delete");
+
+  const jobs = db.tables.web_jobs.filter((j) => j.kind === "delete_rfp");
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].status, "dispatched");
+  assert.deepEqual(jobs[0].params, { tenant_id: T2, uid: "DEL-1", by: "admin@x.org" },
+    "the runner is given the tenant explicitly — it refuses work it cannot scope");
+  // The decision group, not one of its own: a delete and a decision on the same row both
+  // write rfp_seen, and the delete ends by removing the row the other is reading.
+  assert.deepEqual(dispatched.map((d) => d.group), [`decision-${T2}`]);
+});
+
+test("only an admin can delete, and the refusal reveals nothing", async () => {
+  const { call, signIn, db } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const real = await call("DELETE", "/pipelines/rfp/R1", null, col.token);
+  assert.equal(real.status, 403, "core/permissions.is_admin, as the Streamlit button has it");
+  // Word for word the same answer for a uid that does not exist: the gate is checked
+  // before the lookup, so a contributor cannot use 403-vs-404 to enumerate the table.
+  const ghost = await call("DELETE", "/pipelines/rfp/no-such-uid", null, col.token);
+  assert.deepEqual(ghost, real);
+
+  assert.ok(db.tables.rfp_submissions.some((x) => x.uid === "R1"), "nothing was removed");
+  assert.equal(db.tables.web_jobs.length, 0, "and nothing was queued on the way out");
+
+  // Nor through the back door: POST /jobs can start a kind directly, so the kind carries
+  // the same gate rather than trusting the route to have checked.
+  const direct = await call("POST", "/jobs",
+    { kind: "delete_rfp", params: { tenant_id: T1, uid: "R1" } }, col.token);
+  assert.equal(direct.status, 403);
+  assert.equal(db.tables.web_jobs.length, 0);
+});
+
+test("another tenant's opportunity answers exactly like one that is not there", async () => {
+  const { call, signIn, db } = setup();
+  // Signed in against T2; R1 and R2 belong to T1.
+  const adm = await signIn("admin@x.org", "correct horse 1");
+
+  const elsewhere = await call("DELETE", "/pipelines/rfp/R1", null, adm.token);
+  const missing = await call("DELETE", "/pipelines/rfp/no-such-uid", null, adm.token);
+  assert.equal(elsewhere.status, 404);
+  assert.deepEqual(elsewhere, missing,
+    "same status and same words, so the route cannot be used to discover that a uid " +
+    "exists in somebody else's tenant");
+
+  assert.ok(db.tables.rfp_submissions.some((x) => x.uid === "R1"));
+  assert.equal(db.tables.web_jobs.length, 0);
+});
+
+test("a delete that cannot be queued is refused outright, not half-done", async () => {
+  // A deployment with no job dispatcher. A save in the same state succeeds and warns, and
+  // a decision does too, because both of those leave a row that still carries the truth.
+  // A delete has no such half: either it is recorded and then removed, or it does not
+  // happen. So this is the one write route that refuses rather than warning.
+  const { call, signIn, db } = setup({ jobs: false });
+  db.tables.rfp_submissions.push({
+    uid: "DEL-2", opportunity_title: "Nutrition call", tenant_id: T2,
+  });
+  const adm = await signIn("admin@x.org", "correct horse 1");
+
+  const r = await call("DELETE", "/pipelines/rfp/DEL-2", null, adm.token);
+  assert.equal(r.status, 503);
+  assert.equal(r.body.code, "delete_not_queued");
+  assert.match(r.body.error, /NOT deleted/,
+    "said plainly: an admin who reads 'deleted' and sees it again tomorrow learns the " +
+    "wrong lesson about this button");
+  assert.ok(db.tables.rfp_submissions.some((x) => x.uid === "DEL-2"),
+    "and the row is still editable, which is the honest state");
 });
 
 test("a decision on another tenant's row is a 404, not a 403", async () => {
@@ -1590,4 +1690,378 @@ test("Closing soon lists the rows behind the count, soonest first", async () => 
   assert.equal(k.closing_soon.length, k.due_in_14_days,
     "the list and the count must not be able to disagree");
   assert.equal(k.closing_soon[0].title, "Sooner call");
+});
+
+test("the review week keys on the EARLIEST date, not a preferred column", async () => {
+  // Neither column is right alone, and which one is wrong depends on where the row came
+  // from. Against the date in the uid (stamped once, at creation) over 94 live rows:
+  // search_date matched 21/37 auto and 52/55 migrated; submitted_at 37/37 and 10/55; the
+  // earliest of the two, 92/94 overall. A re-seen scan rewrites search_date; an import
+  // writes submitted_at months late. Both errors run later, so the earliest wins.
+  const { db, call, signIn } = setup();
+  db.tables.rfp_submissions.push(
+    // A migrated row: imported in November, found in June. It belongs to June.
+    { uid: "E-MIG", tenant_id: T1, is_duplicate: false, decision: "Park",
+      source: "migration", search_date: "2026-06-10",
+      submitted_at: "2026-11-06T00:00:00+00:00",
+      call_submission_deadline: "2027-01-01" },
+    // A scanned row seen again in November, first found in September.
+    { uid: "E-AUTO", tenant_id: T1, is_duplicate: false, decision: "Proceed",
+      source: "auto", search_date: "2026-11-06",
+      submitted_at: "2026-09-14T00:00:00+00:00",
+      call_submission_deadline: "2027-01-01" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const june = await call("GET", "/pipelines/reviewed?from=2026-06-01&to=2026-07-01",
+    null, col.token);
+  assert.deepEqual(june.body.rows.map((r) => r.uid), ["E-MIG"],
+    "the import date must not drag a June call into November");
+  const sept = await call("GET", "/pipelines/reviewed?from=2026-09-01&to=2026-10-01",
+    null, col.token);
+  assert.deepEqual(sept.body.rows.map((r) => r.uid), ["E-AUTO"],
+    "nor a re-seen scan a September one");
+  const nov = await call("GET", "/pipelines/reviewed?from=2026-11-02&to=2026-11-09",
+    null, col.token);
+  assert.deepEqual(nov.body.rows, [], "neither belongs to the week they were last touched");
+});
+
+test("Review drops what nobody can still act on", async () => {
+  // Owner, 2026-11-09: a call whose deadline has gone cannot be bid for, and one already
+  // with a funder has moved on to Outcome. Leaving them here put decisions the team
+  // settled months ago back in front of them.
+  const { db, call, signIn } = setup();
+  const base = {
+    tenant_id: T1, is_duplicate: false, decision: "Proceed",
+    search_date: "2026-11-03", submitted_at: "2026-11-03T00:00:00+00:00",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "V-LIVE", ...base, call_submission_deadline: "2099-01-01" },
+    { uid: "V-EXPIRED", ...base, call_submission_deadline: "2020-01-01" },
+    { uid: "V-SENT", ...base, call_submission_deadline: "2099-01-01",
+      donor_decision: "Under Review" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/reviewed?from=2026-11-02&to=2026-11-09",
+    null, col.token);
+  assert.deepEqual(r.body.rows.map((x) => x.uid), ["V-LIVE"]);
+});
+
+test("a decision can carry the date it was actually taken", async () => {
+  // Owner, 2026-11-09: a system date may only stand in at a row's FIRST capture. A team
+  // that settles a call on the 3rd and records it on the 20th was having its work dated
+  // by its data entry, and nothing in the UI could say otherwise.
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const today = new Date().toISOString().slice(0, 10);
+
+  const back = await call("POST", "/pipelines/decision",
+    { uid: "R1", decision: "Proceed", decision_date: "2026-10-22" }, col.token);
+  assert.equal(back.status, 200);
+  assert.equal(back.body.row.decision_date, "2026-10-22", "the date the team gave");
+
+  // Omitted still means today - right for a decision recorded as it is taken.
+  const now = await call("POST", "/pipelines/decision",
+    { uid: "R2", decision: "Park" }, col.token);
+  assert.equal(now.body.row.decision_date, today);
+});
+
+test("a decision cannot have been taken tomorrow", async () => {
+  // Rejected rather than silently corrected: substituting today would reintroduce exactly
+  // the problem that accepting a date is meant to avoid, and the person can fix the field
+  // they just typed in.
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+  const future = await call("POST", "/pipelines/decision",
+    { uid: "R1", decision: "Proceed", decision_date: tomorrow }, col.token);
+  assert.equal(future.status, 400);
+  const nonsense = await call("POST", "/pipelines/decision",
+    { uid: "R1", decision: "Proceed", decision_date: "2026-02-31" }, col.token);
+  assert.equal(nonsense.status, 400, "31 February is not a date");
+});
+
+test("the feed carries Proceed and Park verdicts without carrying the flood", async () => {
+  // Every auto row used to be dropped, for a sound reason: a Friday scan adds dozens at
+  // once and the scan_logs line already says so in ONE item rather than forty. But it
+  // also meant the alert the owner most wanted - a new call the system rates Proceed or
+  // Park - was the one thing the feed could not carry. Suppress the flood, not the
+  // verdict.
+  const { db, call, signIn } = setup();
+  const base = {
+    tenant_id: T1, is_duplicate: false, source: "auto", search_date: "2026-11-07",
+    funding_agency: "F", call_submission_deadline: "2027-01-01",
+  };
+  db.tables.rfp_submissions.push(
+    { uid: "N-PRO", ...base, opportunity_title: "A strong fit",
+      auto_recommendation: "Proceed", alignment_score: 88 },
+    { uid: "N-PARK", ...base, opportunity_title: "A maybe",
+      auto_recommendation: "Park", alignment_score: 61 },
+    // The flood: rated Decline, or not rated at all. Neither is news.
+    { uid: "N-DEC", ...base, opportunity_title: "Not for us",
+      auto_recommendation: "Decline", alignment_score: 20 },
+    { uid: "N-NONE", ...base, opportunity_title: "Unscored" },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const shell = (await call("GET", "/shell", null, col.token)).body;
+  const verdicts = shell.feed.filter((f) => f.kind === "verdict");
+  assert.deepEqual(verdicts.map((f) => f.uid).sort(), ["N-PARK", "N-PRO"],
+    "Proceed and Park only — a Decline is not an alert");
+  const pro = verdicts.find((f) => f.uid === "N-PRO");
+  assert.equal(pro.title, "New Proceed call");
+  // The detail view needs facts, or opening an alert tells you nothing the line did not.
+  assert.ok(pro.facts.some((f) => f.label === "Score" && f.value === "88"));
+  assert.ok(pro.facts.some((f) => f.label === "System rating" && f.value === "Proceed"));
+  assert.equal(pro.nav, "opportunity", "an alert about a call opens that call");
+});
+
+test("a scan alert carries the run's numbers, not just a sentence", async () => {
+  const { db, call, signIn } = setup();
+  db.tables.scan_logs.push({
+    id: 9001, tenant_id: null, scan_date: "2026-11-07T06:00:00+00:00",
+    triggered_by: "cron", rfps_found: 400, rfps_new: 37, rfps_added: 12,
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+  const shell = (await call("GET", "/shell", null, col.token)).body;
+  const scan = shell.feed.find((f) => f.kind === "scan");
+  assert.ok(scan, "a completed scan is an alert");
+  const facts = Object.fromEntries(scan.facts.map((f) => [f.label, f.value]));
+  assert.equal(facts.Found, "400");
+  assert.equal(facts.Eligible, "37");
+  assert.equal(facts.Added, "12");
+});
+
+// ── The RFP editor ───────────────────────────────────────────────────────────
+// One form, one table. The editor is a single React component opened from the Opportunity
+// page and from all five Pipeline stages, and the only reason that can be true is that the
+// routes below are the only two ways it writes.
+
+test("the editor's dropdowns carry the deployment's roster, not the repo's placeholders", async () => {
+  // core/dropdowns.load overlays team_members and currencies from app_settings on top of
+  // the YAML. Generating them into form_vocab.ts would publish one organisation's staff,
+  // or ship "Team Member 1..N" as if they were people — so they are read live here.
+  const { call, signIn, db } = setup();
+  db.tables.tenant_settings.push({
+    tenant_id: T1, key: "team_members_json", value: JSON.stringify(["Ada", "Sam"]),
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/form-options", null, col.token);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.teamMembers, ["Ada", "Sam", "Other"],
+    "the roster, with the forms' Other → specify path kept as a roster entry");
+  assert.ok(r.body.currencies.includes("USD"));
+  // The generated half is there too, and the nine criteria each offer real answers.
+  assert.equal(Object.keys(r.body.criterionAnswers).length, 9);
+  for (const [k, v] of Object.entries(r.body.criterionAnswers)) {
+    assert.ok(v.length > 0, `${k} would render an empty dropdown`);
+  }
+  assert.ok(r.body.opportunityTypes.includes("Procurement"),
+    "the gate's own exclusion classes must be markable");
+  assert.ok(r.body.dropdowns.stages.length >= 7, "seven stages, not tracking_rfp's fallback five");
+});
+
+test("a tenant with no roster of its own is offered nobody else's", async () => {
+  const { call, signIn, db } = setup();
+  db.tables.app_settings.push({ key: "team_members_json", value: JSON.stringify(["Someone Else"]) });
+  db.tables.tenant_settings.push({
+    tenant_id: T2, key: "team_members_json", value: JSON.stringify(["Beta Person"]),
+  });
+  const col = await signIn("col@x.org", "col pass 1");   // a T1 member
+  const r = await call("GET", "/pipelines/form-options", null, col.token);
+  assert.deepEqual(r.body.teamMembers, [],
+    "tenant-scoped with no fallback: an empty roster beats another organisation's team");
+});
+
+test("the editor's record is unprojected, so the form has every column it writes", async () => {
+  const { call, signIn, db } = setup();
+  Object.assign(db.tables.rfp_submissions[0], {
+    eligibility_specifics: "Registered NGOs only", application_checklist: "CV; budget",
+    call_domain_areas: ["Malaria"], support_roles: "Technical, Finance",
+  });
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/rfp/R1", null, col.token);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.row.eligibility_specifics, "Registered NGOs only");
+  assert.deepEqual(r.body.row.call_domain_areas, ["Malaria"]);
+  assert.equal(r.body.grant, null, "no reporting lookup unless the tab is open");
+});
+
+test("every tab of the editor writes the one rfp_submissions row", async () => {
+  // The whole point of the shared form: a save that spans Opportunity, Eligibility, Team
+  // and Award is one update to one row, not four writes to four places.
+  const { call, signIn, db } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const before = db.log.length;
+  const r = await call("PATCH", "/pipelines/rfp/R1", {
+    fields: {
+      opportunity_title: "Malaria call, revised",   // Opportunity
+      qualification: "Yes, fully",                  // Eligibility
+      proposal_lead: "Ada",                         // Team
+      amount_requested: 250000,                     // Submission & Award
+      how_to_apply: "Through the portal",           // Application
+    },
+  }, col.token);
+  assert.equal(r.status, 200);
+  const writes = db.log.slice(before)
+    .filter((e) => e.method === "PATCH" && e.table === "rfp_submissions");
+  assert.equal(writes.length, 1, "one row, one write");
+  const row = db.tables.rfp_submissions.find((x) => x.uid === "R1");
+  assert.equal(row.opportunity_title, "Malaria call, revised");
+  assert.equal(row.proposal_lead, "Ada");
+  assert.equal(row.how_to_apply, "Through the portal");
+  assert.equal(row.decision_overridden_by, "col@x.org", "stamped by the server, not the form");
+});
+
+test("a column the editor must not write is refused, not dropped", async () => {
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("PATCH", "/pipelines/rfp/R1",
+    { fields: { opportunity_title: "ok", not_a_column: 1 } }, col.token);
+  assert.equal(r.status, 400, "a typo should fail where it is made, not look like a no-op");
+  assert.deepEqual(r.body.problems, ["not_a_column"]);
+});
+
+test("a row on the old criterion vocabulary opens on the right answer", async () => {
+  // Live rows carry plain "Yes"/"Partial"/"No" and the per-criterion labels that preceded
+  // the current ones. Shown raw, such a value became a tenth, stray option in a
+  // nine-option dropdown and was written straight back on save, so the vocabulary could
+  // never converge. views/rfp_editor.py has always resolved it through
+  // core/scorer.default_response; that resolution runs through criterion_score — a
+  // SCORING rule — so it is precomputed in Python and served, never restated here.
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const r = await call("GET", "/pipelines/form-options", null, col.token);
+  const d = r.body.criterionDefaults;
+
+  assert.equal(d.qualification.yes, "Yes, fully");
+  assert.equal(d.qualification.partial, "Mostly, one item unclear");
+  assert.equal(d.qualification.no, "No, not eligible");
+  assert.equal(d.funding_quality["1"], "High", "the legacy numeric spelling too");
+
+  // bid_effort is the criterion with no "Not sure": an undeterminable value there must
+  // land on the Park midpoint, never on the worst option — core/scorer says so at length,
+  // because that turned "we never captured a deadline" into "Not enough time, no team".
+  assert.ok(!r.body.criterionAnswers.bid_effort.includes("Not sure"));
+  assert.notEqual(d.bid_effort.no, "Not enough time, no team");
+
+  // Every criterion resolves every legacy spelling onto one of its OWN answers.
+  for (const [key, answers] of Object.entries(r.body.criterionAnswers)) {
+    for (const [stored, picked] of Object.entries(d[key] ?? {})) {
+      assert.ok(answers.includes(picked),
+        `${key}: "${stored}" resolved to "${picked}", which it does not offer`);
+    }
+  }
+});
+
+// ── The Dashboard's figures, as doors ────────────────────────────────────────
+// Every number on the Dashboard opens the rows behind it. The whole design rests on the
+// tile and the list coming from ONE selection, so that is what these check — not that the
+// route returns something, but that it returns the same thing the tile counted.
+
+test("every Dashboard figure equals the list it opens", async () => {
+  // The regression this prevents: a tile saying 17 over a page listing 19. A reader has no
+  // way to tell which one lied, and a figure that cannot be trusted is worse than absent.
+  const { call, signIn, db } = setup();
+  const today = new Date().toISOString().slice(0, 10);
+  const soon = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    // nobody has looked at it yet
+    { uid: "A1", tenant_id: T1, opportunity_title: "Undecided", is_duplicate: false },
+    // decided, bidding, deadline inside the fortnight
+    { uid: "A2", tenant_id: T1, opportunity_title: "Live bid", decision: "Proceed",
+      call_submission_deadline: soon, is_duplicate: false },
+    // "Proceed as sub" is proceeding — prefix, not equality
+    { uid: "A3", tenant_id: T1, opportunity_title: "Sub bid", decision: "Proceed as sub",
+      is_duplicate: false },
+    { uid: "A4", tenant_id: T1, opportunity_title: "Set aside", decision: "Park", is_duplicate: false },
+    { uid: "A5", tenant_id: T1, opportunity_title: "Dropped", decision: "Decline", is_duplicate: false },
+    // sent twice, funder has not answered: ONE row, TWO applications
+    { uid: "A6", tenant_id: T1, opportunity_title: "With the funder", decision: "Proceed",
+      progress_status: "Completed", submissions: 2, donor_decision: "Under Review",
+      date_completed: today, is_duplicate: false },
+    // answered
+    { uid: "A7", tenant_id: T1, opportunity_title: "Won", decision: "Proceed",
+      progress_status: "Completed", submissions: 1, donor_decision: "Approved",
+      date_completed: today, is_duplicate: false },
+    { uid: "A8", tenant_id: T1, opportunity_title: "Lost", decision: "Proceed",
+      progress_status: "Completed", submissions: 1, donor_decision: "Not Approved",
+      date_completed: today, is_duplicate: false },
+    // a duplicate must not be counted, and must not be offered for triage either
+    { uid: "A9", tenant_id: T1, opportunity_title: "Same call again", is_duplicate: true },
+  );
+
+  const col = await signIn("col@x.org", "col pass 1");
+  const home = await call("GET", "/home", null, col.token);
+  const list = await call("GET", "/opportunities/list", null, col.token);
+  assert.equal(home.status, 200);
+  assert.equal(list.status, 200);
+
+  const byKey = Object.fromEntries(list.body.buckets.map((b) => [b.key, b]));
+  // The figure the list reports and the figure the tile shows are the same number.
+  for (const key of ["found", "awaiting_review", "proceed", "parked", "declined",
+                     "due_in_14_days", "applications_sent", "awaiting_answer",
+                     "approved", "not_approved", "ledger_gap"]) {
+    assert.equal(byKey[key].count, home.body[key], `${key}: tile and list disagree`);
+  }
+
+  // And the membership the page filters on reproduces that figure, in the bucket's own
+  // unit. This is the half a shared count alone would not prove.
+  for (const b of list.body.buckets) {
+    const rows = list.body.rows.filter((r) => r.buckets.includes(b.key));
+    const got = b.kind === "applications"
+      ? rows.reduce((t, r) => t + r.applications, 0)
+      : rows.length;
+    assert.equal(got, b.count, `${b.key}: ${b.kind} behind the figure do not add up`);
+  }
+
+  assert.equal(byKey.found.count, 8, "the duplicate is not a call found");
+  assert.ok(!list.body.rows.some((r) => r.uid === "A9"), "a duplicate is not offered for triage");
+
+  // The card that shows a number AND the rows under it must show rows of that number.
+  // closing_soon used to filter liveProceeds a second time, beside the count.
+  assert.equal(home.body.due_in_14_days, 1);
+  assert.deepEqual(home.body.closing_soon.map((r) => r.uid), ["A2"],
+    "the rows under the figure are the rows of the figure");
+});
+
+test("a figure counted in applications can list fewer opportunities", async () => {
+  // The one place this page could mislead: "Applications sent 24" opening 21 rows. It is
+  // not a bug — a proposal sent to the same funder twice is two applications and one call
+  // — so the numbers must differ HERE, in a test, or somebody will later "fix" it.
+  const { call, signIn, db } = setup();
+  const today = new Date().toISOString().slice(0, 10);
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    { uid: "B1", tenant_id: T1, opportunity_title: "Sent three times", decision: "Proceed",
+      progress_status: "Completed", submissions: 3, donor_decision: "Under Review",
+      date_completed: today, is_duplicate: false },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const list = await call("GET", "/opportunities/list", null, col.token);
+  const sent = list.body.buckets.find((b) => b.key === "applications_sent");
+  assert.equal(sent.kind, "applications");
+  assert.equal(sent.count, 3, "three applications");
+  assert.equal(list.body.rows.filter((r) => r.buckets.includes("applications_sent")).length, 1,
+    "…across one opportunity");
+  assert.equal(list.body.rows[0].applications, 3, "the row carries its own weight");
+});
+
+test("Reviewed is the same set counted from either side", async () => {
+  // The Dashboard's funnel shows Reviewed as proceed + parked + declined; the list's own
+  // bucket is "a decision is recorded". Those must be the same rows, or the bar and the
+  // page it opens disagree.
+  const { call, signIn, db } = setup();
+  db.tables.rfp_submissions.length = 0;
+  db.tables.rfp_submissions.push(
+    { uid: "C1", tenant_id: T1, decision: "Proceed", is_duplicate: false },
+    { uid: "C2", tenant_id: T1, decision: "Park", is_duplicate: false },
+    { uid: "C3", tenant_id: T1, decision: "Decline", is_duplicate: false },
+    { uid: "C4", tenant_id: T1, decision: "", is_duplicate: false },
+  );
+  const col = await signIn("col@x.org", "col pass 1");
+  const home = await call("GET", "/home", null, col.token);
+  const list = await call("GET", "/opportunities/list", null, col.token);
+  const reviewed = list.body.buckets.find((b) => b.key === "reviewed");
+  assert.equal(reviewed.count, home.body.proceed + home.body.parked + home.body.declined);
+  assert.equal(reviewed.count, 3);
 });

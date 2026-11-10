@@ -24,12 +24,12 @@
  * claiming a state it had just left.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  AlertTriangle, CalendarClock, ExternalLink, Hourglass, Send,
-} from "lucide-react";
+import { AlertTriangle, CalendarClock, Hourglass, Send } from "lucide-react";
 import {
   fetchSubmitted, saveRfpFields, type Submitted, type SubmittedRow, type Warning,
 } from "../api";
+import OpportunityCell from "../opportunity/OpportunityCell";
+import RfpEditor from "../opportunity/RfpEditor";
 import { atGrain, labelOf, rangeOf, type Period } from "./period";
 import { Badge, Button, Card, EmptyState, Notice, Select, Spinner, fieldClass } from "../ui";
 
@@ -75,6 +75,7 @@ export default function SubmittedStage({ period, onPickPeriod }: {
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<string | null>(null);
+  const [editUid, setEditUid] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [notices, setNotices] = useState<Warning[]>([]);
 
@@ -241,19 +242,9 @@ export default function SubmittedStage({ period, onPickPeriod }: {
                     className={`border-b border-ink-100 transition-colors last:border-0 ${
                       on ? "bg-brand-50" : "hover:bg-ink-50"}`}>
                     <td className="px-4 py-3">
-                      <button
-                        onClick={() => setOpen(on ? null : r.uid)} aria-expanded={on}
-                        className="text-left font-medium text-brand-700 hover:text-accent-700 hover:underline"
-                      >
-                        {r.opportunity_title || r.uid}
-                      </button>
-                      {r.opportunity_link && (
-                        <a href={r.opportunity_link} target="_blank" rel="noreferrer"
-                          className="ml-1.5 inline-flex text-ink-400 hover:text-accent-700"
-                          aria-label="Open the call">
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      )}
+                      <OpportunityCell uid={r.uid} title={r.opportunity_title}
+                        link={r.opportunity_link} onEdit={setEditUid}
+                        expanded={on} onToggle={() => setOpen(on ? null : r.uid)} />
                     </td>
                     <td className="px-4 py-3 text-ink-600">{r.funding_agency || "—"}</td>
                     <td className="px-4 py-3 text-ink-600">{r.proposal_lead || "—"}</td>
@@ -286,6 +277,9 @@ export default function SubmittedStage({ period, onPickPeriod }: {
         <div className="mt-4">
           <SubmissionDetail row={selected} saving={saving === selected.uid} onSave={save} />
         </div>
+      )}
+      {editUid && (
+        <RfpEditor uid={editUid} onClose={() => setEditUid(null)} onSaved={load} />
       )}
     </>
   );

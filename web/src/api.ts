@@ -103,6 +103,7 @@ const post = <T>(path: string, data: unknown = {}) =>
   call<T>(path, { method: "POST", body: JSON.stringify(data) });
 const patch = <T>(path: string, data: unknown = {}) =>
   call<T>(path, { method: "PATCH", body: JSON.stringify(data) });
+const del = <T>(path: string) => call<T>(path, { method: "DELETE" });
 
 /** Store a session the API just issued, keeping the user fields /me adds. */
 function adopt(res: Stored): User {
@@ -390,13 +391,27 @@ export type Warning = { code: string; detail: string };
  * When it comes back null there is a warning saying so, and it matters: a Decline whose
  * tombstone was never written can be found again by the next scan.
  */
-export const recordDecision = (uid: string, decision: string, note?: string) =>
+export const recordDecision = (
+  uid: string, decision: string, note?: string, decisionDate?: string,
+) =>
   post<{ row: ScreenRow; warnings: Warning[]; recorded: { job_id: string } | null }>(
-    "/pipelines/decision", note === undefined
-      ? { uid, decision } : { uid, decision, note });
+    "/pipelines/decision", {
+      uid, decision,
+      ...(note === undefined ? {} : { note }),
+      // Omitted means "today", which is right for a decision recorded as it is taken and
+      // wrong for one being written up later. The server rejects a future date rather
+      // than quietly substituting today.
+      ...(decisionDate ? { decision_date: decisionDate } : {}),
+    });
 
 // ── App shell ────────────────────────────────────────────────────────────────
-export type FeedItem = { ts: number; icon: string; title: string; detail: string; nav: string; uid: string | null };
+export type FeedItem = {
+  ts: number; icon: string; title: string; detail: string; nav: string;
+  uid: string | null;
+  /** The bell shows a line; the Alerts screen opens one of these. */
+  kind: "scan" | "opportunity" | "verdict";
+  facts?: { label: string; value: string }[];
+};
 export type Shell = {
   org: { name: string; logo: { b64: string; mime: string } | null };
   nextMeeting: { date: string; note_taker: string; presenter: string; chair: string } | null;
@@ -450,6 +465,60 @@ export type HomeKpis = {
 };
 export const fetchHome = () => call<HomeKpis>("/home");
 
+// ── The triage list ──────────────────────────────────────────────────────────
+
+/** One of the Dashboard's figures, as something you can open.
+ *
+ * `kind` matters and the page says it out loud: four of these weigh APPLICATIONS rather
+ * than count rows, because a proposal sent to the same funder twice is two applications
+ * and one call. So "Applications sent 24" opens a list of 21 opportunities, and the page
+ * reports both numbers instead of looking broken. */
+export type OpportunityBucket = {
+  key: string;
+  label: string;
+  kind: "rows" | "applications";
+  /** One line a reader can check the selection against. */
+  rule: string;
+  count: number;
+};
+
+export type OpportunityListRow = {
+  uid: string;
+  title: string;
+  funder: string;
+  link: string | null;
+  deadline: string | null;
+  found: string | null;
+  submitted: string | null;
+  decision: string | null;
+  donorDecision: string | null;
+  stage: string | null;
+  progress: string | null;
+  role: string | null;
+  lead: string | null;
+  score: number | null;
+  recommendation: string | null;
+  currency: string | null;
+  value: number | null;
+  usd: number;
+  requestedUsd: number;
+  securedUsd: number;
+  /** What this one row weighs in the application figures — 0 until it is Completed. */
+  applications: number;
+  /** The Dashboard figures this row belongs to. The page filters on THIS and owns no
+   *  definition of its own; the server computed it with the same code that counts the
+   *  tiles (supabase/functions/_shared/api/home_buckets.ts). */
+  buckets: string[];
+};
+
+export type OpportunityList = {
+  today: string;
+  buckets: OpportunityBucket[];
+  rows: OpportunityListRow[];
+};
+
+export const fetchOpportunityList = () => call<OpportunityList>("/opportunities/list");
+
 /** One item in the rail's four cards. supabase/functions/_shared/api/opportunity_feed.ts
  * builds these; core/opportunity_feed.py's `_item` / `catalog_item` are what it mirrors.
  *
@@ -497,6 +566,79 @@ export const fetchOpportunityRows = (uid: string) =>
 /** Everything the Python scoring path reads from the database, with this caller's
  * permissions and tenant scope already applied. */
 export const fetchSnapshot = () => call<import("./scoring/protocol").ScoringSnapshot>("/scoring/snapshot");
+
+// ── The RFP editor ───────────────────────────────────────────────────────────
+// One record and one vocabulary list, both feeding the single editor in
+// src/opportunity/RfpEditor.tsx. Every screen that edits an opportunity opens that
+// component, which is why these are not per-screen shapes.
+
+/** One opportunity, every column, plus its linked grant when the Reporting tab is open.
+ *
+ * Unprojected on purpose — the editor writes about sixty columns, so a projection would be
+ * a list of nearly the whole table that then has to be kept in step with the form. The row
+ * is typed loosely for the same reason: the form reads it by column name and the server
+ * already refuses any name that is not editable. */
+export type RfpRecord = {
+  row: Record<string, unknown>;
+  grant: Record<string, unknown> | null;
+};
+
+export const fetchRfp = (uid: string, reporting = false) =>
+  call<RfpRecord>(
+    `/pipelines/rfp/${encodeURIComponent(uid)}${reporting ? "?reporting=1" : ""}`);
+
+/**
+ * What the editor's dropdowns offer — `core/dropdowns.py::load` for the browser.
+ *
+ * Fetched rather than bundled because two of these are per-deployment settings rather than
+ * repo data: the team roster is tenant-scoped and deliberately absent from the repo, and
+ * the currency table can be overridden in Admin → Settings. The rest are generated from
+ * the Python that owns them (scripts/gen_form_vocab.py).
+ */
+export type FormOptions = {
+  dropdowns: Record<string, string[]>;
+  programAreas: string[];
+  geoOptions: string[];
+  criterionAnswers: Record<string, string[]>;
+  /** Stored value (lower-cased) → the answer it pre-selects, as
+   *  core/scorer.default_response resolves it. Resolved server-side because it
+   *  runs through criterion_score, which is a scoring rule. */
+  criterionDefaults: Record<string, Record<string, string>>;
+  opportunityTypes: string[];
+  solicitationTypes: string[];
+  instrumentTypes: string[];
+  teamMembers: string[];
+  currencies: string[];
+};
+
+export const fetchFormOptions = () => call<FormOptions>("/pipelines/form-options");
+
+/** The editor's save. Sparse, and `reporting` only when that tab was shown — the server
+ *  must not guess at tab visibility, so an absent key means "do not touch the grant". */
+export const saveRfp = (
+  uid: string,
+  fields: Record<string, unknown>,
+  reporting?: Record<string, unknown>,
+) =>
+  patch<{
+    row: Record<string, unknown>;
+    warnings: Warning[];
+    rescore: { job_id: string } | null;
+  }>(`/pipelines/rfp/${encodeURIComponent(uid)}`, {
+    fields,
+    ...(reporting === undefined ? {} : { reporting }),
+  });
+
+/**
+ * Delete one opportunity. Admin only, and it does NOT come back deleted: the server
+ * answers 202 with a job, and the row is still there until that job has written the
+ * scan's tombstone and then removed it. The caller waits for the job before it says the
+ * opportunity is gone — see `pipeline_writes.ts::deleteRfp` for why the order cannot be
+ * the other way round. A 503 means nothing was removed at all.
+ */
+export const deleteRfp = (uid: string) =>
+  del<{ uid: string; title: string | null; queued: { job_id: string } }>(
+    `/pipelines/rfp/${encodeURIComponent(uid)}`);
 
 // ── Donors ───────────────────────────────────────────────────────────────────
 export const fetchDonors = () => call<{ donors: Donor[] }>("/donors").then((r) => {

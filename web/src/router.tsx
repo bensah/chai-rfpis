@@ -4,7 +4,8 @@ import { useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent } from
 
 export type PageKey =
   | "home" | "pipelines" | "grants" | "actions" | "report" | "donors" | "organization"
-  | "submit-new-rfp" | "opportunity" | "profile" | "help" | "search" | "settings"
+  | "submit-new-rfp" | "alerts" | "opportunity" | "opportunities" | "profile" | "help"
+  | "search" | "settings"
   | "login" | "activate-account" | "password-reset";
 
 type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boolean; public?: boolean };
@@ -41,9 +42,18 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
  * compared exactly would have made this a functional change rather than a cosmetic one.
  * `test_every_page_title_is_title_case` holds the line.
  *
- * ONLY `rail: true` PUTS A PAGE IN THE SIDEBAR. The seven below without it — opportunity,
- * profile, help, search and the three public auth pages — exist so their URLs resolve: an
- * emailed activation link, a feed item's /opportunity deep link, the top-right menu. The
+ * ONLY `rail: true` PUTS A PAGE IN THE SIDEBAR, and there are now two reasons to lack it.
+ *
+ * SEVEN pages are registered only so their URLs resolve — opportunity, profile, help,
+ * search and the three public auth pages: an emailed activation link, a feed item's
+ * /opportunity deep link, the account menu. SETTINGS is the eighth page without the flag
+ * and is not one of them: it is a real destination, reached from the account menu, and it
+ * left the rail because the menu moved to the foot of the sidebar and a rail entry became
+ * the same destination twice a few centimetres apart. It keeps `adminOnly`, which is the
+ * permission rather than the placement.
+ *
+ * THE DIFFERENCE MATTERS FOR THE PARAGRAPH BELOW: do not add Settings to any hide list.
+ * `test_settings_is_not_hidden` asserts exactly that on the Streamlit side. The
  * Streamlit app registers the same set and then HIDES them with CSS, which failed in the
  * COLLAPSED rail, where the icons are still painted: the owner saw a column of unexplained
  * glyphs. Rendering from this flag cannot fail that way — a page without it never reaches
@@ -77,7 +87,17 @@ export const PAGES: Record<PageKey, PageInfo> = {
   // The slug stays `submit-new-rfp`. The page is named for what it takes in now, but a
   // bookmark or an emailed link still has to resolve.
   "submit-new-rfp": { title: "Submit New Notice", icon: "📝", rail: true },
+  // A real rail destination, not a URL-only page: the bell is a glance and this is
+  // the screen the team watches (owner, 2026-11-09). Key and slug are the same word,
+  // and it is deliberately nowhere near a hide list.
+  alerts: { title: "Alerts", icon: "🔔", rail: true },
   opportunity: { title: "Opportunity", icon: "🎯" },
+  // NOT in the rail, like `opportunity` and `search`: it exists so the Dashboard's figures
+  // can be links. Every tile and every bar segment opens it with ?bucket=<figure>, which
+  // is the owner's ask — "clicking 17 Awaiting review opens the 17 listed". Whether it
+  // also deserves a sidebar entry of its own is a placement decision, and placement in
+  // this rail has been the owner's throughout; it is not taken here.
+  opportunities: { title: "Triage", icon: "🗂" },
   profile: { title: "Profile", icon: "👤" },
   help: { title: "Help", icon: "❓" },
   search: { title: "Search", icon: "🔍" },

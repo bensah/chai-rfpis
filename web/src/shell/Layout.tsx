@@ -38,7 +38,11 @@ const isAdmin = (u: User) => u.role === "admin" || u.role === "super_user";
  *  as a mistake even though both are only labels. */
 const GROUPS: { label: string; pages: PageKey[] }[] = [
   { label: "Workspace", pages: ["home", "pipelines", "grants", "actions", "report", "donors"] },
-  { label: "Organization", pages: ["organization", "submit-new-rfp", "settings"] },
+  // `settings` was listed here until it left the rail. `allowed()` filtered it out, so
+  // the group named a page that could never render — harmless to run and misleading to
+  // read, which is the kind of line that answers a future question wrongly. Settings is
+  // reached from the account menu at the foot of this sidebar.
+  { label: "Organization", pages: ["organization", "submit-new-rfp", "alerts"] },
 ];
 
 export default function Layout({ user, page, children }: { user: User; page: PageKey; children: ReactNode }) {
@@ -228,7 +232,7 @@ function Sidebar({ user, page, collapsed, drawer, onClose, onToggleCollapse, onG
               avatar in the opposite corner held the actions - two places claiming to be
               "you", neither of them obviously the one to click. */}
           <Popover
-            title="Account" width="w-64" placement="up" align="left"
+            title="Account" width="w-64" placement="up" align="left" onDark
             label={
               <span className={`flex w-full items-center gap-2.5 ${collapsed ? "lg:justify-center" : ""}`}>
                 <Avatar user={user} onDark />
@@ -238,7 +242,7 @@ function Sidebar({ user, page, collapsed, drawer, onClose, onToggleCollapse, onG
                 </span>
               </span>
             }
-            triggerClass="h-auto w-full rounded-lg px-2 py-2 text-white hover:bg-white/10"
+            triggerClass="h-auto w-full rounded-lg px-2 py-2"
           >
             {(close) => <AccountMenu user={user} close={close} />}
           </Popover>

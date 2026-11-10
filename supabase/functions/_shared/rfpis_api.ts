@@ -23,6 +23,7 @@
  */
 import { createDb, q } from "./api/db.ts";
 import { createMailer } from "./api/email.ts";
+import { createFormOptions } from "./api/form_options.ts";
 import { corsHeaders, gzipped, HttpError, json, withCors } from "./api/http.ts";
 import { createAuthRoutes, type AuthDeps } from "./api/routes_auth.ts";
 import { createJobRoutes, type Dispatch } from "./api/routes_jobs.ts";
@@ -66,6 +67,7 @@ export function createApi(env: Env, deps: Deps) {
   // The editor's save queues a re-score through the same path POST /jobs uses, so there is
   // one way a job reaches the runner rather than a second one owned by the write route.
   const pipelineWrites = createPipelineWrites(db, jobs.enqueue);
+  const formOptions = createFormOptions(db);
   const report = createReportRoutes(db);
 
   async function route(req: Request, path: string): Promise<Response> {
@@ -98,6 +100,10 @@ export function createApi(env: Env, deps: Deps) {
     // The rail's finished cards, ranked here — the ranking orders values already stored on
     // each row and computes no score, so it needs no Python.
     if (path === "/opportunities/feed" && m === "GET") return phase1.opportunitiesFeed(req, ctx);
+    // The Dashboard's other half: every call, tagged with the figures it belongs to, so a
+    // tile can open the rows behind its number without the page owning a second
+    // definition of what that number means. See api/home_buckets.ts.
+    if (path === "/opportunities/list" && m === "GET") return phase1.opportunityList(req, ctx);
     // Phase 2. Same division: these serve rows, the page scores and decides.
     if (path === "/report/periods" && m === "GET") return report.periods(req, ctx);
     if (path === "/report/section1" && m === "GET") return report.section1(req, ctx);
@@ -119,11 +125,23 @@ export function createApi(env: Env, deps: Deps) {
         ? pipelines.meetingNotes(req, ctx, uid)
         : pipelines.rfp(req, ctx, uid);
     }
+    // What the RFP editor's dropdowns offer. One route for every screen that opens the
+    // editor, because the roster and the currency table are per-deployment settings rather
+    // than repo data — see api/form_options.ts.
+    if (path === "/pipelines/form-options" && m === "GET") return formOptions.options(req, ctx);
     if (path === "/pipelines/decision" && m === "POST") return pipelineWrites.decide(req, ctx);
     if (path.startsWith("/pipelines/rfp/") && m === "PATCH") {
       const uid = decodeURIComponent(path.slice("/pipelines/rfp/".length)).trim();
       if (!uid) return json({ error: "No RFP selected." }, 400);
       return pipelineWrites.patchRfp(req, ctx, uid);
+    }
+    // Admin only, and it removes nothing by itself: it queues the job that tombstones the
+    // row for the scan and then deletes it. pipeline_writes.ts::deleteRfp says why that
+    // order cannot be reversed.
+    if (path.startsWith("/pipelines/rfp/") && m === "DELETE") {
+      const uid = decodeURIComponent(path.slice("/pipelines/rfp/".length)).trim();
+      if (!uid) return json({ error: "No RFP selected." }, 400);
+      return pipelineWrites.deleteRfp(ctx, uid);
     }
     if (path === "/opportunity" && m === "GET") {
       const uid = new URL(req.url).searchParams.get("uid")?.trim() ?? "";

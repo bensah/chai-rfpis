@@ -1,5 +1,6 @@
 /**
- * The Pipeline's two write paths: the RFP editor's save, and recording a decision.
+ * The Pipeline's three write paths: the RFP editor's save, recording a decision, and
+ * removing an opportunity outright.
  *
  * Kept apart from routes_pipelines.ts, which only reads. A route that changes stored data
  * deserves to be read on its own, and the rules below are the ones a reader has to trust.
@@ -22,10 +23,15 @@
  * spelling. A TypeScript guess at that is a guess at a schema, and when it guesses wrong
  * the tombstone is silently not written — which is precisely the reported bug that
  * function exists to fix: "we keep declining this and it keeps coming back".
+ *
+ * THE DELETE INHERITS BOTH RULES AND ADDS AN ORDERING. `deleteRfp` below queues the same
+ * two consequences and, unlike the other two routes, does not touch the row at all: the
+ * runner deletes it, last, after it has recorded them. See that route for why.
  */
 import { q, type Db } from "./db.ts";
 import { body, json, str } from "./http.ts";
 import type { Json } from "./jwt.ts";
+import { isAdmin, type PermUser } from "./permissions.ts";
 import type { Ctx } from "./session.ts";
 
 /** Queue work for the Actions runner. `routes_jobs.ts::enqueue`, narrowed to what is used. */
@@ -375,6 +381,18 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
    * is stamped), so it is stamped here and nowhere else in this file. UTC, matching the
    * deployment the Python runs in, so a decision taken near midnight lands in the same
    * reporting bucket either way.
+   *
+   * THE CALLER MAY SUPPLY IT, and that is the point. Today's date is a fair default for a
+   * decision recorded as it is taken, and wrong for every other case: a team that settles
+   * a call on the 3rd and records it on the 20th was having its work dated by its data
+   * entry. The owner's rule (2026-11-09) is that a system date may only stand in at a
+   * row's FIRST capture; after that it is audit trail. `decision_overridden_at` below is
+   * that audit trail and nothing files a row by it.
+   *
+   * Rejected rather than silently corrected: a date in the future (a decision cannot have
+   * been taken tomorrow) and anything that is not a real calendar date. Both are mistakes
+   * a person can fix in the field they just typed in, and quietly substituting today
+   * would reintroduce exactly the problem this accepts a date to avoid.
    */
   async function decide(req: Request, ctx: Ctx): Promise<Response> {
     const b = await body(req);
@@ -392,6 +410,25 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
     const before = await sb.get("rfp_submissions", `select=*&uid=eq.${q(uid)}&limit=1`);
     if (!before.length) return json({ error: "No such opportunity." }, 404);
 
+    // An explicit date wins; today is only the fallback.
+    const today = new Date().toISOString().slice(0, 10);
+    const wanted = str(b.decision_date).trim().slice(0, 10);
+    let decisionDate = today;
+    if (wanted) {
+      const real = /^\d{4}-\d{2}-\d{2}$/.test(wanted) &&
+        new Date(wanted + "T00:00:00Z").toISOString().slice(0, 10) === wanted;
+      if (!real) {
+        return json({ error: "That is not a real date.", problems: [wanted] }, 400);
+      }
+      if (wanted > today) {
+        return json({
+          error: "A decision cannot have been taken in the future.",
+          problems: [wanted],
+        }, 400);
+      }
+      decisionDate = wanted;
+    }
+
     const note = str(b.note).trim();
     const saved = await sb.update("rfp_submissions", `uid=eq.${q(uid)}`, {
       decision,
@@ -399,7 +436,7 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
       // who changes their verdict and says nothing should not keep the rationale for the
       // verdict they just abandoned, so the client sends "" to clear it deliberately.
       ...(b.note === undefined ? {} : { decision_note: note || null }),
-      decision_date: new Date().toISOString().slice(0, 10),
+      decision_date: decisionDate,
       decision_overridden_by: ctx.session.email,
       decision_overridden_at: nowIso(),
     });
@@ -428,7 +465,83 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
     return json({ row, warnings, recorded });
   }
 
-  return { patchRfp, decide };
+  /**
+   * DELETE /pipelines/rfp/:uid — remove an opportunity from the pipeline for good.
+   *
+   * Admin only, matching the Streamlit button it ports (`views/rfp_editor.py`'s
+   * "🗑 Delete this RFP" is `disabled=not is_admin`, and `is_admin` there is
+   * `role in {admin, super_user}` — `core/permissions.py`).
+   *
+   * THIS ROUTE DELETES NOTHING. It queues `delete_rfp`, and the runner does all three
+   * steps in the Python's order: the scan's tombstone (`seen_ledger.record_human_close`),
+   * the ML training label (`decision_log.log_human_reject`), and only then the row.
+   *
+   * WHY NOT DELETE INLINE AND LET THE JOB CATCH UP, which is the shape `decide` uses and
+   * the one that would let the table update at once. Because both consequences are read
+   * FROM the live row. The runner looks it up by uid rather than taking a copy — the same
+   * choice `record_decision` makes on purpose ("the row is read back rather than passed
+   * in: it is the truth") — and `seen_ledger` records the deduplicator's own projection of
+   * it, which is what the next scan matches against. Delete first and a slow job finds
+   * nothing to tombstone; a job that never runs leaves nothing behind at all. That state —
+   * row gone from `rfp_submissions`, nothing in `rfp_seen` — is not a near miss, it is
+   * precisely the bug this whole path exists to prevent, and it is unrecoverable because
+   * the row the tombstone would have been made from is the thing that was destroyed.
+   * `decide` can afford to write first because its row survives the write. A delete cannot.
+   *
+   * So the row is still there when this responds, and the answer is 202 with the job id
+   * rather than 200 with a deleted row: the caller waits for the job before it closes and
+   * reloads. A delete that takes a minute and cannot half-happen beats an instant one that
+   * can. And when the job cannot be queued at all this REFUSES — 503, nothing removed —
+   * rather than warning and proceeding the way a save or a decision does, because there is
+   * no half of this worth keeping.
+   *
+   * The ordering inside the job is the Python's too, including its tolerance: a tombstone
+   * that fails is logged and the delete still happens (`seen_ledger.record_human_close`:
+   * "a failed tombstone must never block … the delete the user actually asked for"). What
+   * is not tolerated is doing them in the other order.
+   */
+  async function deleteRfp(ctx: Ctx, uid: string): Promise<Response> {
+    // Checked BEFORE the row is looked up, so a non-admin learns nothing about which uids
+    // exist — the 403 is the same whether the opportunity is there or not.
+    if (!isAdmin(ctx.user as PermUser)) {
+      return json({ error: "Only an admin can delete an opportunity." }, 403);
+    }
+
+    const sb = db.as(ctx.scope);
+    const before = await sb.get("rfp_submissions",
+      `select=uid,opportunity_title,tenant_id&uid=eq.${q(uid)}&limit=1`);
+    // A row that is missing and a row this tenant cannot see answer alike, as in patchRfp,
+    // so the route cannot be used to discover that a uid exists somewhere else.
+    if (!before.length) return json({ error: "No such opportunity." }, 404);
+    const row = before[0];
+
+    const tenantId = str(row.tenant_id).trim() || db.scopeTid(ctx.scope);
+    let jobId: string | null = null;
+    if (enqueue && !/^0{8}-/.test(tenantId)) {
+      try {
+        jobId = await enqueue("delete_rfp",
+          { tenant_id: tenantId, uid, by: ctx.session.email }, ctx);
+      } catch (e) {
+        console.error("delete_rfp enqueue failed", uid, e);
+      }
+    }
+    if (!jobId) return json(NOT_DELETED, 503);
+
+    // `enqueue` never throws: a job it could not hand to the runner comes back as an id
+    // pointing at a row already marked `failed`. For a save that is a warning to carry;
+    // here it is the whole request, and answering 202 would send somebody off to watch a
+    // job that is never going to run. Read it back and say so now.
+    const [job] = await db.service.get("web_jobs", `select=status&id=eq.${q(jobId)}&limit=1`);
+    if (!job || str(job.status) === "failed") return json(NOT_DELETED, 503);
+
+    return json({
+      uid,
+      title: str(row.opportunity_title) || null,
+      queued: { job_id: jobId },
+    }, 202);
+  }
+
+  return { patchRfp, decide, deleteRfp };
 }
 
 /**
@@ -440,4 +553,16 @@ const NOT_RECORDED = {
   code: "decision_not_recorded",
   detail: "The decision is saved, but recording it for the scan and the learning engine " +
     "could not be queued. A declined opportunity may be found again by the next scan.",
+};
+
+/**
+ * Said in full, like NOT_RECORDED above, and for the opposite reason: here nothing
+ * happened. The opportunity is still in the pipeline, and an admin who was told "deleted"
+ * and saw it again tomorrow would reasonably conclude the delete button does not work.
+ */
+const NOT_DELETED = {
+  error: "The opportunity was NOT deleted. Removing it has to record the scan's " +
+    "tombstone first, and that work could not be queued — without it the next scan " +
+    "would simply find this call again. Nothing was changed. Try again in a moment.",
+  code: "delete_not_queued",
 };

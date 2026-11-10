@@ -4,8 +4,9 @@
  * PAGES[k].icon (the emoji) is still what the notification feed renders.
  */
 import {
-  BookOpen, Briefcase, Building2, ClipboardList, FilePlus, Globe, KeyRound, LayoutDashboard,
-  Layers, Lock, LogIn, Search, Settings, Target, TrendingUp, User,
+  Bell, BookOpen, Briefcase, Building2, ClipboardList, FilePlus, Globe, KeyRound,
+  LayoutDashboard,
+  Layers, LayoutList, Lock, LogIn, Search, Settings, Target, TrendingUp, User,
   type LucideIcon,
 } from "lucide-react";
 import type { PageKey } from "../router";
@@ -19,7 +20,9 @@ export const NAV_ICON: Record<PageKey, LucideIcon> = {
   donors: Globe,
   organization: Building2,
   "submit-new-rfp": FilePlus,
+  alerts: Bell,
   opportunity: Target,
+  opportunities: LayoutList,
   profile: User,
   help: BookOpen,
   search: Search,

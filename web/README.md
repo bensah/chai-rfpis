@@ -123,21 +123,66 @@ npm run parity    # TypeScript vs the Python originals, on the live data (read-o
 
 ## Deploy (free tiers)
 
-1. **API — Supabase Edge Function** (from `D:\Apps\chai-rfpis`, with the Supabase CLI):
-   ```bash
-   npx supabase@latest secrets set RFPIS_JWT_SECRET=<Settings → JWT Keys → legacy JWT secret>
-   npx supabase@latest secrets set RFPIS_WEB_ORIGINS=https://rfpis.pages.dev
-   npx supabase@latest secrets set RFPIS_GH_DISPATCH_TOKEN=<fine-grained token: this repo, Actions read & write>
-   npx supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api
-   ```
-   `--no-verify-jwt` is required: the function checks its own session tokens.
-2. **Frontend — Cloudflare Pages**, connected to the GitHub repo:
-   - root directory: `web`
-   - build command: `npm run build`
-   - output directory: `dist`
-   - environment variable: `VITE_API_BASE=https://<project-ref>.supabase.co/functions/v1/rfpis-api`
+**Both halves deploy themselves on a push to `main`.** Nothing below needs running by hand
+for an ordinary change.
 
-   `public/_redirects` sends every path to `index.html`.
+| Half | Deployed by | On | From |
+|---|---|---|---|
+| Frontend | Cloudflare Pages, connected to the GitHub repo | every push to `main` | `web/`, `npm run build`, output `dist` |
+| API — Edge Function `rfpis-api` | GitHub Actions, [`.github/workflows/deploy-api.yml`](../.github/workflows/deploy-api.yml) | a push to `main` that touches `supabase/functions/**` | `npx supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api` |
+
+The API half used to be the manual one, and that asymmetry is what broke the live site on
+2026-11-09: the function was several commits behind the frontend, so the rail asked for a
+route it did not have and Home asked for a `/home` contract it did not serve. Every tile
+read "—" and the funnel read `NaN` — a page that looks like lost data rather than an old
+API. The workflow exists to stop that recurring; its header explains the path list and why
+it stays faster than the Pages build.
+
+### One-time setup
+
+Three secrets on the **Supabase project**, set once with the CLI from `D:\Apps\chai-rfpis`.
+These are the function's own runtime secrets; CI never reads or rewrites them, and a deploy
+leaves them alone.
+
+```bash
+npx supabase@latest secrets set RFPIS_JWT_SECRET=<Settings → JWT Keys → legacy JWT secret>
+npx supabase@latest secrets set RFPIS_WEB_ORIGINS=https://rfpis.pages.dev
+npx supabase@latest secrets set RFPIS_GH_DISPATCH_TOKEN=<fine-grained token: this repo, Actions read & write>
+```
+
+One secret on **GitHub**, which the deploy workflow authenticates with. Without it the
+workflow fails on its first step with these instructions rather than half-deploying:
+
+- **`SUPABASE_ACCESS_TOKEN`** — a Supabase personal access token from
+  <https://supabase.com/dashboard/account/tokens>, added at GitHub → this repo → Settings →
+  Secrets and variables → Actions → New **repository** secret. Scope the token to the RFPIS
+  project alone (Resource access → Project), then drop the "Full access" preset and set
+  every permission to None except **Application services → Edge Functions: Read-write** and
+  **Project → Project Settings: Read**. Leaving *Edge Function Secrets* at None is what
+  makes "CI does not touch the function's secrets" true of the token and not just of the
+  workflow; leaving *API Key Secrets* and the whole *Database* category at None keeps the
+  service-role key and the migration surface away from a public repo's CI.
+  Give it the longest expiry offered: the dashboard defaults to 7 days, and an expired
+  token stops API deploys while Cloudflare keeps shipping the frontend, which is the drift
+  this workflow exists to prevent.
+
+One setting on **Cloudflare Pages**, in its own dashboard:
+`VITE_API_BASE=https://<project-ref>.supabase.co/functions/v1/rfpis-api`.
+`public/_redirects` sends every path to `index.html`.
+
+### Deploying the API by hand
+
+Still possible, and still the way to put a function change on the project without a push to
+`main` — testing a branch against the real project, or recovering when the workflow itself
+cannot run:
+
+```bash
+npx supabase@latest functions deploy rfpis-api --no-verify-jwt --use-api
+```
+
+`--no-verify-jwt` is required, in CI and here: the function checks its own session tokens,
+which are deliberately not Supabase JWTs. With Supabase's gate in front, every request is
+rejected before the handler sees it.
 
 ## Keeping it in step with Streamlit
 

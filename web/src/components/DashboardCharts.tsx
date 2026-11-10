@@ -27,7 +27,11 @@
 
 const pct = (n: number, total: number) => (total > 0 ? (n / total) * 100 : 0);
 
-export type Part = { label: string; value: number; className: string };
+/** `to` makes the figure a door: the legend entry links to the rows behind it. Optional,
+ *  because a part whose rows nobody can act on should not pretend to be clickable. */
+import { Link } from "../router";
+
+export type Part = { label: string; value: number; className: string; to?: string };
 
 /** The app's status steps, as classes so they stay with the design system. */
 export const DECISION_PARTS = {
@@ -69,13 +73,25 @@ export function SegmentedBar(
         ))}
       </div>
       <ul className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1">
-        {parts.map((p) => (
-          <li key={p.label} className="flex items-center gap-1.5 text-xs text-ink-600">
-            <span className={`h-2.5 w-2.5 shrink-0 rounded-sm ${p.className}`} aria-hidden />
-            {p.label}
-            <span className="font-semibold text-ink-800 tabular-nums">{p.value}</span>
-          </li>
-        ))}
+        {parts.map((p) => {
+          const body = (
+            <>
+              <span className={`h-2.5 w-2.5 shrink-0 rounded-sm ${p.className}`} aria-hidden />
+              {p.label}
+              <span className="font-semibold text-ink-800 tabular-nums">{p.value}</span>
+            </>
+          );
+          return (
+            <li key={p.label} className="flex items-center gap-1.5 text-xs text-ink-600">
+              {p.to
+                ? <Link to={p.to} title={`Show the ${p.label.toLowerCase()}`}
+                    className="flex items-center gap-1.5 hover:text-accent-700 hover:underline">
+                    {body}
+                  </Link>
+                : body}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -87,7 +103,7 @@ export function SegmentedBar(
  * are free to be read as pure magnitude.
  */
 export function StageBars(
-  { stages }: { stages: { label: string; value: number; note?: string }[] },
+  { stages }: { stages: { label: string; value: number; note?: string; to?: string }[] },
 ) {
   const max = Math.max(1, ...stages.map((s) => s.value));
   return (
@@ -97,7 +113,12 @@ export function StageBars(
           key={s.label}
           className="grid grid-cols-[minmax(0,8.5rem)_1fr_3rem] items-center gap-3 text-sm"
         >
-          <span className="truncate text-ink-700" title={s.label}>{s.label}</span>
+          {s.to
+            ? <Link to={s.to} title={`Show the ${s.label.toLowerCase()}`}
+                className="truncate text-ink-700 hover:text-accent-700 hover:underline">
+                {s.label}
+              </Link>
+            : <span className="truncate text-ink-700" title={s.label}>{s.label}</span>}
           <span className="h-2.5 overflow-hidden rounded-full bg-ink-100">
             <span
               className="block h-full rounded-full bg-accent-600 transition-[width] duration-500"

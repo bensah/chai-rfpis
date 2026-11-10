@@ -1028,6 +1028,25 @@ else:
              "answer. 'Partial' covers contact made through a third party on our "
              "behalf. Leave unanswered and it is excluded from Donor relationship.")]
 
+    # WHEN THE DECISION WAS TAKEN, not when it was typed. Defaults to the date already on
+    # the row, else today, so recording a decision as it happens needs no thought — and a
+    # decision being written up later can be given the day it actually belongs to. The
+    # pipeline files rows by this; `decision_overridden_at` keeps the save stamp for audit.
+    def _as_date(v):
+        """A stored date as a `date`, or None. pandas because the column has carried ISO
+        text, a date and NaT at different times and this must not raise on any of them."""
+        try:
+            d = pd.to_datetime(v, errors="coerce")
+            return None if pd.isna(d) else d.date()
+        except Exception:
+            return None
+
+    _decided_on = st.date_input(
+        "Decision taken on", value=(_as_date(row.get("decision_date")) or date.today()),
+        max_value=date.today(), key=f"decided_on_{row['uid']}",
+        help="The day the team decided, which may be earlier than today if you are "
+             "recording it after the fact. It cannot be in the future.")
+
     bsave, bcancel, _bspace = st.columns([1, 1, 3])
     if bsave.button("💾 Save changes", type="primary", width='stretch'):
         update = {
@@ -1039,7 +1058,12 @@ else:
             "decision": new_decision,
             "decision_note": new_rationale.strip() or None,
             "donor_engaged": new_engaged,
-            "decision_date": date.today().isoformat(),
+            # The date the TEAM gives, falling back to today. A system date may only
+            # stand in at a row's first capture (owner, 2026-11-09): a call settled on
+            # the 3rd and written up on the 20th was being dated by its data entry.
+            # `_decided_on` is the form's own field; today is only the default in it.
+            "decision_date": (_decided_on.isoformat()
+                              if isinstance(_decided_on, date) else date.today().isoformat()),
             "decision_overridden_by": user.get("email"),
             "decision_overridden_at": datetime.now(timezone.utc).isoformat(),
         }

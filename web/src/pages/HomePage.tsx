@@ -37,6 +37,12 @@ const dash = "—";
 const usd = (n: number | null | undefined) =>
   n == null ? dash : `$${Math.round(n).toLocaleString("en-US")}`;
 
+/** Where a figure's rows live. Every number on this page that stands for a set of calls
+ *  links through here, and the key is the Dashboard figure's own name — the same key the
+ *  server counted it under (api/home_buckets.ts), so the list cannot show a different set
+ *  from the one the tile counted. */
+const rowsOf = (bucket: string) => hrefOf("opportunities", { bucket });
+
 function Tile({ label, value, note, to, title }: {
   label: string;
   value: number | string;
@@ -84,14 +90,21 @@ export default function HomePage({ user }: { user: User }) {
             plotted forms below are for the figures whose SHAPE carries meaning: a split,
             a progression, a ratio. */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Tile label="Calls found" value={k?.found ?? dash} note="Non-duplicate" />
+          <Tile label="Calls found" value={k?.found ?? dash} note="Non-duplicate"
+            to={rowsOf("found")} title="Show every call found" />
           <Tile label="Awaiting review" value={k?.awaiting_review ?? dash}
-            note="No decision yet" />
+            note="No decision yet" to={rowsOf("awaiting_review")}
+            title="Show the calls nobody has decided on yet" />
           <Tile label="Applications sent" value={k?.applications_sent ?? dash}
-            note="One call can be sent twice" />
+            note="One call can be sent twice" to={rowsOf("applications_sent")}
+            title="Show everything that reached a funder" />
+          {/* Bidding owns this work, so a live number opens the stage rather than the
+              list. With nothing due, the list is the honest destination: it can say "no
+              call is currently due in 14 days", which an empty stage cannot. */}
           <Tile label="Due in 14 days" value={k?.due_in_14_days ?? dash}
             note={dueSoon > 0 ? "Open in Bidding" : "Live bids only"}
-            to={dueSoon > 0 ? `${hrefOf("pipelines")}?stage=bidding&period=all` : undefined}
+            to={dueSoon > 0 ? `${hrefOf("pipelines")}?stage=bidding&period=all`
+              : rowsOf("due_in_14_days")}
             title="Open the live bids, soonest deadlines first" />
         </div>
 
@@ -105,11 +118,14 @@ export default function HomePage({ user }: { user: User }) {
               <SegmentedBar
                 total={k.found} unit="calls"
                 parts={[
-                  { label: "Proceed", value: k.proceed, className: DECISION_PARTS.good },
-                  { label: "Parked", value: k.parked, className: DECISION_PARTS.holding },
-                  { label: "Declined", value: k.declined, className: DECISION_PARTS.bad },
+                  { label: "Proceed", value: k.proceed, className: DECISION_PARTS.good,
+                    to: rowsOf("proceed") },
+                  { label: "Parked", value: k.parked, className: DECISION_PARTS.holding,
+                    to: rowsOf("parked") },
+                  { label: "Declined", value: k.declined, className: DECISION_PARTS.bad,
+                    to: rowsOf("declined") },
                   { label: "Not yet reviewed", value: k.awaiting_review,
-                    className: "bg-ink-300" },
+                    className: "bg-ink-300", to: rowsOf("awaiting_review") },
                 ]}
               />
             )}
@@ -125,11 +141,12 @@ export default function HomePage({ user }: { user: User }) {
               <SegmentedBar
                 total={k.applications_sent} unit="applications"
                 parts={[
-                  { label: "Approved", value: k.approved, className: DECISION_PARTS.good },
+                  { label: "Approved", value: k.approved, className: DECISION_PARTS.good,
+                    to: rowsOf("approved") },
                   { label: "Awaiting answer", value: k.awaiting_answer,
-                    className: DECISION_PARTS.holding },
+                    className: DECISION_PARTS.holding, to: rowsOf("awaiting_answer") },
                   { label: "Not approved", value: k.not_approved,
-                    className: DECISION_PARTS.bad },
+                    className: DECISION_PARTS.bad, to: rowsOf("not_approved") },
                 ]}
               />
             )}
@@ -143,11 +160,15 @@ export default function HomePage({ user }: { user: User }) {
             </p>
             {k && (
               <StageBars stages={[
-                { label: "Found", value: k.found },
-                { label: "Reviewed", value: k.proceed + k.parked + k.declined },
-                { label: "Proceed", value: k.proceed },
-                { label: "Sent", value: k.applications_sent },
-                { label: "Approved", value: k.approved },
+                { label: "Found", value: k.found, to: rowsOf("found") },
+                // Counted here as the three decisions, which is how the bar reads; the
+                // list's own `reviewed` bucket is "a decision is recorded", the same set
+                // from the other side. The test pins them equal.
+                { label: "Reviewed", value: k.proceed + k.parked + k.declined,
+                  to: rowsOf("reviewed") },
+                { label: "Proceed", value: k.proceed, to: rowsOf("proceed") },
+                { label: "Sent", value: k.applications_sent, to: rowsOf("applications_sent") },
+                { label: "Approved", value: k.approved, to: rowsOf("approved") },
               ]} />
             )}
           </Card>

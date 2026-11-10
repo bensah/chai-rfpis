@@ -240,10 +240,97 @@ def _record_decision(job: JobRow, params: dict, runner: str) -> dict:
         reset_tenant_override(token)
 
 
+def _delete_rfp(job: JobRow, params: dict, runner: str) -> dict:
+    """Remove one opportunity, in the order `views/rfp_editor.py` removes it.
+
+    THE ORDER IS THE WHOLE JOB. Tombstone, then label, then delete:
+
+      1. `seen_ledger.record_human_close(row, reason="human_reject")` — the fact the SCAN
+         reads. Until this existed, deleting a row removed the only live record the
+         deduplicator matches against, and the next scan re-found the call and inserted it
+         afresh: the reported "we keep declining this and it keeps coming back".
+      2. `decision_log.log_human_reject([row], by=...)` — the ML training label. Removal is
+         the most decisive judgement a reviewer makes and it used to be the only one the
+         system threw away.
+      3. The delete itself.
+
+    Both of the first two are read FROM the row, which is why the API cannot delete it and
+    leave this to catch up, and why the whole act is one job rather than a delete plus some
+    bookkeeping (`supabase/functions/_shared/api/pipeline_writes.ts::deleteRfp` says this
+    at length). Steps 1 and 2 are best-effort, exactly as the Streamlit button has them —
+    `record_human_close`'s own docstring: "a failed tombstone must never block … the delete
+    the user actually asked for" — so what they returned is reported in the result rather
+    than raised. The order is not best-effort.
+
+    WHY NOT TYPESCRIPT IN THE ROUTE, the same answer as `_record_decision`:
+    `seen_ledger.column_map()` probes the live `rfp_seen` table to learn whether it carries
+    the modern or the legacy deadline/value spelling. Re-deriving that in the API would be
+    guessing at a schema, and a wrong guess writes no tombstone while reporting success.
+
+    params: {"tenant_id": required, "uid": required, "by": optional}
+
+    Prints counts and nothing else: this log is public (the repository is).
+    """
+    from auth.tenant_context import reset_tenant_override, set_tenant_override
+
+    tenant_id = str(params.get("tenant_id") or (job.get() or {}).get("tenant_id") or "").strip()
+    uid = str(params.get("uid") or "").strip()
+    if not tenant_id:
+        raise ValueError("delete_rfp needs a tenant_id")
+    if not uid:
+        raise ValueError("delete_rfp needs a uid")
+
+    # Every module below reads the AMBIENT tenant through get_client. Without the override
+    # this would delete from, and tombstone against, whichever tenant the runner happened
+    # to default to — and a delete is the one job that cannot be undone by re-running it.
+    token = set_tenant_override(tenant_id)
+    try:
+        from core import decision_log, seen_ledger
+        from db.supabase_client import get_client
+        sb = get_client()
+        job.progress(10, "Loading")
+        rows = sb.table("rfp_submissions").select("*").eq("uid", uid).execute().data or []
+        if not rows:
+            # Already gone — someone else's delete, or a re-run of this one. Nothing to
+            # tombstone from, and nothing to delete. Reported rather than raised: a job
+            # that found its work already done has not failed.
+            return {"found": False, "tombstoned": False, "logged": False,
+                    "deleted": 0, "runner": runner}
+        row = dict(rows[0])
+
+        # 1. The tombstone, FIRST, so a delete that fails cannot leave an un-tombstoned
+        #    row behind — and so the row it is made from still exists to be read.
+        job.progress(35, "Recording")
+        tombstoned = True
+        try:
+            seen_ledger.record_human_close(row, reason="human_reject")
+        except Exception as exc:  # noqa: BLE001 — see the docstring; never blocks the delete
+            tombstoned = False
+            print(f"  tombstone failed ({type(exc).__name__}) — deleting anyway")
+
+        # 2. The training label.
+        logged = 0
+        try:
+            logged = decision_log.log_human_reject([row], by=params.get("by") or None)
+        except Exception as exc:  # noqa: BLE001 — telemetry must not block the removal
+            print(f"  label failed ({type(exc).__name__}) — deleting anyway")
+
+        # 3. And only now the row.
+        job.progress(75, "Deleting")
+        gone = sb.table("rfp_submissions").delete().eq("uid", uid).execute().data or []
+
+        job.progress(100, "Deleted")
+        return {"found": True, "tombstoned": bool(tombstoned), "logged": int(logged),
+                "deleted": len(gone), "runner": runner}
+    finally:
+        reset_tenant_override(token)
+
+
 KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "ping": _ping,
     "rescore": _rescore,
     "record_decision": _record_decision,
+    "delete_rfp": _delete_rfp,
 }
 
 
