@@ -31,6 +31,8 @@ import { createPhase1Routes } from "./api/routes_phase1.ts";
 import { createPipelineWrites } from "./api/pipeline_writes.ts";
 import { createPipelineRoutes } from "./api/routes_pipelines.ts";
 import { createReportRoutes } from "./api/routes_report.ts";
+import { buildGrants, loadGrants } from "./api/grants.ts";
+import { loadOrgIdentity } from "./api/report_section2.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
 import { createSessions } from "./api/session.ts";
 import { createTenants } from "./api/tenants.ts";
@@ -118,6 +120,16 @@ export function createApi(env: Env, deps: Deps) {
     // The six-sheet workbook. A job, not a response: it runs openpyxl over every row the
     // page's figures come from, which no Edge Function CPU budget survives.
     if (path === "/report/export" && m === "POST") return report.exportXlsx(req, ctx);
+
+    // Bids Submitted (views/outcomes.py). Every application ever sent to a funder, with no
+    // date window — deliberately NOT the Pipeline's Outcome stage, which answers a
+    // different question over a window. See api/grants.ts.
+    if (path === "/grants" && m === "GET") {
+      const tid = db.scopeTid(ctx.scope);
+      const org = await loadOrgIdentity(db, /^0{8}-/.test(tid) ? null : tid);
+      const { rfps, rates, table } = await loadGrants(db, ctx.scope);
+      return gzipped(req, json(buildGrants({ rfps, rates, table, orgShort: org.short })));
+    }
 
     if (path === "/pipelines/weeks" && m === "GET") return pipelines.weeks(req, ctx);
     if (path === "/pipelines/screen" && m === "GET") return pipelines.screen(req, ctx);

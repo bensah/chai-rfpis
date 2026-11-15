@@ -850,3 +850,47 @@ export type ReportExportResult = {
 
 export const requestReportExport = (sel: ReportSelection, rid: string | null) =>
   post<{ job: Job; filename: string }>("/report/export", { ...sel, r: rid ?? "" });
+
+// ── Bids Submitted ───────────────────────────────────────────────────────────
+//
+// Every application ever sent to a funder, with no date window. Deliberately NOT the
+// Pipeline's Outcome stage, which answers "what did funders decide in this window" — live
+// the two win rates are 17% and 44%, and both are right because they divide by different
+// things. See supabase/functions/_shared/api/grants.ts.
+
+export type GrantRow = {
+  uid: string; title: string; funder: string; status: string;
+  decision: string; progress: string;
+  approved: boolean; pending: boolean; notApproved: boolean;
+  /** The KPI's unit — zero for a row whose progress never reached Completed. */
+  applications: number;
+  /** The by-funder table's unit — `submissions` filled to 1, with no progress gate. */
+  submissions: number;
+  usdRequested: number; usdSecured: number;
+  /** As entered, shown beside the conversion so the page cannot look like it disagrees
+   *  with the editor. */
+  amountRequested: number | null; amountSecured: number | null;
+  requestCurrency: string; securedCurrency: string;
+  deadline: string | null; dateSubmitted: string | null; expectedAward: string | null;
+  role: string; leadApplicant: string; subApplicant: string; proposalLead: string;
+  geography: string[]; link: string;
+};
+
+export type GrantFunderRow = {
+  funder: string; rfps: number; submissions: number;
+  approved: number; pending: number; notApproved: number;
+  requested: number; secured: number;
+};
+
+export type Grants = {
+  counts: { submitted: number; approved: number; pending: number; notApproved: number; rows: number };
+  money: { requested: number; secured: number; unsecured: number; balance: number };
+  winRate: number;
+  rows: GrantRow[];
+  byFunder: GrantFunderRow[];
+  rates: Record<string, [number | null, string | null]>;
+  /** Answered rows the weighted count scores as zero. Reported, never repaired. */
+  ledgerGap: string[];
+};
+
+export const fetchGrants = () => call<Grants>("/grants");
