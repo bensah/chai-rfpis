@@ -32,6 +32,7 @@ import { createPipelineWrites } from "./api/pipeline_writes.ts";
 import { createPipelineRoutes } from "./api/routes_pipelines.ts";
 import { createReportRoutes } from "./api/routes_report.ts";
 import { buildGrants, loadGrants } from "./api/grants.ts";
+import { createActionRoutes } from "./api/routes_actions.ts";
 import { loadOrgIdentity } from "./api/report_section2.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
 import { createSessions } from "./api/session.ts";
@@ -71,6 +72,7 @@ export function createApi(env: Env, deps: Deps) {
   const pipelineWrites = createPipelineWrites(db, jobs.enqueue);
   const formOptions = createFormOptions(db);
   const report = createReportRoutes(db, jobs.enqueue);
+  const actions = createActionRoutes(db);
 
   async function route(req: Request, path: string): Promise<Response> {
     const m = req.method;
@@ -124,6 +126,18 @@ export function createApi(env: Env, deps: Deps) {
     // Bids Submitted (views/outcomes.py). Every application ever sent to a funder, with no
     // date window — deliberately NOT the Pipeline's Outcome stage, which answers a
     // different question over a window. See api/grants.ts.
+    // Meeting Actions: one read for all four tabs, then the writes. See api/actions.ts.
+    if (path === "/actions" && m === "GET") return actions.read(req, ctx);
+    if (path === "/actions/notes" && m === "POST") return actions.createNote(req, ctx);
+    if (path === "/actions/engagements" && m === "POST") return actions.createEngagement(req, ctx);
+    if (path === "/actions/schedule" && m === "PUT") return actions.putSchedule(req, ctx);
+    if (path.startsWith("/actions/notes/") && m === "PATCH") {
+      return actions.patchNote(req, ctx, decodeURIComponent(path.slice("/actions/notes/".length)));
+    }
+    if (path.startsWith("/actions/engagements/") && m === "PATCH") {
+      return actions.patchEngagement(req, ctx, decodeURIComponent(path.slice("/actions/engagements/".length)));
+    }
+
     if (path === "/grants" && m === "GET") {
       const tid = db.scopeTid(ctx.scope);
       const org = await loadOrgIdentity(db, /^0{8}-/.test(tid) ? null : tid);

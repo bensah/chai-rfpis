@@ -6,6 +6,7 @@ import Layout from "./shell/Layout";
 import ClassicPage from "./pages/ClassicPage";
 import ReportPage from "./pages/ReportPage";
 import GrantsPage from "./pages/GrantsPage";
+import ActionsPage from "./pages/ActionsPage";
 import DonorsPage from "./pages/DonorsPage";
 import AlertsPage from "./pages/AlertsPage";
 import HomePage from "./pages/HomePage";
@@ -92,6 +93,8 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
     body = <PipelinePage user={user} />;
   } else if (shown === "alerts") {
     body = <AlertsPage />;
+  } else if (shown === "actions") {
+    body = <ActionsPage user={user} />;
   } else if (shown === "grants") {
     body = <GrantsPage />;
   } else if (shown === "report") {

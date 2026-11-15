@@ -894,3 +894,63 @@ export type Grants = {
 };
 
 export const fetchGrants = () => call<Grants>("/grants");
+
+// ── Meeting Actions ──────────────────────────────────────────────────────────
+//
+// One read for all four tabs — they are small, they are read together, and four round
+// trips to paint a Monday-morning screen is how a page comes to feel slow.
+
+export type MeetingNote = {
+  id: string; meetingDate: string | null; rfpUid: string; donorTitle: string;
+  remarks: string; actions: string; owner: string; deadline: string | null;
+  resolved: boolean; createdAt: string | null;
+};
+
+export type Engagement = {
+  id: string; date: string | null; donor: string; type: string; format: string;
+  internalLead: string; donorContacts: string; purpose: string; outcome: string;
+  rfpUid: string;
+  /** A NULL in the column reads as not resolved, so this is never null. */
+  resolved: boolean;
+  open: boolean;
+};
+
+export type RotaEntry = { date: string; noteTaker: string; presenter: string; chair: string; cid: string };
+
+export type Actions = {
+  week: { monday: string; sunday: string; label: string };
+  rota: RotaEntry | null;
+  weeks: string[];
+  notes: MeetingNote[];
+  engagements: Engagement[];
+  pending: {
+    notes: MeetingNote[]; engagements: Engagement[];
+    meetingTotal: number; meetingOpen: number; meetingPct: number;
+    engagementTotal: number; engagementOpen: number; engagementPct: number;
+    owners: { name: string; items: number }[];
+  };
+  schedule: RotaEntry[];
+  quarter: { from: string; count: number };
+  canEditSchedule: boolean;
+};
+
+export const fetchActions = (week?: string) =>
+  call<Actions>(`/actions${week ? `?week=${encodeURIComponent(week)}` : ""}`);
+
+export const createNote = (n: Partial<MeetingNote> & { actions: string }) =>
+  post<{ id: string }>("/actions/notes", n);
+/** Sparse: send only what changes. The resolve toggle sends `{resolved}` alone. */
+export const patchNote = (id: string, patch: Record<string, unknown>) =>
+  call<{ ok: true }>(`/actions/notes/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify(patch) });
+
+export const createEngagement = (e: Record<string, unknown>) =>
+  post<{ id: string }>("/actions/engagements", e);
+export const patchEngagement = (id: string, patch: Record<string, unknown>) =>
+  call<{ ok: true }>(`/actions/engagements/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify(patch) });
+
+/** Replaces the whole rota — the store is one blob, as it has always been. */
+export const putSchedule = (schedule: RotaEntry[]) =>
+  call<{ ok: true; count: number }>("/actions/schedule",
+    { method: "PUT", body: JSON.stringify({ schedule }) });
