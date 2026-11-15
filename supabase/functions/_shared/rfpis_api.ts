@@ -110,6 +110,7 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/report/section2" && m === "GET") return report.section2(req, ctx);
     if (path === "/report/section3" && m === "GET") return report.section3(req, ctx);
     if (path === "/report/section4" && m === "GET") return report.section4(req, ctx);
+    if (path === "/report/section5" && m === "GET") return report.section5(req, ctx);
 
     if (path === "/pipelines/weeks" && m === "GET") return pipelines.weeks(req, ctx);
     if (path === "/pipelines/screen" && m === "GET") return pipelines.screen(req, ctx);

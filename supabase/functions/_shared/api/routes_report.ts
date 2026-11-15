@@ -16,6 +16,7 @@ import { buildSection1, loadSection1, RFP_COLUMNS } from "./report_section1.ts";
 import { buildSection2, loadOrgIdentity, loadSection2 } from "./report_section2.ts";
 import { buildSection3, currenciesUsed } from "./report_section3.ts";
 import { buildSection4 } from "./report_section4.ts";
+import { buildSection5 } from "./report_section5.ts";
 import { loadCurrencies } from "./money.ts";
 import { ratesFor } from "./fx.ts";
 import {
@@ -203,5 +204,32 @@ export function createReportRoutes(db: Db) {
     }, 200, { "Cache-Control": "private, max-age=30" }));
   }
 
-  return { periods, section1, section2, section3, section4 };
+  /**
+   * Section 5 — Our Results, section id 5.
+   *
+   * All-time but for the cumulative curve, which follows the period AND the view. Needs the
+   * same FX pair as Section 3, and reads the currency list through Section 3's helper so
+   * the two money sections cannot end up asking for different rates.
+   */
+  async function section5(req: Request, ctx: Ctx): Promise<Response> {
+    const p = new URL(req.url).searchParams;
+    const t = today();
+    const sel = resolveSelection(
+      { period: p.get("period"), year: p.get("year"), month: p.get("month"), view: p.get("view") },
+      t, await activeYear(db),
+    );
+    const bounds = periodBounds(sel, t);
+    const rfps = await db.as(ctx.scope).getAll("rfp_submissions", `select=${RFP_COLUMNS}`, "uid");
+    const [rates, table] = await Promise.all([
+      ratesFor(currenciesUsed(rfps)),
+      loadCurrencies(db),
+    ]);
+    const blocks = buildSection5({ rfps, view: sel.view, bounds, rates, table });
+    return gzipped(req, json({
+      selection: sel, bounds, label: periodLabel(sel), bucketLabel: bucketLabel(sel.view),
+      ...blocks,
+    }, 200, { "Cache-Control": "private, max-age=30" }));
+  }
+
+  return { periods, section1, section2, section3, section4, section5 };
 }
