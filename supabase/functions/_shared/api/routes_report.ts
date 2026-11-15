@@ -15,6 +15,7 @@ import { loadNameConfig } from "./report_names.ts";
 import { buildSection1, loadSection1, RFP_COLUMNS } from "./report_section1.ts";
 import { buildSection2, loadOrgIdentity, loadSection2 } from "./report_section2.ts";
 import { buildSection3, currenciesUsed } from "./report_section3.ts";
+import { buildSection4 } from "./report_section4.ts";
 import { loadCurrencies } from "./money.ts";
 import { ratesFor } from "./fx.ts";
 import {
@@ -178,5 +179,29 @@ export function createReportRoutes(db: Db) {
     }, 200, { "Cache-Control": "private, max-age=30" }));
   }
 
-  return { periods, section1, section2, section3 };
+  /**
+   * Section 4 as displayed — Reviews & Decisions, section id 3.
+   *
+   * Reads the same table as Section 3 and nothing else: no FX, no name config, no partner
+   * identity. The period reaches four of the five blocks and is ignored by the other two —
+   * the decision distribution is all-time, and so are the donor decisions, because a
+   * funder's answer is a durable outcome rather than an event inside a window.
+   */
+  async function section4(req: Request, ctx: Ctx): Promise<Response> {
+    const p = new URL(req.url).searchParams;
+    const t = today();
+    const sel = resolveSelection(
+      { period: p.get("period"), year: p.get("year"), month: p.get("month"), view: p.get("view") },
+      t, await activeYear(db),
+    );
+    const bounds = periodBounds(sel, t);
+    const rfps = await db.as(ctx.scope).getAll("rfp_submissions", `select=${RFP_COLUMNS}`, "uid");
+    const blocks = buildSection4({ rfps, view: sel.view, bounds });
+    return gzipped(req, json({
+      selection: sel, bounds, label: periodLabel(sel), bucketLabel: bucketLabel(sel.view),
+      ...blocks,
+    }, 200, { "Cache-Control": "private, max-age=30" }));
+  }
+
+  return { periods, section1, section2, section3, section4 };
 }
