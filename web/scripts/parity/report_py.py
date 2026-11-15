@@ -25,6 +25,12 @@ import numpy as np
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+# This module read nothing but views/report.py for most of its life and needed no path
+# setup. Lifting `_to_usd` for check-section3 brought in `core.dropdowns`, which broke
+# check-report with ModuleNotFoundError — the import lands at module scope, so every
+# consumer paid for one consumer's dependency.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 REPORT_PY = REPO_ROOT / "views" / "report.py"
 
 # BOTH ENDS, EXPLICITLY. On Windows the default codec for stdin and stdout is cp1252, and
@@ -50,6 +56,9 @@ WANT_FUNCS = [
     "_canonical_area", "_programme_area_freq",
     # Section 1's, lifted for check-section1.mjs.
     "_discovery_ts", "_bucketed_count", "_bucketed_sum", "_submitted_mask",
+    # Section 3's money, lifted for check-section3.mjs. `_to_usd` reaches
+    # core.dropdowns.usd_rate, which the harness pins so the two halves share a rate.
+    "_to_usd", "_series_to_usd",
 ]
 WANT_ASSIGNS = ["_PERIOD_OPTS", "_VIEW_OPTS", "_MONTH_NAMES", "_AREA_NON_VALUES",
                 # _submitted_mask reads this one; without it the lift raises NameError
@@ -67,8 +76,12 @@ def _lift() -> tuple[dict, dict]:
     """
     src = REPORT_PY.read_text(encoding="utf-8")
     tree = ast.parse(src)
+    from core import dropdowns as _dropdowns
     ns: dict = {
         "pd": pd, "np": np, "re": re, "json": json, "date": date, "timedelta": timedelta,
+        # _to_usd calls dropdowns.usd_rate. check-section3 replaces that function with one
+        # answering from the rates the Node side used, so both halves convert identically.
+        "dropdowns": _dropdowns,
         "__builtins__": __builtins__,
     }
     picked: list[ast.stmt] = []

@@ -14,6 +14,9 @@ import { gzipped, json } from "./http.ts";
 import { loadNameConfig } from "./report_names.ts";
 import { buildSection1, loadSection1, RFP_COLUMNS } from "./report_section1.ts";
 import { buildSection2, loadOrgIdentity, loadSection2 } from "./report_section2.ts";
+import { buildSection3, currenciesUsed } from "./report_section3.ts";
+import { loadCurrencies } from "./money.ts";
+import { ratesFor } from "./fx.ts";
 import {
   bucketLabel, bucketRange, cadenceWord, MONTH_NAMES, PERIOD_OPTS, periodBounds,
   periodLabel, periodPhrase, periodSlug, resolveSelection, VIEW_OPTS, YEAR_MAX, YEAR_MIN,
@@ -147,5 +150,33 @@ export function createReportRoutes(db: Db) {
     }, 200, { "Cache-Control": "private, max-age=30" }));
   }
 
-  return { periods, section1, section2 };
+  /**
+   * Section 3 as displayed — the status & eligibility funnel, section id 2.
+   *
+   * The period is read but barely used: only `discoveredInPeriod` depends on it. Everything
+   * else is all-time on purpose, because the Excel-migrated rows have no search_date and a
+   * filtered funnel would hide the organisation's whole pre-migration pipeline.
+   */
+  async function section3(req: Request, ctx: Ctx): Promise<Response> {
+    const p = new URL(req.url).searchParams;
+    const t = today();
+    const sel = resolveSelection(
+      { period: p.get("period"), year: p.get("year"), month: p.get("month"), view: p.get("view") },
+      t, await activeYear(db),
+    );
+    const bounds = periodBounds(sel, t);
+    const rfps = await db.as(ctx.scope).getAll("rfp_submissions", `select=${RFP_COLUMNS}`, "uid");
+    // The same FX source the snapshot and the Pipeline use. A second rate source here would
+    // drift from them, and the value funnel would stop agreeing with Outcome.
+    const [rates, table] = await Promise.all([
+      ratesFor(currenciesUsed(rfps)),
+      loadCurrencies(db),
+    ]);
+    const blocks = buildSection3({ rfps, bounds, rates, table });
+    return gzipped(req, json({
+      selection: sel, bounds, label: periodLabel(sel), ...blocks,
+    }, 200, { "Cache-Control": "private, max-age=30" }));
+  }
+
+  return { periods, section1, section2, section3 };
 }
