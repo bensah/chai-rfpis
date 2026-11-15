@@ -12,6 +12,18 @@ const SEEN_KEY = "notifications_seen";     // app_settings: {email: iso} of each
 
 const ORG_DEFAULT_NAME = "Your Organization";
 
+/**
+ * How far back the feed reads, EXPORTED because the parity harness needs the same numbers.
+ *
+ * `core/notifications.recent_feed` takes these as `limit_scans` / `limit_rfps`, and the two
+ * sides must read the same window or the comparison turns into an argument about which rows
+ * each one happened to see. They are named here, and check-shell.mjs passes them to the
+ * Python half, so widening one window cannot silently leave the check comparing two
+ * different slices of the table.
+ */
+export const SCAN_FEED_LIMIT = 12;
+export const RFP_FEED_LIMIT = 40;
+
 /** pandas.to_datetime(v, utc=True): a naive timestamp is UTC, a bare date is UTC midnight. */
 export function parseTs(v: unknown): number | null {
   if (v == null || v === "") return null;
@@ -58,13 +70,14 @@ export function createShellRoutes(db: Db) {
     const sb = db.as(ctx.scope);
     const eff = db.scopeTid(ctx.scope);
     const [rawScans, rfps] = await Promise.all([
-      sb.get("scan_logs", `select=*&order=scan_date.desc&limit=${12 * 4}`).catch(() => [] as Json[]),
+      sb.get("scan_logs", `select=*&order=scan_date.desc&limit=${SCAN_FEED_LIMIT * 4}`)
+        .catch(() => [] as Json[]),
       sb.get("rfp_submissions",
         "select=uid,opportunity_title,source,search_date,submitted_by," +
         "auto_recommendation,alignment_score,funding_agency,call_submission_deadline" +
         // 40, not 15: auto rows are now kept when the engine rated them Proceed or
         // Park, and a Friday scan can bury a week of manual entries in the first 15.
-        "&order=search_date.desc&limit=40").catch(() => [] as Json[]),
+        `&order=search_date.desc&limit=${RFP_FEED_LIMIT}`).catch(() => [] as Json[]),
     ]);
     const items: FeedItem[] = [];
     // System-wide runs (no tenant_id) show to everyone; a tenant's own screening run only to
@@ -73,7 +86,7 @@ export function createShellRoutes(db: Db) {
     for (const s of rawScans) {
       const stid = s.tenant_id;
       if (!stid || String(stid) === eff) scans.push(s);
-      if (scans.length >= 12) break;
+      if (scans.length >= SCAN_FEED_LIMIT) break;
     }
     for (const s of scans) {
       const [icon, detail] = scanIconAndDetail(s);
