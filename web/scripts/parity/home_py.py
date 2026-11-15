@@ -1,9 +1,19 @@
-"""Python half of check-scoring.mjs: app_pages/home.py's counters, per tenant.
+"""Python half of check-scoring.mjs: app_pages/home.py's counters, per tenant. Read-only.
 
-A copy of the `_kpis` body — the page itself is a Streamlit script that cannot be imported
-without rendering. Keep the two in step: if home.py's arithmetic changes, change it here and
-the TypeScript will fail the check until it is changed too. Read-only.
+LIFTED, NOT RETYPED. This file used to carry a hand-copy of `_kpis`'s body with a docstring
+asking the next person to keep the two in step. Nobody can: a copy agrees with itself, so
+the check would go on passing while home.py's arithmetic moved underneath it, and the one
+thing the check exists to notice is exactly that movement.
+
+The page is a Streamlit script - importing it renders a page and calls st.* at module level
+- so it cannot simply be imported. `ast` takes the one function out of the file instead,
+without executing anything else in it: parse home.py, pull the `_kpis` FunctionDef, drop its
+@st.cache_data decorator (there is no Streamlit runtime here), and compile that alone
+against the handful of names its body uses. If `_kpis` changes, this picks the change up on
+the next run; if it is renamed or deleted, this fails loudly rather than comparing against a
+ghost.
 """
+import ast
 import json
 import sys
 from datetime import date, timedelta
@@ -34,57 +44,22 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 
-FIELDS = ("uid,decision,donor_decision,progress_status,"
-          "call_submission_deadline,is_duplicate")
+def _lift(src: Path, name: str):
+    """The named module-level function out of `src`, compiled alone and undecorated."""
+    tree = ast.parse(src.read_text(encoding="utf-8"), filename=str(src))
+    fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
+    if not fns:
+        raise SystemExit(f"{src.name} no longer defines {name}() — check-scoring's home "
+                         f"section is comparing against a function that has moved or gone.")
+    fn = fns[0]
+    fn.decorator_list = []      # @st.cache_data wants a Streamlit runtime; there is none here
+    ns = {"get_client": get_client, "clean_df": clean_df, "pd": pd,
+          "date": date, "timedelta": timedelta}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), str(src), "exec"), ns)  # noqa: S102
+    return ns[name]
 
 
-def kpis() -> dict:
-    rfps = get_client().table("rfp_submissions").select(FIELDS).execute().data or []
-    today = date.today()
-    in_two_weeks = today + timedelta(days=14)
-
-    def _to_date(v):
-        if v is None:
-            return None
-        try:
-            if pd.isna(v):
-                return None
-        except (TypeError, ValueError):
-            pass
-        try:
-            ts = pd.to_datetime(v, errors="coerce")
-            return None if pd.isna(ts) else ts.date()
-        except Exception:
-            return None
-
-    df = clean_df(pd.DataFrame(rfps))
-    total_submissions = int(len(df))
-    if not df.empty:
-        dup_count = int(df["is_duplicate"].fillna(False).sum())
-        unique = df[~df["is_duplicate"].fillna(False)].copy()
-        unique["_d"] = unique["call_submission_deadline"].apply(_to_date)
-        dec_lower = unique["decision"].fillna("").astype(str).str.strip().str.lower()
-        total_unique = int(len(unique))
-        proceed = int(dec_lower.str.startswith("proceed").sum())
-        park = int(dec_lower.eq("park").sum())
-        decline = int(dec_lower.eq("decline").sum())
-        proceed_df = unique[dec_lower.str.startswith("proceed").to_numpy()]
-        overdue = int(proceed_df["_d"].apply(lambda d: d is not None and d < today).sum())
-        due_soon = int(proceed_df["_d"].apply(
-            lambda d: d is not None and today <= d <= in_two_weeks).sum())
-        ps_lower = unique["progress_status"].fillna("").astype(str).str.strip().str.lower()
-        submitted_count = int(ps_lower.eq("completed").sum())
-        dd_lower = unique["donor_decision"].fillna("").astype(str).str.strip().str.lower()
-        awarded_grants = int(dd_lower.eq("approved").sum())
-    else:
-        dup_count = total_unique = proceed = park = decline = overdue = due_soon = 0
-        submitted_count = awarded_grants = 0
-
-    return {"total_unique": total_unique, "total_found": total_submissions,
-            "duplicates": dup_count, "proceed": proceed, "park": park, "decline": decline,
-            "overdue": overdue, "due_soon": due_soon, "submitted": submitted_count,
-            "awarded_grants": awarded_grants}
-
+kpis = _lift(ROOT / "app_pages" / "home.py", "_kpis")
 
 out = {}
 for t in (service_client().table("tenants").select("id").eq("status", "active")
@@ -92,7 +67,9 @@ for t in (service_client().table("tenants").select("id").eq("status", "active")
     tid = str(t["id"])
     tok = tc.set_tenant_override(tid)
     try:
-        out[tid] = kpis()
+        # `scope` is _kpis's cache discriminator and unused in the body; the tenant id is
+        # the honest value for it, and the decorator is gone anyway.
+        out[tid] = kpis(tid)
     finally:
         tc.reset_tenant_override(tok)
 sys.stdout.write(json.dumps(out))
