@@ -14,6 +14,7 @@ import { body, gzipped, json, str } from "./http.ts";
 import { loadNameConfig } from "./report_names.ts";
 import { buildSection1, loadSection1, RFP_COLUMNS } from "./report_section1.ts";
 import { buildSection2, loadOrgIdentity, loadSection2 } from "./report_section2.ts";
+import { exportFilename, type ExportParams } from "./report_export.ts";
 import { buildSection3, currenciesUsed } from "./report_section3.ts";
 import { buildSection4 } from "./report_section4.ts";
 import { buildSection5 } from "./report_section5.ts";
@@ -28,7 +29,12 @@ import {
   periodLabel, periodPhrase, periodSlug, resolveSelection, VIEW_OPTS, YEAR_MAX, YEAR_MIN,
   type Selection,
 } from "./report_period.ts";
+import { isSuperUser, type PermUser } from "./permissions.ts";
+import type { Json } from "./jwt.ts";
 import type { Ctx } from "./session.ts";
+
+/** How a route hands work to the runner — `createJobRoutes(...).enqueue`. */
+type Enqueue = (kind: string, params: Json, ctx: Ctx) => Promise<{ id: string; dispatched: boolean } | null>;
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -59,7 +65,7 @@ export async function activeYear(db: Db): Promise<number> {
   return stored === null || stored < current ? current : stored;
 }
 
-export function createReportRoutes(db: Db) {
+export function createReportRoutes(db: Db, enqueue: Enqueue | null = null) {
   /**
    * The period controls and what the current selection resolves to.
    *
@@ -329,8 +335,67 @@ export function createReportRoutes(db: Db) {
     return json({ rid, createdAt });
   }
 
+  /**
+   * `POST /report/export` — queue the six-sheet workbook for this period.
+   *
+   * Answers with the job row, which the browser then polls through `GET /jobs/:id`; the
+   * finished row's `result` carries a signed URL to the file. A 503 means the job was
+   * recorded but never reached a runner, which is a real state on a deployment with no
+   * dispatch token and is why the status is not simply 202.
+   *
+   * The whole point of this route rather than a bare `POST /jobs` is the params: the
+   * tenant, the shared-crawl rule and the filename are settled from the session here. See
+   * api/report_export.ts.
+   */
+  async function exportXlsx(req: Request, ctx: Ctx): Promise<Response> {
+    if (!enqueue) return json({ error: "Background jobs are not configured on this server." }, 503);
+    const p = new URL(req.url).searchParams;
+    const b = await body(req).catch(() => ({} as Record<string, unknown>));
+    const pick = (k: string) => (b[k] !== undefined ? b[k] : p.get(k));
+    const t = today();
+    const sel = resolveSelection(
+      { period: pick("period"), year: pick("year"), month: pick("month"), view: pick("view") },
+      t, await activeYear(db),
+    );
+    const bounds = periodBounds(sel, t);
+    const tid = db.scopeTid(ctx.scope);
+    const scoped = /^0{8}-/.test(tid) ? null : tid;
+    const org = await loadOrgIdentity(db, scoped);
+    const params: ExportParams = {
+      tenant_id: scoped,
+      start: bounds.start,
+      end: bounds.end,
+      period: sel.period,
+      period_label: periodLabel(sel),
+      view: sel.view,
+      // `_slug(_org.get("org_short") or _org_name)` — the short name, falling back to the
+      // full one, which is what the Streamlit filename uses.
+      filename: exportFilename(sel, org.short || org.full, str(pick("r")).trim() || null, "xlsx"),
+      // `_load_scan_logs` applies no tenant filter for a super_user or for a deployment
+      // with no tenants, and filters to the tenant for a member of one.
+      unfiltered_scans: isSuperUser(ctx.user as PermUser) || scoped === null,
+      by: str(ctx.user.email),
+    };
+    const queued = await enqueue("export_report_xlsx", params as unknown as Json, ctx);
+    if (!queued) return json({ error: "Export is not available on this server." }, 400);
+    const rows = await db.service.get("web_jobs",
+      `select=id,kind,status,progress,message,result,created_at,started_at,finished_at,run_url,created_by,tenant_id&id=eq.${q(queued.id)}&limit=1`);
+    const job = rows[0] ?? null;
+    if (!queued.dispatched) {
+      // The job row carries WHY it never started — no dispatch token configured, or the
+      // dispatch itself was refused. Passing that through rather than inventing a message
+      // here is the difference between "ask an administrator for the token" and "try
+      // again", which are different instructions to give somebody.
+      return json({
+        error: str(job?.message) || "The export could not be started on this server.",
+        job, filename: params.filename,
+      }, 503);
+    }
+    return json({ job, filename: params.filename }, 202);
+  }
+
   return {
     periods, section1, section2, section3, section4, section5,
-    snapshotGet, snapshotPost,
+    snapshotGet, snapshotPost, exportXlsx,
   };
 }

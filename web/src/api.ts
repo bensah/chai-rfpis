@@ -827,3 +827,26 @@ export const fetchReportSection2 = (s: ReportSelection) => call<ReportSection2>(
 export const fetchReportSection3 = (s: ReportSelection) => call<ReportSection3>(`/report/section3${periodQuery(s)}`);
 export const fetchReportSection4 = (s: ReportSelection) => call<ReportSection4>(`/report/section4${periodQuery(s)}`);
 export const fetchReportSection5 = (s: ReportSelection) => call<ReportSection5>(`/report/section5${periodQuery(s)}`);
+
+/**
+ * The six-sheet data export. A JOB, not a download: the workbook is built by openpyxl over
+ * every row in the period, which no Edge Function CPU budget survives.
+ *
+ * Returns the queued job — poll it with `awaitJob`. A finished one carries
+ * `ReportExportResult` in `job.result`, with a SHORT-LIVED signed URL to a private bucket;
+ * `expiresInS` is how long that link lasts, and it is worth saying out loud, because the
+ * natural thing for a reader to do with it is paste it into a chat thread.
+ *
+ * `rid` is the `?r=` report id, which only shapes the filename — the rows come from the
+ * period, not from the snapshot. The period itself is sent so the server resolves it once,
+ * the same way every section route does.
+ */
+export type ReportExportResult = {
+  url: string; filename: string; bytes: number; expiresInS: number;
+  /** Sheet name to row count. A sheet is absent when the period held none of that thing. */
+  sheets: Record<string, number>;
+  pruned: number; runner: string;
+};
+
+export const requestReportExport = (sel: ReportSelection, rid: string | null) =>
+  post<{ job: Job; filename: string }>("/report/export", { ...sel, r: rid ?? "" });

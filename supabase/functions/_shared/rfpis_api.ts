@@ -68,7 +68,7 @@ export function createApi(env: Env, deps: Deps) {
   // one way a job reaches the runner rather than a second one owned by the write route.
   const pipelineWrites = createPipelineWrites(db, jobs.enqueue);
   const formOptions = createFormOptions(db);
-  const report = createReportRoutes(db);
+  const report = createReportRoutes(db, jobs.enqueue);
 
   async function route(req: Request, path: string): Promise<Response> {
     const m = req.method;
@@ -115,6 +115,9 @@ export function createApi(env: Env, deps: Deps) {
     // shared row holding the newest 100 — see api/report_snapshots.ts.
     if (path === "/report/snapshot" && m === "GET") return report.snapshotGet(req, ctx);
     if (path === "/report/snapshot" && m === "POST") return report.snapshotPost(req, ctx);
+    // The six-sheet workbook. A job, not a response: it runs openpyxl over every row the
+    // page's figures come from, which no Edge Function CPU budget survives.
+    if (path === "/report/export" && m === "POST") return report.exportXlsx(req, ctx);
 
     if (path === "/pipelines/weeks" && m === "GET") return pipelines.weeks(req, ctx);
     if (path === "/pipelines/screen" && m === "GET") return pipelines.screen(req, ctx);

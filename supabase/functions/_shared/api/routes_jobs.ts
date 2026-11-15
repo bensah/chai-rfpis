@@ -115,6 +115,30 @@ const KINDS: Record<string, JobKind> = {
     allowed: (u) => isAdmin(u),
     group: (ctx, _id, params) => `decision-${tenantOf(ctx)}-${subject(params)}`,
   },
+
+  /**
+   * The Report's six-sheet data export — see api/report_export.ts for what goes in it and
+   * why it cannot run in this function.
+   *
+   * Anyone who can open Report can export it, exactly as the Streamlit download button is
+   * open to anyone who reaches the page: the workbook holds the rows the charts on that
+   * page are already drawn from, so the export reveals nothing the reader cannot see.
+   *
+   * ONE GROUP PER TENANT, which is wider than the per-row groups above and deliberately
+   * so. Two exports of one tenant read the same tables and write two files, so they do not
+   * corrupt each other — but they do read a few thousand rows each, and GitHub keeps only
+   * one pending run per group, so a third dispatch CANCELS the second. A reader pressing
+   * Export twice would therefore lose the second file silently. Narrow enough that two
+   * tenants never wait on each other; wide enough that one reader's double-press collapses
+   * into one run rather than a cancelled one.
+   *
+   * The period is NOT in the group. Including it would let one reader start five exports at
+   * once by flicking through periods, which is the cost this group exists to bound.
+   */
+  export_report_xlsx: {
+    allowed: () => true,
+    group: (ctx) => `report-export-${tenantOf(ctx)}`,
+  },
 };
 
 const JOB_COLUMNS = "id,kind,status,progress,message,result,created_at,started_at,finished_at,run_url,created_by,tenant_id";

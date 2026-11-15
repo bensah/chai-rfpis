@@ -20,13 +20,15 @@
  * all five behind the slowest would make the fastest look broken.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BarChart3, Check, Link2, Play, SlidersHorizontal } from "lucide-react";
+import { BarChart3, Check, Download, Link2, Play, SlidersHorizontal } from "lucide-react";
 import {
   ApiError, fetchReportSection1, fetchReportSection2, fetchReportSection3, fetchReportSection4,
-  fetchReportSection5, fetchReportSnapshot, saveReportSnapshot,
+  fetchReportSection5, fetchReportSnapshot, requestReportExport, saveReportSnapshot,
+  type Job, type ReportExportResult,
   type ReportSection1 as S1, type ReportSection2 as S2, type ReportSection3 as S3,
   type ReportSection4 as S4, type ReportSection5 as S5, type ReportSelection, type ReportSnapshot,
 } from "../api";
+import { awaitJob, JOB_STATUS_LABEL } from "../jobs";
 import { setParams } from "../router";
 import { Button, Card, EmptyState, Field, Notice, PageHeader, Select, Spinner } from "../ui";
 import { Section1, Section2, Section3, Section4, Section5 } from "../report/sections";
@@ -72,6 +74,9 @@ export default function ReportPage() {
   const [rid, setRid] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [exporting, setExporting] = useState<Job | null>(null);
+  const [exported, setExported] = useState<ReportExportResult | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const [s1, setS1] = useState<Loaded<S1>>({});
   const [s2, setS2] = useState<Loaded<S2>>({});
@@ -144,6 +149,40 @@ export default function ReportPage() {
       setSaving(false);
     }
     load(sel, secs, items);
+  }
+
+  /**
+   * Start the workbook and wait for it.
+   *
+   * It exports THE PERIOD ON SCREEN, not the one that was last generated — the rows do not
+   * come from the snapshot, so there is nothing to be out of step with, and a reader who
+   * has just changed the period means the one they can see.
+   *
+   * A 503 here is a real state rather than a bug: a deployment with no dispatch token
+   * records the job and never starts it. Saying so beats a spinner that never ends.
+   */
+  async function exportData() {
+    if (!sel || exporting) return;
+    setExportError(null);
+    setExported(null);
+    try {
+      const { job } = await requestReportExport(sel, rid);
+      setExporting(job);
+      const done = await awaitJob(job.id, setExporting, { everyMs: 2000, timeoutMs: 300_000 });
+      setExporting(done);
+      if (done?.status === "done" && done.result?.url) {
+        setExported(done.result as unknown as ReportExportResult);
+      } else if (done?.status === "failed") {
+        setExportError(done.message || "The export failed.");
+      } else if (done && done.status !== "done") {
+        setExportError("The export is taking longer than expected. It may still finish — try again in a minute.");
+      }
+    } catch (e) {
+      setExporting(null);
+      // The server says why a 503 happened — no dispatch token, or a refused dispatch —
+      // and those call for different things from the reader, so its message wins.
+      setExportError(e instanceof ApiError ? e.message : "Couldn't start the export.");
+    }
   }
 
   if (boot) return <EmptyState title="The report is unavailable">{boot}</EmptyState>;
@@ -224,6 +263,13 @@ export default function ReportPage() {
               {copied ? "Link copied" : "Copy link"}
             </Button>
           )}
+          <Button variant="ghost" onClick={exportData}
+            disabled={!!exporting && !["done", "failed", "cancelled"].includes(exporting.status)}>
+            <Download size={15} aria-hidden />
+            {exporting && !["done", "failed", "cancelled"].includes(exporting.status)
+              ? (exporting.progress?.message || JOB_STATUS_LABEL[exporting.status])
+              : "Export data"}
+          </Button>
           <span className="ml-auto text-xs text-ink-500">
             {snap.phrase}
             {changed && (
@@ -277,6 +323,23 @@ export default function ReportPage() {
           </div>
         )}
       </Card>
+
+      {exportError && <Notice tone="bad">{exportError}</Notice>}
+      {exported && (
+        <Notice tone="good" icon={<Download size={16} aria-hidden />}>
+          <strong>{exported.filename}</strong> is ready —{" "}
+          {Object.entries(exported.sheets).map(([name, n], i, a) => (
+            <span key={name}>
+              {name} ({n.toLocaleString("en-US")}){i < a.length - 1 ? ", " : ""}
+            </span>
+          ))}
+          .{" "}
+          <a href={exported.url} download={exported.filename}
+            className="font-semibold text-accent-700 underline hover:text-accent-800">Download</a>
+          {" "}— the link expires in {Math.round(exported.expiresInS / 60)} minutes, so it is
+          not worth pasting anywhere.
+        </Notice>
+      )}
 
       {/* ── The report ─────────────────────────────────────────────────── */}
       {!generated ? (

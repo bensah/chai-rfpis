@@ -326,11 +326,24 @@ def _delete_rfp(job: JobRow, params: dict, runner: str) -> dict:
         reset_tenant_override(token)
 
 
+def _export_report_xlsx(job: JobRow, params: dict, runner: str) -> dict:
+    """The Report's six-sheet data export — see scripts/report_export_job.py.
+
+    A thin wrapper on purpose: that module is also what
+    web/scripts/parity/check-export.mjs imports, so the five queries the check compares
+    against views/report.py's own loaders are the ones this job actually runs, rather than
+    a third transcription that agrees with neither.
+    """
+    from scripts.report_export_job import run as _run
+    return _run(job, params, runner)
+
+
 KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "ping": _ping,
     "rescore": _rescore,
     "record_decision": _record_decision,
     "delete_rfp": _delete_rfp,
+    "export_report_xlsx": _export_report_xlsx,
 }
 
 
