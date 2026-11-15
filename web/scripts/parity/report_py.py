@@ -51,7 +51,10 @@ WANT_FUNCS = [
     # Section 1's, lifted for check-section1.mjs.
     "_discovery_ts", "_bucketed_count", "_bucketed_sum", "_submitted_mask",
 ]
-WANT_ASSIGNS = ["_PERIOD_OPTS", "_VIEW_OPTS", "_MONTH_NAMES", "_AREA_NON_VALUES"]
+WANT_ASSIGNS = ["_PERIOD_OPTS", "_VIEW_OPTS", "_MONTH_NAMES", "_AREA_NON_VALUES",
+                # _submitted_mask reads this one; without it the lift raises NameError
+                # only when a caller actually reaches that branch.
+                "_SUBMITTED_DECISIONS"]
 
 
 def _lift() -> tuple[dict, dict]:

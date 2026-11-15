@@ -12,7 +12,8 @@
 import { q, type Db } from "./db.ts";
 import { gzipped, json } from "./http.ts";
 import { loadNameConfig } from "./report_names.ts";
-import { buildSection1, loadSection1 } from "./report_section1.ts";
+import { buildSection1, loadSection1, RFP_COLUMNS } from "./report_section1.ts";
+import { buildSection2, loadOrgIdentity, loadSection2 } from "./report_section2.ts";
 import {
   bucketLabel, bucketRange, cadenceWord, MONTH_NAMES, PERIOD_OPTS, periodBounds,
   periodLabel, periodPhrase, periodSlug, resolveSelection, VIEW_OPTS, YEAR_MAX, YEAR_MIN,
@@ -118,5 +119,33 @@ export function createReportRoutes(db: Db) {
     }, 200, { "Cache-Control": "private, max-age=30" }));
   }
 
-  return { periods, section1 };
+  /**
+   * Section 2 as displayed — Team & Partnership Activity, section id 4.
+   *
+   * Same query params as the others. The people and partner blocks run over every Proceed
+   * row; only meetings and engagements follow the period, and they follow it in the query.
+   */
+  async function section2(req: Request, ctx: Ctx): Promise<Response> {
+    const p = new URL(req.url).searchParams;
+    const t = today();
+    const sel = resolveSelection(
+      { period: p.get("period"), year: p.get("year"), month: p.get("month"), view: p.get("view") },
+      t, await activeYear(db),
+    );
+    const bounds = periodBounds(sel, t);
+    const tid = db.scopeTid(ctx.scope);
+    const scoped = tid.startsWith("00000000-") ? null : tid;
+    const [frames, nameConfig, org] = await Promise.all([
+      loadSection2(db, ctx.scope, bounds, RFP_COLUMNS),
+      loadNameConfig(db, scoped),
+      loadOrgIdentity(db, scoped),
+    ]);
+    const blocks = buildSection2({ ...frames, view: sel.view, bounds, nameConfig, org });
+    return gzipped(req, json({
+      selection: sel, bounds, label: periodLabel(sel), bucketLabel: bucketLabel(sel.view),
+      ...blocks,
+    }, 200, { "Cache-Control": "private, max-age=30" }));
+  }
+
+  return { periods, section1, section2 };
 }
