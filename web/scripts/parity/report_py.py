@@ -63,7 +63,12 @@ WANT_FUNCS = [
 WANT_ASSIGNS = ["_PERIOD_OPTS", "_VIEW_OPTS", "_MONTH_NAMES", "_AREA_NON_VALUES",
                 # _submitted_mask reads this one; without it the lift raises NameError
                 # only when a caller actually reaches that branch.
-                "_SUBMITTED_DECISIONS"]
+                "_SUBMITTED_DECISIONS",
+                # The section / metric catalogue a snapshot's keys are restored against,
+                # lifted for check-snapshots.mjs. Order matters here: _ALL_KEYS and
+                # _ALL_SEC_IDS are comprehensions OVER _REPORT_SECTIONS, and the lift execs
+                # the picked statements in source order, so all three come through.
+                "_REPORT_SECTIONS", "_ALL_KEYS", "_ALL_SEC_IDS"]
 
 
 def _lift() -> tuple[dict, dict]:
