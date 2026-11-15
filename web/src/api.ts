@@ -672,3 +672,158 @@ export function cachedDonors(): Donor[] | null {
 }
 export const fetchContacts = (key: string) =>
   call<{ contacts: Contact[] }>(`/donors/${encodeURIComponent(key)}/contacts`).then((r) => r.contacts);
+
+// ── Report ───────────────────────────────────────────────────────────────────
+//
+// Every figure on the Report page is computed on the server and arrives as a number. The
+// page reads up to 50,000 submissions; shipping those to draw a dozen tiles would cost tens
+// of megabytes per period change, and it would put a second copy of each rule in the
+// browser to disagree with the Python. So these types are shapes to DRAW, not data to
+// reduce — if something here needs arithmetic beyond a percentage of a total, it belongs in
+// supabase/functions/_shared/api/report_section*.ts with a parity check on it.
+
+export type ReportSelection = { period: string; year: number; month: string; view: string };
+export type ReportBounds = { start: string | null; end: string | null };
+
+export type ReportPeriods = {
+  today: string;
+  currentYear: number;
+  options: { periods: string[]; views: string[]; months: string[]; yearMin: number; yearMax: number };
+  selection: ReportSelection;
+  bounds: ReportBounds;
+  label: string;
+  phrase: string;
+  slug: string;
+  cadence: string;
+  bucketLabel: string;
+  /** Null under All time: the window then comes from the rows, so each series brings its own. */
+  buckets: string[] | null;
+};
+
+/** What a saved `?r=` link resolves to, plus everything /report/periods returns. */
+export type ReportSnapshot = ReportPeriods & {
+  rid: string | null;
+  found: boolean;
+  /** An id was asked for and was not there — it may have aged out of the newest 100. */
+  missing: boolean;
+  createdAt: string | null;
+  restored: { secs: string[]; items: string[] };
+  savedSignature: string | null;
+  catalog: {
+    sections: { id: string; label: string; items: { key: string; label: string }[] }[];
+    allKeys: string[];
+    allSecIds: string[];
+  };
+};
+
+const periodQuery = (sel: ReportSelection) =>
+  `?period=${encodeURIComponent(sel.period)}&year=${sel.year}`
+  + `&month=${encodeURIComponent(sel.month)}&view=${encodeURIComponent(sel.view)}`;
+
+export const fetchReportSnapshot = (rid: string | null) =>
+  call<ReportSnapshot>(`/report/snapshot${rid ? `?r=${encodeURIComponent(rid)}` : ""}`);
+
+/** Generate: save the selection, get the short id that goes in the URL. */
+export const saveReportSnapshot = (sel: ReportSelection, secs: string[], items: string[]) =>
+  post<{ rid: string; createdAt: string }>("/report/snapshot", { ...sel, secs, items });
+
+type Bucketed<T> = T & { bucket: string };
+/** Every ranked block ships the full map AND the top slice; the page draws the slice.
+ *  `all` is deliberately loose — the page never reads it, and typing it would be a second
+ *  description of a shape only the server's own parity check needs to be exact about. */
+type Ranked = { all: Record<string, unknown> };
+
+export type ReportSection1 = {
+  selection: ReportSelection; bounds: ReportBounds; label: string; bucketLabel: string;
+  intake: {
+    total: number; duplicates: number;
+    bySource: { source: string; label: string; unique: number; duplicates: number; total: number }[];
+  };
+  scans: {
+    runs: number; found: number; eligible: number; added: number;
+    duplicates: number; rejected: number; errorRuns: number;
+  };
+  discovery: {
+    buckets: Bucketed<{ total: number; bySubmitter: Record<string, number> }>[];
+    submitters: string[];
+    /** True when empty buckets were filled in, so a gap is a real zero and not a missing bar. */
+    zeroFilled: boolean;
+  };
+  donors: { all: Record<string, number>; top: { donor: string; rfps: number }[] };
+  focusAreas: { area: string; calls: number }[];
+  proceedCount: number;
+  keywordSuccess: { keyword: string; hits: number; proceed: number; submitted: number; approved: number }[];
+  sources: {
+    all: Record<string, unknown>;
+    top: { source: string; runs: number; found: number; added: number; rejected: number; avgDur: number; yieldPct: number }[];
+  };
+  cycle: { n: number; median: number; mean: number; min: number; max: number; days: number[] } | null;
+};
+
+export type ReportSection2 = {
+  selection: ReportSelection; bounds: ReportBounds; label: string; bucketLabel: string;
+  meetings: { logged: number; open: number; resolved: number; pctUnresolved: number };
+  donors: { engagements: number; donors: number; avgPerDonor: number; tiedToRfp: number };
+  engagements: Bucketed<{ engagements: number }>[];
+  topDonors: Ranked & { top: { donor: string; touchpoints: number }[] };
+  leads: Ranked & { top: { name: string; submitted: number; unsubmitted: number; total: number }[] };
+  contributors: Ranked & { top: { name: string; submitted: number; unsubmitted: number; total: number }[] };
+  partners: {
+    lead: Ranked & { top: { org: string; rfps: number }[] };
+    sub: Ranked & { top: { org: string; rfps: number }[] };
+  };
+  proceedRows: number;
+};
+
+export type ReportSection3 = {
+  selection: ReportSelection; bounds: ReportBounds; label: string;
+  counts: {
+    total: number; proceed: number; park: number; decline: number; noDecision: number;
+    submitted: number; approved: number; discoveredInPeriod: number;
+  };
+  values: { discovered: number; proceed: number; submitted: number; approved: number };
+  progress: { status: string; rfps: number }[];
+  proceedRows: number;
+};
+
+export type ReportSection4 = {
+  selection: ReportSelection; bounds: ReportBounds; label: string; bucketLabel: string;
+  kpis: {
+    decisions: number;
+    /** Null when no decided row carries both dates — not zero, which would read as "same day". */
+    avgDays: number | null; medianDays: number | null;
+    overridden: number; dated: number;
+  };
+  distribution: { decision: string; count: number }[];
+  distributionOrder: string[];
+  overTime: Bucketed<{ decisions: number }>[];
+  autoRec: { rows: { decision: string; auto: number; team: number }[]; agreed: number; total: number };
+  donor: { all: Record<string, number>; ranked: { decision: string; rfps: number }[]; pending: number; order: string[] };
+};
+
+export type ReportSection5 = {
+  selection: ReportSelection; bounds: ReportBounds; label: string; bucketLabel: string;
+  kpis: { submitted: number; approved: number; winRate: number; securedRatio: number };
+  money: { requested: number; secured: number; unsecured: number; pipeline: number; pipelineRfps: number };
+  /** Rows whose amount has no currency beside it, so their dollars are a guess. */
+  missingCurrency: { approved: number; pipeline: number };
+  conversion: {
+    proceeded: number; submitted: number; approved: number;
+    proceededToSubmitted: number; submittedToApproved: number; endToEnd: number;
+  };
+  outcomes: {
+    uid: string; label: string; funder: string; outcome: string; donorDecision: string;
+    reqUsd: number; secUsd: number; signedUsd: number;
+  }[];
+  grants: {
+    uid: string; grant: string; funder: string; requestedUsd: number; securedUsd: number;
+    donorDecision: string; submissions: number; submittedOn: string | null;
+  }[];
+  cumulative: Bucketed<{ secured: number; cumulative: number }>[];
+};
+
+export const fetchReportSection1 = (s: ReportSelection) => call<ReportSection1>(`/report/section1${periodQuery(s)}`);
+export const fetchReportSection2 = (s: ReportSelection) => call<ReportSection2>(`/report/section2${periodQuery(s)}`);
+export const fetchReportSection3 = (s: ReportSelection) => call<ReportSection3>(`/report/section3${periodQuery(s)}`);
+export const fetchReportSection4 = (s: ReportSelection) => call<ReportSection4>(`/report/section4${periodQuery(s)}`);
+export const fetchReportSection5 = (s: ReportSelection) => call<ReportSection5>(`/report/section5${periodQuery(s)}`);
