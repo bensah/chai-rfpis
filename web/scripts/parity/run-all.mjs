@@ -12,6 +12,7 @@
 // So: run them all, stream each one's output as it goes, print a table at the end, and exit
 // non-zero if ANY of them failed. One red check now costs you one red check.
 import { spawnSync } from "node:child_process";
+import { readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,10 +20,25 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 // The order is the old chain's: cheapest and most foundational first, so that when several
 // go red the first line of output is usually the one explaining the rest.
-const CHECKS = [
+const ORDER = [
   "permissions", "routing", "shell", "scoring", "rescore",
   "report", "names", "section1", "section2", "section3", "section4", "section5",
 ];
+
+// EVERY check-*.mjs IN THE DIRECTORY, not just the ones somebody remembered to list. The
+// old chain was a hand-maintained line in package.json, which meant a new check was part
+// of the gate only if its author also edited that line — a second place to keep in step,
+// and the kind that fails silently. Listed names run first in the order above; anything
+// else runs after them, alphabetically, so a check added tomorrow is in the gate the
+// moment the file exists.
+const found = readdirSync(here)
+  .filter((f) => f.startsWith("check-") && f.endsWith(".mjs"))
+  .map((f) => f.slice("check-".length, -".mjs".length));
+const CHECKS = [...ORDER.filter((c) => found.includes(c)),
+  ...found.filter((c) => !ORDER.includes(c)).sort()];
+for (const missing of ORDER.filter((c) => !found.includes(c))) {
+  console.warn(`note: check-${missing}.mjs is listed in the running order but not on disk`);
+}
 
 const pick = process.argv.slice(2).map((a) => a.replace(/^check-|\.mjs$/g, ""));
 const unknown = pick.filter((p) => !CHECKS.includes(p));
