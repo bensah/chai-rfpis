@@ -1,5 +1,8 @@
 /**
- * Funding Report — the period, the filter, and five sections of figures.
+ * The BDRM Report — the period, the filter, and five sections of figures.
+ *
+ * "BDRM Report" in the rail; the heading here spells it out, because the rail has one line
+ * per item and somebody meeting the initials for the first time is looking at the page.
  *
  * TWO THINGS SHAPE THIS PAGE, and both come from the Streamlit original rather than from
  * taste:
@@ -199,7 +202,7 @@ export default function ReportPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Funding Report"
+        title="Business Development and Resource Mobilization Report"
         lead="Pick a period, then generate. The report is saved under a short link that survives a refresh."
       />
 
