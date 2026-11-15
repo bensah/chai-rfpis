@@ -111,6 +111,10 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/report/section3" && m === "GET") return report.section3(req, ctx);
     if (path === "/report/section4" && m === "GET") return report.section4(req, ctx);
     if (path === "/report/section5" && m === "GET") return report.section5(req, ctx);
+    // The `?r=` link: GET resolves one into a selection, POST is Generate. The store is one
+    // shared row holding the newest 100 — see api/report_snapshots.ts.
+    if (path === "/report/snapshot" && m === "GET") return report.snapshotGet(req, ctx);
+    if (path === "/report/snapshot" && m === "POST") return report.snapshotPost(req, ctx);
 
     if (path === "/pipelines/weeks" && m === "GET") return pipelines.weeks(req, ctx);
     if (path === "/pipelines/screen" && m === "GET") return pipelines.screen(req, ctx);

@@ -10,13 +10,17 @@
  * first, and the one a parity check can pin without any data in play.
  */
 import { q, type Db } from "./db.ts";
-import { gzipped, json } from "./http.ts";
+import { body, gzipped, json, str } from "./http.ts";
 import { loadNameConfig } from "./report_names.ts";
 import { buildSection1, loadSection1, RFP_COLUMNS } from "./report_section1.ts";
 import { buildSection2, loadOrgIdentity, loadSection2 } from "./report_section2.ts";
 import { buildSection3, currenciesUsed } from "./report_section3.ts";
 import { buildSection4 } from "./report_section4.ts";
 import { buildSection5 } from "./report_section5.ts";
+import {
+  ALL_KEYS, ALL_SEC_IDS, getSelection, loadStore, REPORT_SECTIONS, restoreItems, restoreSecs,
+  saveSnapshot, signatureOf,
+} from "./report_snapshots.ts";
 import { loadCurrencies } from "./money.ts";
 import { ratesFor } from "./fx.ts";
 import {
@@ -66,16 +70,14 @@ export function createReportRoutes(db: Db) {
    * Query params mirror the snapshot keys: period, year, month, view. Absent or unrecognised
    * values fall back the way the Streamlit widgets do (Year to date, Monthly, today's month).
    */
-  async function periods(req: Request, _ctx: Ctx): Promise<Response> {
-    const p = new URL(req.url).searchParams;
-    const t = today();
-    const currentYear = await activeYear(db);
-    const sel: Selection = resolveSelection(
-      { period: p.get("period"), year: p.get("year"), month: p.get("month"), view: p.get("view") },
-      t, currentYear,
-    );
+  /**
+   * One description of a resolved period, shared by `/report/periods` and the snapshot
+   * route — a restored report must be labelled and bucketed exactly as a hand-picked one,
+   * and a second copy of this object is how the two would drift.
+   */
+  function periodPayload(sel: Selection, t: string, currentYear: number) {
     const bounds = periodBounds(sel, t);
-    return json({
+    return {
       today: t,
       currentYear,
       options: {
@@ -92,7 +94,18 @@ export function createReportRoutes(db: Db) {
       // Under All time the window comes from the data, not the period, so there is no
       // bucket range to hand over yet — the series routes compute it from the rows they read.
       buckets: bounds.start && bounds.end ? bucketRange(bounds.start, bounds.end, sel.view) : null,
-    });
+    };
+  }
+
+  async function periods(req: Request, _ctx: Ctx): Promise<Response> {
+    const p = new URL(req.url).searchParams;
+    const t = today();
+    const currentYear = await activeYear(db);
+    const sel: Selection = resolveSelection(
+      { period: p.get("period"), year: p.get("year"), month: p.get("month"), view: p.get("view") },
+      t, currentYear,
+    );
+    return json(periodPayload(sel, t, currentYear));
   }
 
   /**
@@ -231,5 +244,93 @@ export function createReportRoutes(db: Db) {
     }, 200, { "Cache-Control": "private, max-age=30" }));
   }
 
-  return { periods, section1, section2, section3, section4, section5 };
+  /**
+   * `GET /report/snapshot?r=<id>` — open a saved report link.
+   *
+   * Answers the whole of what `views/report.py` does at import time with a `?r=` in the
+   * URL: look the id up, seed the period controls from it, work out which sections and
+   * metrics come back on, and say whether the link resolved at all.
+   *
+   * With no `r` — or an id that has aged out of the newest 100 — this is not an error. It
+   * is the page's own opening state: every control at its default, every section and metric
+   * on, `found: false` so the page can show the "it may have aged out" warning for an id
+   * that was asked for and missed. A 404 would make the browser treat a stale link as a
+   * failure when the page has something perfectly good to render.
+   *
+   * The period half of the response is byte-for-byte `/report/periods`, so a restored
+   * report and a hand-picked one cannot be labelled differently.
+   */
+  async function snapshotGet(req: Request, _ctx: Ctx): Promise<Response> {
+    const rid = (new URL(req.url).searchParams.get("r") ?? "").trim();
+    const t = today();
+    const [currentYear, store] = await Promise.all([activeYear(db), loadStore(db)]);
+    const saved = getSelection(store, rid);
+    const sel = resolveSelection(saved ?? {}, t, currentYear);
+    return json({
+      ...periodPayload(sel, t, currentYear),
+      rid: rid || null,
+      // `_has_url_state` / `_snap_missing`. "Asked for an id and it was not there" is the
+      // only case that warrants a warning; arriving with no id at all is the normal entry.
+      found: saved !== null,
+      missing: rid !== "" && saved === null,
+      createdAt: rid && store[rid] ? String(store[rid].created_at ?? "") || null : null,
+      restored: {
+        secs: restoreSecs(saved?.secs, ALL_SEC_IDS),
+        items: restoreItems(saved?.items, ALL_KEYS, saved?.all_items),
+      },
+      // What the link HOLDS, against which the page compares what is on screen to decide
+      // whether to offer "✎ Selections changed". Null when there is no snapshot, and also
+      // when its stored selection cannot produce one — see signatureOf.
+      savedSignature: saved ? signatureOf(saved) : null,
+      catalog: { sections: REPORT_SECTIONS, allKeys: ALL_KEYS, allSecIds: ALL_SEC_IDS },
+    });
+  }
+
+  /**
+   * `POST /report/snapshot` — Generate: save the selection, mint the link.
+   *
+   * The client sends what it has on screen (period, year, month, view, secs, items). It
+   * does NOT send `all_items` / `all_secs`: those record which metrics EXISTED at save
+   * time, which is a fact about this deployment rather than about the user's selection, and
+   * a browser sending its own idea of the universe is how a stale tab would write a
+   * snapshot that restores wrong for everyone afterwards.
+   *
+   * The posted selection is put through `resolveSelection` before it is stored, so a stored
+   * period is always one of the real options and a stored year is always inside the
+   * picker's range. Streamlit got that from the widgets themselves; an HTTP route has to do
+   * it on the way in, or an unopenable snapshot is one curl away.
+   *
+   * Gated by nothing beyond a session, exactly as the Generate button is: anyone who can
+   * open Report can save one. Note the consequence given the shared store — a hundred
+   * Generates from any one tenant empty the window for every other.
+   */
+  async function snapshotPost(req: Request, ctx: Ctx): Promise<Response> {
+    const b = await body(req);
+    const t = today();
+    const sel = resolveSelection(b, t, await activeYear(db));
+    const known = (v: unknown, universe: ReadonlyArray<string>): string[] => {
+      const u = new Set(universe);
+      return [...new Set((Array.isArray(v) ? v : []).map(str).filter((x) => u.has(x)))].sort();
+    };
+    const { rid, createdAt } = await saveSnapshot(db, {
+      period: sel.period,
+      year: sel.year,
+      month: sel.month,
+      view: sel.view,
+      // `sorted(_picked_secs)` / `sorted(_selected_items)`, filtered to what exists. The
+      // widgets could only ever offer real ids; a route has to drop the rest, or an
+      // unknown key is stored and then counted as "deliberately off" by every later
+      // restore, because it lands in `all_items` too.
+      secs: known(b.secs, ALL_SEC_IDS),
+      items: known(b.items, ALL_KEYS),
+      all_items: [...ALL_KEYS].sort(),
+      all_secs: [...ALL_SEC_IDS].sort(),
+    }, str(ctx.user.email) || null);
+    return json({ rid, createdAt });
+  }
+
+  return {
+    periods, section1, section2, section3, section4, section5,
+    snapshotGet, snapshotPost,
+  };
 }
