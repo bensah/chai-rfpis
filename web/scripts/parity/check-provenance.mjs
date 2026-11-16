@@ -112,6 +112,21 @@ for (const [i, c] of want.cases.entries()) {
   ok("a non-criterion key is ignored",
     P.record({ qualification: "Yes, fully" }, { decision: "Proceed" }, BY, AT) === null);
 
+  // THE BRANCH bid_effort GAINING "Not sure" RETIRED. Every live vocabulary now carries
+  // the option, so a baseline of `opts[0]` — a REAL best answer rather than a non-answer —
+  // is unexercised on real data. An unexercised rule breaks unnoticed, and the next
+  // criterion anybody adds could be the one without a "Not sure". What has to survive is
+  // that a criterion whose BASELINE IS A REAL ANSWER still records nothing when the
+  // submitter leaves it there — otherwise every submission would carry their name on it.
+  ok("a baseline that is itself a real answer still records nothing when left alone",
+    P.record({ bid_effort: "Ample time, sufficient resources" },
+      { bid_effort: "Ample time, sufficient resources" }, BY, AT) === null,
+    "the containment does not depend on the baseline being a non-answer, only on it "
+    + "matching what the widget shows.");
+  ok("...and records as soon as they move off it",
+    P.record({ bid_effort: "Ample time, sufficient resources" },
+      { bid_effort: "Not enough time, no team" }, BY, AT)?.bid_effort?.by === BY);
+
   ok("a missing author is recorded as unknown rather than blank",
     P.record({ capacity: "Not sure" }, { capacity: "No, beyond us" }, "", AT)
       ?.capacity?.by === "unknown");
