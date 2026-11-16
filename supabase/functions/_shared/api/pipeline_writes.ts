@@ -168,6 +168,32 @@ export function needsRescore(fields: Record<string, unknown>): boolean {
   return Object.keys(fields).some((k) => !WORKFLOW_ONLY.has(k));
 }
 
+/**
+ * `core/score_stamp.ASSESSED_BY_A_HUMAN` — the columns that mean a PERSON assessed this
+ * row, as opposed to the scan having scored it.
+ *
+ * Spelled here as well as in the Python because this route has to answer the question
+ * before the job does, and `check-rescore` compares the two lists so they cannot drift.
+ */
+export const ASSESSED_BY_A_HUMAN = ["decision_date", "decision_overridden_by"] as const;
+
+/**
+ * Has a person assessed this row?
+ *
+ * SINCE dcea067 THE RE-SCORE JOB DECLINES SUCH A ROW, and that changes what this route may
+ * honestly promise. `auto_scorer.auto_score` bases all nine criteria to None and re-derives
+ * them — it never reads the nine stored columns — so on a reviewed row it answers "what
+ * would this score if nobody had looked at it". Measured live before that change: 48 of 56
+ * reviewed rows held criteria it does not reproduce and 30 came out with a different
+ * recommendation. The owner's rule (2026-11-16) is that human work wins, which is the rule
+ * `core/scan_pipeline.py:307` has followed all along.
+ */
+export const humanAssessed = (row: Json): boolean =>
+  ASSESSED_BY_A_HUMAN.some((c) => {
+    const v = row[c];
+    return v !== null && v !== undefined && String(v).trim() !== "";
+  });
+
 /** For the test that re-checks the list against the Python. */
 export const workflowOnlyColumns = (): string[] => [...WORKFLOW_ONLY];
 
@@ -328,6 +354,20 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
 
     // The score is the server's to recompute, and this save may have moved it. Queued
     // after the write, so the job reads the saved row rather than racing it.
+    //
+    // NOT GATED ON `humanAssessed` YET, DELIBERATELY, and the reason is a measurement
+    // rather than an oversight. Since dcea067 the job declines a row a person has
+    // assessed, so this route ought to stop promising a recalculation that will not
+    // happen — except that the predicate keys on `decision_overridden_by`, and the block
+    // thirty lines above stamps that column on EVERY save. The row this route would judge
+    // is the row the save has just stamped, so the answer is `true` for every PATCH that
+    // changes anything, including on a call nobody has ever decided.
+    //
+    // Gating on it here would therefore tell every reviewer their score is being left
+    // alone, which is both wrong and the opposite of the old message's wrongness. The
+    // question of what counts as "assessed" is open with the owner; until it is settled
+    // this reports what it has always reported, and `humanAssessed` above is exported for
+    // the parity check that pins it to the Python rather than for use here.
     let rescore: { job_id: string } | null = null;
     if (needsRescore(fields)) {
       const { jobId, warning } = await queueRescore(ctx, row, uid);

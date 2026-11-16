@@ -34,16 +34,19 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
 const venv = path.join(root, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
 const python = process.env.RFPIS_PYTHON || (existsSync(venv) ? venv : "python");
 
-const { rows: report, current_profile_sig: sigs } = JSON.parse(
+const { rows: report, current_profile_sig: sigs, human_markers: markers } = JSON.parse(
   execFileSync(python, [path.join(here, "rescore_py.py"), process.argv[2] ?? "120"],
     { encoding: "utf8", maxBuffer: 1 << 28, cwd: root }));
+
+const W = await import(
+  pathToFileURL(path.join(root, "supabase/functions/_shared/api/pipeline_writes.ts")).href);
 
 // _evaluate only writes a score when it moves by at least this much, so anything smaller
 // would never reach the database.
@@ -51,6 +54,40 @@ const EPSILON = 0.05;
 const moved = (a, b) => a !== null && b !== null && Math.abs(a - b) >= EPSILON;
 
 let failures = 0;
+
+// ── 0. The two apps must agree on what "a human assessed this" means ─────────
+// Since dcea067 the re-score job DECLINES a row a person has assessed, and PATCH
+// /pipelines/rfp has to answer the same question before the job does — it decides whether
+// to tell the editor a recalculation is coming. A column added on one side only would have
+// the job quietly declining a row the API has just promised to recalculate, which is a
+// number that never moves and no message saying why.
+{
+  const ts = [...W.ASSESSED_BY_A_HUMAN].sort();
+  if (JSON.stringify(ts) !== JSON.stringify(markers)) {
+    failures++;
+    console.log("DIFF what counts as a human assessment"
+      + `
+   ts: ${JSON.stringify(ts)}
+   py: ${JSON.stringify(markers)}`);
+  } else {
+    console.log(`human-assessment markers agree: ${ts.join(", ")}`);
+  }
+  // And the predicate itself, on the shapes a row actually arrives in.
+  const cases = [
+    [{ decision_date: "2026-11-16" }, true],
+    [{ decision_overridden_by: "ben@x.org" }, true],
+    [{ decision_date: null, decision_overridden_by: null }, false],
+    [{ decision_date: "", decision_overridden_by: "   " }, false],
+    [{}, false],
+    [{ decision: "Proceed" }, false],
+  ];
+  for (const [row, want] of cases) {
+    if (W.humanAssessed(row) !== want) {
+      failures++;
+      console.log(`DIFF humanAssessed(${JSON.stringify(row)}) = ${W.humanAssessed(row)}, want ${want}`);
+    }
+  }
+}
 
 // ── 1. The stored score, against what the screens would compute ──────────────
 let current = 0, stale = 0, untagged = 0, unstamped = 0, wrong = 0, missing = 0;

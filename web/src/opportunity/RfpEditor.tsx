@@ -280,6 +280,34 @@ export default function RfpEditor({
         );
         row = res.row;
         notes.push(...(res.warnings ?? []));
+        /*
+         * THIS MESSAGE IS WRONG FOR SOME ROWS AND THE FIX IS WAITING ON A DEFINITION.
+         *
+         * Since dcea067 the re-score job DECLINES a row a person has assessed, so on
+         * those rows the number will not move and this says it will. The fix is not to
+         * predict the skip here — pipeline_writes.ts explains why the predicate cannot be
+         * evaluated at save time — but to report what the job actually DID, which is
+         * correct however "assessed" ends up being defined.
+         *
+         * The job's contract, from the session that wrote it, so whoever picks this up
+         * does not have to go and ask:
+         *
+         *   result: { rows, scored, changed, failed, skipped_human_assessed, runner }
+         *   skipped_human_assessed is an int, always present, 0 when nothing was skipped
+         *   message: "Scored 0, 1 left to the reviewer"
+         *
+         * So a single-uid job on a reviewed row returns
+         * { rows: 1, scored: 0, changed: 0, failed: 0, skipped_human_assessed: 1 }, and the
+         * editor should then say the score was left as the reviewer set it rather than
+         * anything mentioning a job. `awaitJob` already exists for the delete flow; this
+         * wants the non-blocking version — show "queued", then replace the note when it
+         * lands — because a save should not wait on a job the way a delete must.
+         *
+         * HELD because the owner has an open question about what counts as assessed, and
+         * the answer changes how large this gap is: keyed on decision_date it affects
+         * genuinely reviewed rows, keyed as it is today it affects every row anyone has
+         * ever saved. See the measurement in e19e838.
+         */
         if (res.rescore) {
           notes.push({
             code: "rescoring",

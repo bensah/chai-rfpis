@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import {
-  fetchReviewed, recordDecision, scoreIsBehind,
+  fetchReviewed, recordDecision, rescoreFailed, scoreIsBehind,
   type Reviewed, type ReviewedRow, type Warning,
 } from "../api";
 import OpportunityCell from "../opportunity/OpportunityCell";
@@ -245,6 +245,7 @@ export default function ReviewedStage({ period, onPickPeriod }: {
               {filtered.map((r) => {
                 const d = lower(r.decision);
                 const behind = scoreIsBehind(r);
+                const stuck = rescoreFailed(r);
                 return (
                   <tr key={r.uid} className="border-b border-ink-100 transition-colors last:border-0 hover:bg-ink-50">
                     <td className="px-4 py-3">
@@ -273,11 +274,22 @@ export default function ReviewedStage({ period, onPickPeriod }: {
                     <td className="px-4 py-3 text-right font-semibold tabular-nums text-brand-700">
                       {r.alignment_score == null ? "—" : Math.round(r.alignment_score)}
                       {behind && (
-                        /* The score predates the last edit, so a re-score is in flight.
-                           Saying so beats showing the old number as though it were final. */
+                        /* A re-score is queued or running, so this number is about to be
+                           replaced. Saying so beats showing it as though it were final. */
                         <span title="Being recalculated after a recent edit"
                           className="ml-1 inline-flex align-middle text-ink-400">
                           <RefreshCw className="h-3 w-3 animate-spin" />
+                        </span>
+                      )}
+                      {stuck && (
+                        /* The re-score this row was waiting for DIED, so the number is
+                           from before the edit that queued it and nothing is coming to
+                           replace it. Louder than the spinner on purpose: a spinner says
+                           "wait", and there is nothing to wait for. */
+                        <span
+                          title="The last recalculation failed, so this score may predate the edit that triggered it. Saving the opportunity again will queue another."
+                          className="ml-1 inline-flex align-middle text-amber-600">
+                          <AlertTriangle className="h-3 w-3" />
                         </span>
                       )}
                     </td>
