@@ -373,6 +373,56 @@ export function deadlinePassed(row: Json, today: string): boolean {
   return dl !== "" && dl < today;
 }
 
+/** `web_jobs.status` values that mean the job has not finished, one way or the other. */
+const JOB_IN_FLIGHT = ["queued", "dispatched", "running"];
+
+/**
+ * The uids with a re-score still outstanding, so a page can say a number is about to move.
+ *
+ * ASK THE QUEUE, NOT THE STAMPS. The Reviewed stage used to decide this in the browser, by
+ * comparing `decision_overridden_at` against `scored_at`: saved since it was scored, so a
+ * re-score must be on its way. Neither half of that holds.
+ *
+ *   * `patchRfp` stamps `decision_overridden_at` on EVERY save and queues a re-score only
+ *     when the save touched a scoring input (`needsRescore`). Change a next action and the
+ *     stamp moves while the score, correctly, does not.
+ *   * The decision route stamps it and queues `record_decision`, which does not score at
+ *     all. A decision is a human verdict, not an input to the number.
+ *
+ * So the test was true forever on any row saved either way. Measured on 2026-11-16: three
+ * rows had been spinning "Being recalculated after a recent edit" since the 9th and 10th,
+ * under scores that were right and were never going to change.
+ *
+ * This file already says of `decision_overridden_at`, two functions along, that it is an
+ * UPDATE timestamp and files nothing by it — evidence that somebody saved, not that
+ * anything about the row moved. The browser was reading it as the second thing.
+ *
+ * One read, on `web_jobs_kind_status` (migration 099), scoped to the tenant by its own
+ * column. The caller intersects the result with rows it has already scoped, so this can
+ * only ever flag a row the reader can already see.
+ */
+export async function pendingRescoreUids(db: Db, tid: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  // The placeholder scope stores no tenant on the job, so there is nothing to match on.
+  if (!tid || /^0{8}-/.test(tid)) return out;
+  const rows = await db.service.get("web_jobs",
+    `select=params&kind=eq.rescore&status=in.(${JOB_IN_FLIGHT.join(",")})` +
+    `&tenant_id=eq.${q(tid)}`)
+    // A queue that cannot be read means NO spinner, and that direction is deliberate. A
+    // missing spinner understates that something is moving, for the minute the job takes;
+    // a wrong one asserts a recalculation that is not happening, which is the fault being
+    // fixed here. Jobs that never reached the runner are already `failed` rather than
+    // `queued` (routes_jobs.enqueue), so this does not inherit the bug that once reported
+    // four failed jobs as two queued ones.
+    .catch(() => [] as Json[]);
+  for (const r of rows) {
+    const params = r.params && typeof r.params === "object" ? r.params as Json : null;
+    const uid = str(params?.uid).trim();
+    if (uid) out.add(uid);
+  }
+  return out;
+}
+
 /**
  * The Bidding stage's rows: `liveProceeds` plus rule 3, when the row arrived — either the
  * year of `submitted_at`, or an explicit half-open range when the period control supplies
@@ -918,6 +968,13 @@ export function createPipelineRoutes(db: Db) {
     const decided = all.filter((r) => str(r.decision).trim() !== "");
 
     const reviewToday = new Date().toISOString().slice(0, 10);
+    // Whether each row's score is about to move, answered by the job queue rather than
+    // inferred from the save stamps — see `pendingRescoreUids`. Served as a field because
+    // the browser cannot ask: `web_jobs` is the server's, and the client guessing at it
+    // from `decision_overridden_at` is precisely the bug this replaces. Read BEFORE the
+    // map below, for the same reason that filter is: once a `Json` is spread into an
+    // object literal its index signature is gone and `r.uid` with it.
+    const pending = await pendingRescoreUids(db, db.scopeTid(ctx.scope));
     const dated = decided
       // decidedOn is the LAST resort, not a peer: a row with no found date at all (an
       // old migrated one) still belongs on this stage somewhere, and dropping it would
@@ -941,7 +998,10 @@ export function createPipelineRoutes(db: Db) {
         if (dl !== "" && dl < reviewToday) return false;
         return !isSubmitted(r);
       })
-      .map((r) => ({ ...r, decided_on: decidedOn(r), found_on: foundOn(r) ?? decidedOn(r) }))
+      .map((r) => ({
+        ...r, decided_on: decidedOn(r), found_on: foundOn(r) ?? decidedOn(r),
+        rescore_pending: pending.has(str(r.uid).trim()),
+      }))
       .filter((r) => r.found_on);
     // Half-open, matching web/src/pipeline/period.ts, so consecutive windows tile exactly
     // and a row on a boundary date is counted once rather than in both.

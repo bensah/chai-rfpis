@@ -182,17 +182,28 @@ export type ScreenRow = {
 };
 
 /**
- * Is this row's stored score older than the edit that should have changed it?
+ * Is a re-score actually on its way for this row?
  *
- * Deliberately NOT "is the score stale against the current profile" — only the job knows
- * the current profile signature, and guessing at it here would put a second opinion about
- * freshness next to the authoritative one. This answers the narrower question a page can
- * actually act on: the row was saved after it was last scored, so a re-score is in flight.
+ * Still deliberately NOT "is the score stale against the current profile" — only the job
+ * knows the current profile signature, and guessing at it here would put a second opinion
+ * about freshness next to the authoritative one.
+ *
+ * WHAT CHANGED, 2026-11-16. This used to be computed here, as
+ * `decision_overridden_at > scored_at`: saved since it was scored, so a re-score must be
+ * in flight. That inference was wrong in both directions of the server's actual behaviour.
+ * `PATCH /pipelines/rfp/:uid` stamps `decision_overridden_at` on every save and queues a
+ * re-score only when the save touched a scoring input; `POST /pipelines/decision` stamps
+ * it and queues `record_decision`, which does not score at all. So changing a next action,
+ * or recording a decision, left the row looking permanently mid-recalculation — three rows
+ * had been spinning since 9 November under scores that were correct and settled.
+ *
+ * The queue is the only thing that knows, and the queue is the server's, so the server now
+ * answers it: `rescore_pending`, from `routes_pipelines.pendingRescoreUids`. A row served
+ * by an older API has no such field and simply does not spin, which is the right way for
+ * this to degrade.
  */
-export const scoreIsBehind = (r: {
-  scored_at?: string | null; decision_overridden_at?: string | null;
-}) => Boolean(r.scored_at && r.decision_overridden_at
-  && Date.parse(r.decision_overridden_at) > Date.parse(r.scored_at));
+export const scoreIsBehind = (r: { rescore_pending?: boolean | null }) =>
+  r.rescore_pending === true;
 
 export type Weeks = {
   year: number;
@@ -222,6 +233,11 @@ export type ReviewedRow = ScreenRow & {
    *  `submitted_at`. Resolved by the API so the page does not own a second opinion about
    *  which period a decision belongs to. */
   decided_on: string;
+  /** A `rescore` job for this row is queued, dispatched or running, so the score on screen
+   *  is about to be replaced. Answered from the job queue by the API — see `scoreIsBehind`
+   *  for why the page cannot work this out from the save stamps. Optional because an older
+   *  API does not send it. */
+  rescore_pending?: boolean;
 };
 
 export type Reviewed = {
@@ -1142,3 +1158,48 @@ export type TrackResult = {
 export const searchAction = (
   action: "feedback" | "track", result: WebHit, verdict?: "good" | "neutral" | "bad",
 ) => post<{ jobId: string }>("/search/action", { action, result, verdict });
+
+// ── My Organization ──────────────────────────────────────────────────────────
+//
+// A READ-ONLY view of what the matching engine believes about this tenant, and how much
+// of it is still missing. The editor is Settings → Setup; this page links to it.
+
+export type OrgRatingRow = {
+  key: string; label: string; category: string; value: number; word: string;
+};
+
+export type Organization = {
+  /** core/settings.get_org — the blob merged onto the placeholder defaults, with the
+   *  display name taken from `tenants.name` rather than the blob's own copy. */
+  identity: Record<string, string>;
+  /** core/org_profile.get_profile — the stored overlay merged onto DEFAULT_PROFILE,
+   *  legacy keys renamed on the way in. */
+  profile: Record<string, unknown>;
+  /** Ready for a `src`, whether it was stored as base64 or as a URL. */
+  logo: string | null;
+  /** Resolved server-side, from tables generated out of the Python. */
+  labels: { legalType: string; entityType: string };
+  /** Pre-sorted by `rating_bars_html`'s own order: value descending, then key. */
+  ratings: {
+    domain: OrgRatingRow[];
+    priority: OrgRatingRow[];
+    /** Selected but never graded — plain chips beside the bars. */
+    domainUngraded: string[];
+    priorityUngraded: string[];
+  };
+  completeness: {
+    pct: number;
+    /** The still-unfilled field labels, in the Python's weighted order. */
+    missing: string[];
+    band: "red" | "amber" | "green";
+    /** What is missing before screening can run. Empty = ready. */
+    gap: string[];
+    /** Any geography at all — a different question from `gap`, and it decides whether
+     *  the page warns or merely nudges. */
+    hasGeo: boolean;
+  };
+  team: string[];
+  canEdit: boolean;
+};
+
+export const fetchOrganization = () => call<Organization>("/organization");
