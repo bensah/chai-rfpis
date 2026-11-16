@@ -64,7 +64,15 @@ export type FeedItem = {
   facts?: { label: string; value: string }[];
 };
 
-export function createShellRoutes(db: Db) {
+/**
+ * The placeholder `views/account_sections.py` falls back to when ADMIN_CONTACT_EMAIL is
+ * unset. Kept identical so a deployment that has not configured it shows the same
+ * obviously-unconfigured address in both apps, rather than one app inventing a plausible
+ * one nobody reads.
+ */
+const ADMIN_CONTACT_FALLBACK = "admin@example.org";
+
+export function createShellRoutes(db: Db, adminContactEmail?: string) {
   /** notifications.recent_feed for the session's effective tenant. */
   async function recentFeed(ctx: Ctx): Promise<FeedItem[]> {
     const sb = db.as(ctx.scope);
@@ -219,6 +227,7 @@ export function createShellRoutes(db: Db) {
     return json({
       org, nextMeeting: meeting, feed, seen: seenTs, unread,
       classicUrl: String(urlRows[0]?.value ?? "").trim() || null,
+      adminContactEmail: (adminContactEmail ?? "").trim() || ADMIN_CONTACT_FALLBACK,
     });
   }
 

@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { currentSession, fetchShell, me, onSessionChange, sessionVersion, signOut, viewAs } from "./api";
+import { currentSession, fetchShell, me, onSessionChange, sessionVersion, signOut, viewAs, type Shell } from "./api";
 import { ActivatePage, ChoosePasswordGate, LoginScreen, PasswordResetPage, TokenScreen } from "./auth/AuthPages";
 import { navigate, PAGES, recordVisit, setParams, useLocation, type PageKey } from "./router";
 import Layout from "./shell/Layout";
@@ -17,6 +17,8 @@ import SettingsPage from "./pages/SettingsPage";
 import SubmitPage from "./pages/SubmitPage";
 import SearchPage from "./pages/SearchPage";
 import OrganizationPage from "./pages/OrganizationPage";
+import ProfilePage from "./pages/ProfilePage";
+import HelpPage from "./pages/HelpPage";
 import { EmptyState } from "./ui";
 
 export default function App() {
@@ -44,7 +46,11 @@ export default function App() {
 
 function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchParams }) {
   const user = currentSession()!.user;
-  const [classicUrl, setClassicUrl] = useState<string | null>(null);
+  // The WHOLE shell, not just the one field it used to keep. Help needs the admin
+  // contact address from it, and a third fetch of a response this component already
+  // makes would be a round trip for a string.
+  const [shell, setShell] = useState<Shell | null>(null);
+  const classicUrl = shell?.classicUrl ?? null;
 
   // Re-check the account on every app load (a deactivated account or a revoked membership
   // ends the session here), and fetch the fields only /me returns.
@@ -55,7 +61,7 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
   // engine itself when it mounts, so nobody downloads a Python runtime to read Home.
   useEffect(() => {
     me().catch(() => undefined);
-    fetchShell().then((s) => setClassicUrl(s.classicUrl)).catch(() => undefined);
+    fetchShell().then(setShell).catch(() => undefined);
   }, []);
 
   // ?tenant= — app_header._apply_tenant_url: for a super_user it SELECTS a view-as tenant;
@@ -102,6 +108,10 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
     body = <GrantsPage />;
   } else if (shown === "report") {
     body = <ReportPage />;
+  } else if (shown === "profile") {
+    body = <ProfilePage />;
+  } else if (shown === "help") {
+    body = <HelpPage user={user} shell={shell} />;
   } else if (shown === "organization") {
     body = <OrganizationPage user={user} />;
   } else if (shown === "search") {

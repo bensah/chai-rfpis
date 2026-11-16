@@ -36,6 +36,7 @@ import { createActionRoutes } from "./api/routes_actions.ts";
 import { loadOrgIdentity } from "./api/report_section2.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
 import { createOrgRoutes } from "./api/routes_org.ts";
+import { createProfileRoutes } from "./api/routes_profile.ts";
 import { createSearchRoutes } from "./api/routes_search.ts";
 import { createSubmitRoutes } from "./api/routes_submit.ts";
 import { createSessions } from "./api/session.ts";
@@ -51,6 +52,14 @@ export type Env = {
   resendApiKey?: string;
   resendFrom?: string;
   appPublicUrl?: string;    // fallback for link building when app_settings has none
+  /**
+   * The app owner / Super User to contact for account and data requests — permanent
+   * deletion, reactivating a suspended org, a role change. `ADMIN_CONTACT_EMAIL` in
+   * views/account_sections.py, which reads the same environment variable and falls back
+   * to the same placeholder. Surfaced on the shell so the Help page and the Profile
+   * page's danger zone say the same address.
+   */
+  adminContactEmail?: string;
 };
 
 export type Deps = AuthDeps & {
@@ -66,7 +75,7 @@ export function createApi(env: Env, deps: Deps) {
   });
   const auth = createAuthRoutes(db, tenants, sessions, deps,
     { mailer, allowedOrigins: env.allowedOrigins });
-  const shell = createShellRoutes(db);
+  const shell = createShellRoutes(db, env.adminContactEmail);
   const jobs = createJobRoutes(db, deps.dispatchJob ?? null);
   const phase1 = createPhase1Routes(db);
   const pipelines = createPipelineRoutes(db);
@@ -84,6 +93,8 @@ export function createApi(env: Env, deps: Deps) {
   const siteSearch = createSearchRoutes(db, jobs.enqueue);
   // My Organization: one read, no writes — the editor is Settings, not this page.
   const organization = createOrgRoutes(db);
+  // Profile: self-service only, and every route keyed on the session's own id.
+  const profile = createProfileRoutes(db, deps);
 
   async function route(req: Request, path: string): Promise<Response> {
     const m = req.method;
@@ -181,6 +192,12 @@ export function createApi(env: Env, deps: Deps) {
     // What the matching engine believes about this tenant, and how much of it is still
     // missing. Read-only by the page's own design — see api/routes_org.ts.
     if (path === "/organization" && m === "GET") return organization.read(req, ctx);
+
+    // Nothing here takes a user id from the request — see api/routes_profile.ts.
+    if (path === "/profile" && m === "GET") return profile.read(req, ctx);
+    if (path === "/profile" && m === "PATCH") return profile.patch(req, ctx);
+    if (path === "/profile" && m === "DELETE") return profile.remove(req, ctx);
+    if (path === "/profile/password" && m === "POST") return profile.password(req, ctx);
 
     if (path === "/search" && m === "GET") return siteSearch.search(req, ctx);
     if (path === "/search/web" && m === "POST") return siteSearch.web(req, ctx);

@@ -423,6 +423,9 @@ export type Shell = {
   seen: number | null;
   unread: number;
   classicUrl: string | null;
+  /** The app owner to contact for account and data requests. Falls back to a visibly
+   *  unconfigured placeholder when ADMIN_CONTACT_EMAIL is not set, in both apps. */
+  adminContactEmail: string;
 };
 export const fetchShell = () => call<Shell>("/shell");
 export const markAllRead = () => post<{ ok: true; seen: number }>("/notifications/read");
@@ -611,6 +614,9 @@ export type FormOptions = {
   dropdowns: Record<string, string[]>;
   programAreas: string[];
   geoOptions: string[];
+  /** Countries alone — a person's location on the Profile page, where the regions and
+   *  income tiers in `geoOptions` are not answers. */
+  countries: string[];
   criterionAnswers: Record<string, string[]>;
   /** Stored value (lower-cased) → the answer it pre-selects, as
    *  core/scorer.default_response resolves it. Resolved server-side because it
@@ -1187,3 +1193,52 @@ export type Organization = {
 };
 
 export const fetchOrganization = () => call<Organization>("/organization");
+
+// ── Profile ──────────────────────────────────────────────────────────────────
+//
+// Self-service only. Every route is keyed on the session's own id — none of them takes a
+// user id — so there is no shape of request that reaches somebody else's row.
+
+export type MyProfile = {
+  id: string; email: string; name: string | null; role: string;
+  phone: string | null; job_title: string | null; department: string | null;
+  program: string | null; address: string | null; city: string | null;
+  state_region: string | null; country: string | null;
+  created_at: string | null; last_login_at: string | null;
+  password_changed_at: string | null; must_change_password: boolean | null;
+};
+
+export type LoginRow = { at: string; device: string; ip: string };
+
+export type ProfileView = {
+  profile: MyProfile;
+  metrics: { created: string | null; lastLogin: string | null; passwordSet: string | null };
+  /** The last twelve sign-ins: when, which device, which address. Location is
+   *  deliberately not derived — that needs an external geo-IP call. */
+  logins: LoginRow[];
+  passwordRules: string;
+  /** True when deleting this account would leave nobody able to administer the app.
+   *  Enforced server-side as well; this only decides what the page offers. */
+  soleSuperUser: boolean;
+};
+
+export const fetchProfile = () => call<ProfileView>("/profile");
+
+/** The ten self-editable columns. Role is NOT one of them and the server refuses it. */
+export type ProfilePatch = Partial<Pick<MyProfile,
+  "name" | "email" | "phone" | "job_title" | "department" | "program"
+  | "address" | "city" | "state_region" | "country">>;
+
+export const saveProfile = (fields: ProfilePatch) =>
+  patch<{ profile: MyProfile; emailChanged: boolean; notice: string | null }>(
+    "/profile", fields);
+
+/** Changing it needs the current one as proof. The session is deliberately not re-issued. */
+export const changeMyPassword = (current: string, password: string, confirm: string) =>
+  post<{ ok: true }>("/profile/password", { current, password, confirm });
+
+/** Irreversible. Takes the account's own email back as confirmation. */
+export const deleteMyAccount = (confirmEmail: string) =>
+  call<{ ok: true }>("/profile", {
+    method: "DELETE", body: JSON.stringify({ confirmEmail }),
+  });

@@ -40,6 +40,9 @@ const api = createApi(
     resendApiKey: Deno.env.get("RESEND_API_KEY") ?? "",
     resendFrom: Deno.env.get("RESEND_FROM_EMAIL") ?? "",
     appPublicUrl: Deno.env.get("APP_PUBLIC_URL") ?? "",
+    // Same variable views/account_sections.py reads; unset falls back to the
+    // placeholder both apps share.
+    adminContactEmail: Deno.env.get("ADMIN_CONTACT_EMAIL") ?? "",
   },
   {
     bcryptCompare: (plain, hash) => bcrypt.compare(plain, hash),
