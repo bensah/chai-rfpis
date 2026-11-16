@@ -175,24 +175,44 @@ export function needsRescore(fields: Record<string, unknown>): boolean {
  * Spelled here as well as in the Python because this route has to answer the question
  * before the job does, and `check-rescore` compares the two lists so they cannot drift.
  */
-export const ASSESSED_BY_A_HUMAN = ["decision_date", "decision_overridden_by"] as const;
+export const ASSESSED_BY_A_HUMAN = [
+  "decision_date", "decision_overridden_by", "decision",
+] as const;
+
+const isSet = (v: unknown) => v !== null && v !== undefined && String(v).trim() !== "";
 
 /**
- * Has a person assessed this row?
+ * Has a PERSON assessed this row, as opposed to the scan having scored it?
  *
- * SINCE dcea067 THE RE-SCORE JOB DECLINES SUCH A ROW, and that changes what this route may
- * honestly promise. `auto_scorer.auto_score` bases all nine criteria to None and re-derives
- * them — it never reads the nine stored columns — so on a reviewed row it answers "what
- * would this score if nobody had looked at it". Measured live before that change: 48 of 56
- * reviewed rows held criteria it does not reproduce and 30 came out with a different
- * recommendation. The owner's rule (2026-11-16) is that human work wins, which is the rule
- * `core/scan_pipeline.py:307` has followed all along.
+ *     decision_date                        -> assessed
+ *     decision_overridden_by AND decision  -> assessed
+ *     anything else                        -> not
+ *
+ * SINCE dcea067 THE RE-SCORE JOB DECLINES SUCH A ROW. `auto_scorer.auto_score` bases all
+ * nine criteria to None and re-derives them — it never reads the nine stored columns — so
+ * on a reviewed row it answers "what would this score if nobody had looked at it".
+ * Measured live: 48 of 56 reviewed rows held criteria it does not reproduce and 30 came
+ * out with a different recommendation.
+ *
+ * NO COLUMN WORKS ALONE, and both of this file's earlier attempts are worth recording.
+ * The first used `decision_overridden_by` by itself — stamped by EVERY save, in both apps,
+ * so it answered true for any row anybody had edited and decayed with every save: 56
+ * exempt, 29 of them on a save rather than a decision. `decision_date` alone was the
+ * suggested fix and was wrong the other way, because `views/rfp_editor.py` never stamped
+ * it and three of the five rows the rule exists to protect carry a decision and a written
+ * note with no date. `decision` alone would exempt 92, a third with no human marker at
+ * all, since the engine writes that column too.
+ *
+ * The conjunction exempts 59 of 271 and cannot drift: a save can only confer it on a row
+ * that ALREADY carries a decision, so an untouched scan row stays re-scorable.
+ *
+ * EVALUATED ON THE SAVED ROW, deliberately. The save stamps `decision_overridden_by`
+ * before this runs, which looks like judging a row it just changed — and it is right,
+ * because the JOB reads the row after the save too. Asking the same question of the same
+ * bytes makes this a prediction of the job's behaviour rather than a guess at it.
  */
 export const humanAssessed = (row: Json): boolean =>
-  ASSESSED_BY_A_HUMAN.some((c) => {
-    const v = row[c];
-    return v !== null && v !== undefined && String(v).trim() !== "";
-  });
+  isSet(row.decision_date) || (isSet(row.decision_overridden_by) && isSet(row.decision));
 
 /** For the test that re-checks the list against the Python. */
 export const workflowOnlyColumns = (): string[] => [...WORKFLOW_ONLY];
@@ -355,24 +375,35 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
     // The score is the server's to recompute, and this save may have moved it. Queued
     // after the write, so the job reads the saved row rather than racing it.
     //
-    // NOT GATED ON `humanAssessed` YET, DELIBERATELY, and the reason is a measurement
-    // rather than an oversight. Since dcea067 the job declines a row a person has
-    // assessed, so this route ought to stop promising a recalculation that will not
-    // happen — except that the predicate keys on `decision_overridden_by`, and the block
-    // thirty lines above stamps that column on EVERY save. The row this route would judge
-    // is the row the save has just stamped, so the answer is `true` for every PATCH that
-    // changes anything, including on a call nobody has ever decided.
+    // ON A ROW A PERSON HAS ASSESSED THE JOB DECLINES (dcea067, narrowed by d69d2a3), so
+    // this route says so rather than promising a recalculation that will not happen. The
+    // job is still queued, deliberately: it CLEARS the two freshness stamps on a row it
+    // has stopped maintaining, which is the difference between "unverified" and a stamp
+    // that goes false the moment the reviewer edits a criterion.
     //
-    // Gating on it here would therefore tell every reviewer their score is being left
-    // alone, which is both wrong and the opposite of the old message's wrongness. The
-    // question of what counts as "assessed" is open with the owner; until it is settled
-    // this reports what it has always reported, and `humanAssessed` above is exported for
-    // the parity check that pins it to the Python rather than for use here.
+    // This was held back for one round, and the reason is worth keeping. The predicate
+    // then keyed on `decision_overridden_by` alone, and the block thirty lines above
+    // stamps that column on EVERY save — so gating on it would have told every reviewer
+    // their score was being left alone, which is wrong in the opposite direction to the
+    // message it replaces. The conjunction fixed that; `humanAssessed` says why the saved
+    // row is the right thing to ask.
     let rescore: { job_id: string } | null = null;
+    const deferred = needsRescore(fields) && humanAssessed(row);
     if (needsRescore(fields)) {
       const { jobId, warning } = await queueRescore(ctx, row, uid);
-      if (jobId) rescore = { job_id: jobId };
-      if (warning) warnings.push(warning);
+      // `rescore` is what the editor reads as "a new number is coming", and on a deferred
+      // row no new number is. The job still runs — it has stamps to clear — and a caller
+      // that wants to watch it can take the id from the job list.
+      if (jobId && !deferred) rescore = { job_id: jobId };
+      if (warning && !deferred) warnings.push(warning);
+      if (deferred) {
+        warnings.push({
+          code: "score_left_to_the_reviewer",
+          detail: "Saved. The score is left as you set it: somebody has assessed this "
+            + "opportunity, and the re-score job derives all nine criteria from scratch "
+            + "rather than reading the ones a person chose.",
+        });
+      }
     }
     return json({ row, warnings, rescore });
   }
