@@ -45,6 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from core import dropdowns                       # noqa: E402
+from core.geographies import COUNTRIES            # noqa: E402
 from core import type_detect as td               # noqa: E402
 from core.scorer import (                        # noqa: E402
     CRITERIA, CRITERION_RESPONSES, _SCORE_MAP, _load_config, criterion_score,
@@ -189,6 +190,17 @@ export const SOLICITATION_TYPES: string[] = {js(list(td.SOLICITATION_TYPES))};
 /** core/type_detect.INSTRUMENT_TYPES — the contract if awarded. */
 export const INSTRUMENT_TYPES: string[] = {js(list(td.INSTRUMENT_TYPES))};
 
+/**
+ * core/geographies.COUNTRIES — countries ALONE, without the UN regions and income tiers
+ * that GEO_OPTIONS puts in front of them.
+ *
+ * The Profile page's Country field is a person's location, so "Sub-Saharan Africa" and
+ * "Lower-middle income" are not answers to it; `views/account_sections.py` uses this list
+ * for that reason. GEO_OPTIONS stays what a CALL's scope is picked from, where a region
+ * genuinely is an answer.
+ */
+export const COUNTRIES: string[] = {js(list(COUNTRIES))};
+
 /** criterion key → lower-cased answer → 2 / 1 / 0, or null for UNSCORED ("Not sure"),
  * as core/scorer.criterion_score resolves it. Covers every answer the forms offer and
  * every legacy spelling _SCORE_MAP recognises, so it is total for anything a dropdown can
@@ -206,7 +218,8 @@ export const SCORING_THRESHOLDS: {{ proceed: number; park: number }} = {js(thres
     OUT.write_text(body, encoding="utf-8")
     print(f"wrote {OUT.relative_to(ROOT)}: {len(plain)} plain lists, "
           f"{len(program_areas)} programme areas, {len(geo_options)} geographies, "
-          f"{len(responses)} criteria, {sum(len(v) for v in scores.values())} scored answers")
+          f"{len(responses)} criteria, {sum(len(v) for v in scores.values())} scored answers, "
+          f"{len(COUNTRIES)} countries")
 
 
 if __name__ == "__main__":

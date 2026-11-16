@@ -41,6 +41,8 @@ function devApi(mode: string): Plugin {
             // the reset email is not sent; the flow still answers identically.
             resendApiKey: e.RESEND_API_KEY, resendFrom: e.RESEND_FROM_EMAIL,
             appPublicUrl: e.APP_PUBLIC_URL,
+            // Same variable views/account_sections.py reads.
+            adminContactEmail: e.ADMIN_CONTACT_EMAIL,
           },
           {
             bcryptCompare: (plain, hash) => bcrypt.compare(plain, hash),
