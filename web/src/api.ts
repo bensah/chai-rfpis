@@ -1142,3 +1142,48 @@ export type TrackResult = {
 export const searchAction = (
   action: "feedback" | "track", result: WebHit, verdict?: "good" | "neutral" | "bad",
 ) => post<{ jobId: string }>("/search/action", { action, result, verdict });
+
+// ── My Organization ──────────────────────────────────────────────────────────
+//
+// A READ-ONLY view of what the matching engine believes about this tenant, and how much
+// of it is still missing. The editor is Settings → Setup; this page links to it.
+
+export type OrgRatingRow = {
+  key: string; label: string; category: string; value: number; word: string;
+};
+
+export type Organization = {
+  /** core/settings.get_org — the blob merged onto the placeholder defaults, with the
+   *  display name taken from `tenants.name` rather than the blob's own copy. */
+  identity: Record<string, string>;
+  /** core/org_profile.get_profile — the stored overlay merged onto DEFAULT_PROFILE,
+   *  legacy keys renamed on the way in. */
+  profile: Record<string, unknown>;
+  /** Ready for a `src`, whether it was stored as base64 or as a URL. */
+  logo: string | null;
+  /** Resolved server-side, from tables generated out of the Python. */
+  labels: { legalType: string; entityType: string };
+  /** Pre-sorted by `rating_bars_html`'s own order: value descending, then key. */
+  ratings: {
+    domain: OrgRatingRow[];
+    priority: OrgRatingRow[];
+    /** Selected but never graded — plain chips beside the bars. */
+    domainUngraded: string[];
+    priorityUngraded: string[];
+  };
+  completeness: {
+    pct: number;
+    /** The still-unfilled field labels, in the Python's weighted order. */
+    missing: string[];
+    band: "red" | "amber" | "green";
+    /** What is missing before screening can run. Empty = ready. */
+    gap: string[];
+    /** Any geography at all — a different question from `gap`, and it decides whether
+     *  the page warns or merely nudges. */
+    hasGeo: boolean;
+  };
+  team: string[];
+  canEdit: boolean;
+};
+
+export const fetchOrganization = () => call<Organization>("/organization");

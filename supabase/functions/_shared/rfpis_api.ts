@@ -35,6 +35,7 @@ import { buildGrants, loadGrants, parseGrantSelection, yearsFor } from "./api/gr
 import { createActionRoutes } from "./api/routes_actions.ts";
 import { loadOrgIdentity } from "./api/report_section2.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
+import { createOrgRoutes } from "./api/routes_org.ts";
 import { createSearchRoutes } from "./api/routes_search.ts";
 import { createSubmitRoutes } from "./api/routes_submit.ts";
 import { createSessions } from "./api/session.ts";
@@ -81,6 +82,8 @@ export function createApi(env: Env, deps: Deps) {
   // Search: the in-app half answers in the request, the web half is a job — 21.4s
   // against the live providers, in Python that holds the keys. See api/routes_search.ts.
   const siteSearch = createSearchRoutes(db, jobs.enqueue);
+  // My Organization: one read, no writes — the editor is Settings, not this page.
+  const organization = createOrgRoutes(db);
 
   async function route(req: Request, path: string): Promise<Response> {
     const m = req.method;
@@ -174,6 +177,10 @@ export function createApi(env: Env, deps: Deps) {
     // never refuses a row for being a duplicate — see api/submit.ts on the 2026-06-05
     // policy that de-duplication happens at display time instead.
     if (path === "/submit" && m === "POST") return submitNotice.submit(req, ctx);
+
+    // What the matching engine believes about this tenant, and how much of it is still
+    // missing. Read-only by the page's own design — see api/routes_org.ts.
+    if (path === "/organization" && m === "GET") return organization.read(req, ctx);
 
     if (path === "/search" && m === "GET") return siteSearch.search(req, ctx);
     if (path === "/search/web" && m === "POST") return siteSearch.web(req, ctx);
