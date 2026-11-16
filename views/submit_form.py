@@ -31,6 +31,7 @@ import streamlit as st
 from core import dropdowns
 from core.review_week import review_week_label
 from core.scorer import CRITERION_RESPONSES, score_submission
+from core.score_stamp import editor_score_columns
 from core.uid_generator import generate_uid
 from db.supabase_client import get_client
 
@@ -370,8 +371,10 @@ def render_submit_form(
         **vals,
         "decline_flags_present": decline_bool,
         "key_risks": _none(key_risks),
-        "alignment_score": align,
-        "auto_recommendation": rec,
+        # An INSERT has no stamp to overwrite — both columns are null on a new row either
+        # way. Written explicitly all the same so every human-facing write path goes
+        # through the one helper and none of them has to be remembered as the exception.
+        **editor_score_columns(align, rec),
         "decision": _none(decision),
         "decision_note": _none(rationale),
         "proposal_lead": resolved.get("prop_lead"),
