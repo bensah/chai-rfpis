@@ -125,14 +125,17 @@ def render_submit_form(
         submitter's. If those two ever disagreed, every submission would record the
         difference as a human answer in the submitter's name.
 
-        "Not sure" where the vocabulary has one. `bid_effort` has none, so it falls to the
-        first option — which is the BEST answer ("Ample time, sufficient resources"),
-        because CRITERION_RESPONSES runs best to worst. That is a known fault, reported to
-        the owner and not ruled on: a submitter who fills in four fields is recorded as
-        asserting the bid is comfortably resourced. It is not fixed here because it moves
-        live scores, and `web/scripts/parity/check-submit.mjs:267` pins the current
-        behaviour by name. What IS handled here is the consequence for provenance: an
-        untouched bid_effort equals this baseline, so it is never recorded as answered.
+        "Not sure" where the vocabulary has one, else the first option. Every criterion
+        has one as of 2026-11-17, when `bid_effort` gained it — it was the exception, and
+        because CRITERION_RESPONSES runs best to worst it therefore opened on the BEST
+        answer ("Ample time, sufficient resources"), recording a submitter who never
+        touched it as asserting the bid was comfortably resourced.
+
+        THE FALLBACK STAYS because the rule has to answer for a vocabulary that has no
+        "Not sure", and the next criterion added could be one. It is no longer load-bearing
+        for any live criterion, so the containment it used to provide — an untouched
+        bid_effort equalling this baseline and therefore never being recorded as an answer
+        — is now true for the ordinary reason rather than a deliberate one.
         """
         opts = CRITERION_RESPONSES.get(criterion) or list(elig)
         return "Not sure" if "Not sure" in opts else opts[0]

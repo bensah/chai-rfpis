@@ -183,8 +183,7 @@ class TestTheEditorRecordsIt(unittest.TestCase):
 
         An insert has no row to compare against, and against an empty one every value
         looks answered: a submitter who filled in four fields would be on record as
-        asserting the other five, `_crit`'s bid_effort default included, which pre-selects
-        the BEST option. The baseline is the form's defaults instead.
+        asserting the other five. The baseline is the form's defaults instead.
         """
         src = (ROOT / "views" / "submit_form.py").read_text(encoding="utf-8")
         self.assertIn("criteria_provenance.record", src)
@@ -208,22 +207,43 @@ class TestTheEditorRecordsIt(unittest.TestCase):
         src = (ROOT / "views" / "submit_form.py").read_text(encoding="utf-8")
         self.assertIn("decision_date", src)
 
+    @staticmethod
+    def _form_defaults() -> dict[str, str]:
+        """What the submit form shows before anyone touches it.
+
+        DERIVED from the live vocabulary rather than written out, because writing it out
+        is how this test rotted once already: `bid_effort` had no "Not sure" and opened on
+        the BEST answer until 2026-11-17, and a hard-coded copy would have gone on
+        asserting that after the vocabulary changed. Same rule as
+        `views/submit_form.py::_crit_default`.
+        """
+        from core.scorer import CRITERION_RESPONSES
+        return {c: ("Not sure" if "Not sure" in opts else opts[0])
+                for c, opts in CRITERION_RESPONSES.items()}
+
     def test_an_untouched_submission_records_nothing(self):
         """The whole form left alone: every value equals its default, so nobody answered."""
-        defaults = {"qualification": "Not sure", "strategic_fit": "Not sure",
-                    "capacity": "Not sure", "geographic_fit": "Not sure",
-                    "cofinancing": "Not sure", "funding_quality": "Not sure",
-                    "funder_relationship": "Not sure", "competitiveness": "Not sure",
-                    # no "Not sure" in this vocabulary, so the widget starts on the best
-                    "bid_effort": "Ample time, sufficient resources"}
+        defaults = self._form_defaults()
         self.assertIsNone(prov.record(defaults, dict(defaults), "a@b.org"))
 
     def test_a_submission_records_only_what_the_submitter_answered(self):
-        defaults = {"qualification": "Not sure", "capacity": "Not sure",
-                    "bid_effort": "Ample time, sufficient resources"}
+        defaults = self._form_defaults()
         answered = {**defaults, "qualification": "Yes, fully"}
         out = prov.record(defaults, answered, "a@b.org")
         self.assertEqual(set(out), {"qualification"})
+
+    def test_the_fallback_still_holds_for_a_vocabulary_without_not_sure(self):
+        """Every criterion has one today; the next one added might not.
+
+        The fallback stopped being load-bearing when bid_effort gained "Not sure", which
+        is exactly when a rule stops being exercised and starts being able to break
+        unnoticed. A criterion whose options open on the best answer must still be
+        unrecorded when the submitter leaves it there.
+        """
+        baseline = {"bid_effort": "Ample time, sufficient resources"}
+        self.assertIsNone(prov.record(baseline, dict(baseline), "a@b.org"))
+        out = prov.record(baseline, {"bid_effort": "Not enough time, no team"}, "a@b.org")
+        self.assertEqual(set(out), {"bid_effort"})
 
 
 if __name__ == "__main__":
