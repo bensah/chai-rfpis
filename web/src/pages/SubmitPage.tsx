@@ -72,8 +72,7 @@ const PREFER: [string, string, string][] = [
     + "/ HQ)?"],
   ["bid_effort", "PREFER 9 — Bid effort",
     "Is the bid effort feasible — enough time to the deadline and a business-development "
-    + "/ proposal team to do it justice? This one has no ‘Not sure’, so it starts on "
-    + "the best answer — change it if time or the team is short."],
+    + "/ proposal team to do it justice?"],
 ];
 
 /**
@@ -81,12 +80,12 @@ const PREFER: [string, string, string][] = [
  *
  *     didx = opts.index("Not sure") if "Not sure" in opts else 0
  *
- * Eight open on "Not sure", so the submitter sets only what they know. PREFER-9 has no
- * "Not sure" in its vocabulary and therefore opens on the FIRST option, which is the best
- * one — an untouched bid-effort claims ample time and a team. That is the Streamlit
- * behaviour and it is reproduced rather than corrected, because both apps are live and the
- * same input must not score two ways; the one mercy is that the dropdown shows it, so a
- * submitter can see what was assumed on their behalf. See api/submit.ts::criteriaValues.
+ * All nine open on "Not sure", so the submitter sets only what they actually know.
+ *
+ * PREFER-9 WAS THE EXCEPTION UNTIL 2026-11-17: its vocabulary had no "Not sure", so
+ * `else 0` took the first option of a best-to-worst list and an untouched bid-effort
+ * claimed ample time and a team. The owner had the option added to the shared vocabulary,
+ * which fixes both apps through the same one line rather than special-casing either.
  */
 const defaultCriteria = (answers: Record<string, string[]>): Record<string, string> => {
   const out: Record<string, string> = {};

@@ -71,6 +71,8 @@ export function createSubmitRoutes(db: Db, enqueue: Enqueue | null = null) {
         // `review_week_label()` with no argument — the week containing the submitter's own
         // today, not the upcoming one. A row records the week it was found in.
         reviewWeek: weekLabel(localDay(now, offset)),
+        // The submitter's own calendar day, same source the uid and the review week use.
+        today: localDay(now, offset),
       });
     } catch (e) {
       // The only throws in `buildRow` are the date-shaped ones, and they are the client

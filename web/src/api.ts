@@ -457,7 +457,16 @@ export type Shell = {
   /** The app owner to contact for account and data requests. Falls back to a visibly
    *  unconfigured placeholder when ADMIN_CONTACT_EMAIL is not set, in both apps. */
   adminContactEmail: string;
+  /** The parts of the chrome that could not be READ, as opposed to being empty: any of
+   *  "feed", "seen", "meeting", "org", "classicUrl". The shell renders either way — it is
+   *  on every page — so this is how a panel says "unavailable" instead of drawing an empty
+   *  state that reads as a fact about the user's data. Absent on an older API. */
+  unavailable?: string[];
 };
+
+/** Did this part of the chrome fail to load, rather than come back empty? */
+export const shellPartFailed = (s: Shell | null, part: string) =>
+  Boolean(s?.unavailable?.includes(part));
 export const fetchShell = () => call<Shell>("/shell");
 export const markAllRead = () => post<{ ok: true; seen: number }>("/notifications/read");
 
