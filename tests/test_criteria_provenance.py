@@ -178,16 +178,52 @@ class TestTheEditorRecordsIt(unittest.TestCase):
                 return
         self.fail("no criteria_provenance.record call found in views/rfp_editor.py")
 
-    def test_the_submit_form_does_not(self):
-        """An insert has nothing to compare against, so every field would look answered.
+    def test_the_submit_form_records_against_its_own_defaults(self):
+        """It asks a person all nine, so it must record them — but not its own defaults.
 
-        The form's own defaults would be recorded as the submitter's answers — including
-        `_crit`'s, which pre-selects the BEST option for bid_effort because that criterion
-        has no "Not sure". A submitter who filled in four fields would be on record as
-        asserting the bid is comfortably resourced, and the scorer would defer to it.
+        An insert has no row to compare against, and against an empty one every value
+        looks answered: a submitter who filled in four fields would be on record as
+        asserting the other five, `_crit`'s bid_effort default included, which pre-selects
+        the BEST option. The baseline is the form's defaults instead.
         """
         src = (ROOT / "views" / "submit_form.py").read_text(encoding="utf-8")
-        self.assertNotIn("criteria_provenance", src)
+        self.assertIn("criteria_provenance.record", src)
+        self.assertIn("_crit_default", src,
+                      "the baseline must come from the same definition the widget uses, "
+                      "or every submission records the difference as a human answer")
+
+    def test_the_forms_default_is_defined_once(self):
+        """Two copies of the default rule would silently forge provenance."""
+        src = (ROOT / "views" / "submit_form.py").read_text(encoding="utf-8")
+        self.assertEqual(src.count('"Not sure" if "Not sure" in opts else opts[0]'), 1)
+        self.assertNotIn('opts.index("Not sure") if "Not sure" in opts else 0', src,
+                         "the widget must take its index from _crit_default, not repeat it")
+
+    def test_a_submission_stamps_the_decision_date_it_captures(self):
+        """Without it a freshly submitted notice reads as a scan row to the re-score job.
+
+        The insert sets no decision_overridden_by, so `score_stamp.human_assessed` would
+        say False on a row whose nine criteria a person just answered.
+        """
+        src = (ROOT / "views" / "submit_form.py").read_text(encoding="utf-8")
+        self.assertIn("decision_date", src)
+
+    def test_an_untouched_submission_records_nothing(self):
+        """The whole form left alone: every value equals its default, so nobody answered."""
+        defaults = {"qualification": "Not sure", "strategic_fit": "Not sure",
+                    "capacity": "Not sure", "geographic_fit": "Not sure",
+                    "cofinancing": "Not sure", "funding_quality": "Not sure",
+                    "funder_relationship": "Not sure", "competitiveness": "Not sure",
+                    # no "Not sure" in this vocabulary, so the widget starts on the best
+                    "bid_effort": "Ample time, sufficient resources"}
+        self.assertIsNone(prov.record(defaults, dict(defaults), "a@b.org"))
+
+    def test_a_submission_records_only_what_the_submitter_answered(self):
+        defaults = {"qualification": "Not sure", "capacity": "Not sure",
+                    "bid_effort": "Ample time, sufficient resources"}
+        answered = {**defaults, "qualification": "Yes, fully"}
+        out = prov.record(defaults, answered, "a@b.org")
+        self.assertEqual(set(out), {"qualification"})
 
 
 if __name__ == "__main__":

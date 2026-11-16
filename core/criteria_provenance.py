@@ -112,16 +112,28 @@ def answers(row: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def record(
-    row: Mapping[str, Any] | None,
+    baseline: Mapping[str, Any] | None,
     values: Mapping[str, Any],
     by: str | None,
     at: str | None = None,
 ) -> dict | None:
     """The new provenance column for a save, or None when there is nothing to change.
 
-    `values` is what the save is about to write for the nine criteria; `row` is what the
-    row holds now. Only criteria whose value actually MOVES are recorded — see the module
-    docstring for why round-tripped values must not be.
+    `values` is what the save is about to write for the nine criteria. `baseline` is what
+    those criteria would say if the person had answered nothing, and only the ones that
+    MOVE off it are recorded — see the module docstring for why.
+
+    THE BASELINE IS NOT ALWAYS THE ROW, and this is the whole of the difference between an
+    edit and a submission:
+
+      * `views/rfp_editor.py` passes the ROW. Its dropdowns are pre-selected from the
+        stored values, so a value equal to the row's is one the reviewer left alone.
+      * `views/submit_form.py` passes THE FORM'S OWN DEFAULTS, because an insert has no row
+        to compare against and every value would otherwise look answered. Its `_crit`
+        pre-selects "Not sure" where the vocabulary has one and the first option where it
+        does not — `bid_effort`, which therefore starts at the BEST answer. Against that
+        baseline a submitter who answered nothing records nothing, which is the same rule
+        and the same reason, with the right "before" for the screen.
 
     Existing entries are kept: a criterion a reviewer answered last week is still theirs
     when somebody edits a different one today. An entry is dropped only when this save
@@ -130,8 +142,8 @@ def record(
     Returns None when nothing moved, so a caller can leave the column out of the update
     entirely rather than rewriting it to its own value on every save.
     """
-    row = row or {}
-    before = _as_dict(row.get(COLUMN))
+    baseline = baseline or {}
+    before = _as_dict(baseline.get(COLUMN))
     after = dict(before)
     stamp = at or datetime.now(timezone.utc).isoformat()
     changed = False
@@ -139,11 +151,11 @@ def record(
     for criterion in CRITERIA:
         if criterion not in values:
             continue
-        new, old = values.get(criterion), row.get(criterion)
+        new, old = values.get(criterion), baseline.get(criterion)
         if str(new or "").strip() == str(old or "").strip():
             continue                      # round-tripped, or genuinely unchanged
         if _empty(old):
-            # THE ROW HELD NOTHING, so this is the form filling a gap rather than a person
+            # THE BASELINE HELD NOTHING, so this is the form filling a gap rather than a person
             # contradicting anything. `views/rfp_editor.py::_elig` pre-selects a stored
             # value through `default_response`, and where there is none to map it falls to
             # the option at index 0 — so a save of any OTHER field writes a default into a
