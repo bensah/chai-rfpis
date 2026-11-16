@@ -92,14 +92,33 @@ def _rescore(job: JobRow, params: dict, runner: str) -> dict:
     both would be the same stored value. A job must know when scoring failed. So the call
     is the one assess_row makes, and the swallow is not.
 
+    WHAT IT WILL NOT SCORE: a row a human has assessed (owner, 2026-11-16). `auto_score`
+    re-derives all nine criteria from org profile x donor intel x call text and never reads
+    the nine stored columns, so on a reviewed row it does not correct the number — it
+    answers a different question, "what would this score if nobody had looked at it". On
+    live data 48 of 56 reviewed rows hold criteria it does not reproduce and 30 of those
+    come out with a different recommendation. `core/scan_pipeline.py:307` has deferred to
+    human review since long before scoring moved here ("Otherwise human work wins"); this
+    job simply did not know about the rule. See `core/score_stamp.py` for the other half.
+
+    A skipped row has its stamps CLEARED rather than left alone, and that is not tidiness.
+    Leaving them says the server verified a number it has now stopped maintaining, and the
+    moment the reviewer's next edit changes the criteria that claim is false —
+    `web/scripts/parity/check-rescore.mjs` would go red on exactly the rows this skip
+    exists to protect. Cleared, the row reads "unverified", which is what it is: the score
+    is the reviewer's and the server does not vouch for it.
+
     params: {"tenant_id": required, "uid": optional}. With a uid, one row — what a save
     queues. Without, the tenant's whole table — what a profile edit or a schedule queues.
+    The skip applies to both: a save on a reviewed row is the reviewer editing their own
+    assessment, which is the last thing that should trigger a re-derivation of it.
 
     Prints counts and nothing else: this log is public (the repository is).
     """
     from auth.tenant_context import reset_tenant_override, set_tenant_override
     from core.auto_scorer import auto_score
     from core.policies import get_policies
+    from core.score_stamp import STAMP_COLUMNS, human_assessed
     from scripts.rescore_existing import profile_signature, write_with_retry
 
     tenant_id = str(params.get("tenant_id") or (job.get() or {}).get("tenant_id") or "").strip()
@@ -124,8 +143,19 @@ def _rescore(job: JobRow, params: dict, runner: str) -> dict:
 
         _org, _org_set, _donors, sig = profile_signature(sb, tenant_id)
         policies = get_policies()
-        scored = changed = failed = 0
+        scored = changed = failed = skipped = 0
         for i, row in enumerate(rows):
+            # HUMAN WORK WINS (see the docstring). `decision_date` is the flag the rest of
+            # the app reads as "a human has reviewed this" (web/src/api.ts, and
+            # pipeline_writes.ts says so in as many words); `decision_overridden_by` catches
+            # a row saved in the Streamlit editor, which stamps the author on every save
+            # without necessarily setting a decision date.
+            if human_assessed(row):
+                skipped += 1
+                if row.get("scored_at") or row.get("score_profile_sig"):
+                    write_with_retry(sb, str(row.get("uid")),
+                                     {c: None for c in STAMP_COLUMNS})
+                continue
             # auto_score, NOT rescore_existing.evaluate. Both reach composite_match, but
             # auto_score additionally runs _apply_criteria_keywords over the candidate text
             # and evaluate does not, so the two derive different criteria from the same row:
@@ -173,11 +203,15 @@ def _rescore(job: JobRow, params: dict, runner: str) -> dict:
             if len(rows) > 20 and i % 25 == 0:
                 job.progress(5 + int(90 * i / len(rows)), f"Scored {i} of {len(rows)}")
 
-        # `failed` is reported rather than swallowed: a run that scored most of a tenant
-        # and quietly skipped the rest should not look like a clean run.
-        job.progress(100, f"Scored {scored}" + (f", {failed} failed" if failed else ""))
+        # `failed` and `skipped` are reported rather than swallowed: a run that scored most
+        # of a tenant and quietly passed over the rest should not look like a clean run,
+        # and a save that comes back "scored 0" needs to say WHY — deferred to the
+        # reviewer, not broken.
+        job.progress(100, f"Scored {scored}"
+                     + (f", {skipped} left to the reviewer" if skipped else "")
+                     + (f", {failed} failed" if failed else ""))
         return {"rows": len(rows), "scored": scored, "changed": changed,
-                "failed": failed, "runner": runner}
+                "failed": failed, "skipped_human_assessed": skipped, "runner": runner}
     finally:
         reset_tenant_override(token)
 

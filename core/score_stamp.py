@@ -44,6 +44,39 @@ from typing import Any
 # in tests/test_editor_saves_do_not_stamp.py reads them from here.
 STAMP_COLUMNS = ("scored_at", "score_profile_sig")
 
+# The columns that mean "a person has assessed this row". `decision_date` is the flag the
+# rest of the app reads that way — `web/src/api.ts` and
+# `supabase/functions/_shared/api/pipeline_writes.ts` both say so in as many words, and it
+# is stamped only by a human decision. `decision_overridden_by` catches the Streamlit
+# editor, which stamps the author on every save whether or not a decision date is set.
+ASSESSED_BY_A_HUMAN = ("decision_date", "decision_overridden_by")
+
+
+def human_assessed(row: dict[str, Any]) -> bool:
+    """Has a person assessed this row, as opposed to the scan having scored it?
+
+    The rule this answers (owner, 2026-11-16): the re-score job does not re-derive a row a
+    human has assessed. `auto_scorer.auto_score` bases all nine criteria to None and
+    re-derives them from org profile x donor intel x call text — it never reads the nine
+    stored columns — so on a reviewed row it is not correcting the number, it is answering
+    "what would this score if nobody had looked at it". Measured on live data: 48 of 56
+    reviewed rows hold criteria it does not reproduce, and 30 of those come out with a
+    different recommendation.
+
+    `core/scan_pipeline.py:307` has deferred to human review all along ("Refresh
+    auto-scoring only when the existing row has no alignment_score ... Otherwise human
+    work wins"); this restores the same rule on the job that took scoring over.
+
+    THE PROXY IS THE DECISION, NOT THE CRITERIA, and that is a limitation worth naming:
+    nothing records WHO set a criterion. `scan_pipeline` writes the nine columns at scan
+    time and both Streamlit editors write them on save, so a reader cannot tell a human
+    answer from the scan's own earlier output. The one unambiguous human channel is
+    `criteria_component_overrides`, which only the Review screen writes — 5 rows of 271.
+    Until a human answer carries provenance, a recorded decision is the best available
+    evidence that a person has been through this row.
+    """
+    return any(str((row or {}).get(c) or "").strip() for c in ASSESSED_BY_A_HUMAN)
+
 
 def editor_score_columns(score: float | None, rec: str | None) -> dict[str, Any]:
     """The score columns a HUMAN-FACING save writes: the number, and no claim about it.
