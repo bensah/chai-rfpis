@@ -825,6 +825,42 @@ test("Reviewed holds what a person decided, keyed on when the call was FOUND", a
   assert.deepEqual(earlier.body.rows, []);
 });
 
+test("the shell still renders when a part fails, and says which part", async () => {
+  // The opposite trade-off from /opportunities/feed, and for a reason. The rail is one
+  // panel on one page, so failing the request loses a panel. The shell is on EVERY page: a
+  // 502 here is the whole app refusing to draw because the next-meeting line would not
+  // load. So each part fails alone — and says so, instead of serving its fallback as the
+  // answer. An empty bell used to mean "no notifications" whether or not anybody had asked.
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const ok = await call("GET", "/shell", null, col.token);
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.body.unavailable, [], "nothing is unavailable when every read works");
+  assert.ok(ok.body.feed.length > 0, "and the feed really does have items to lose");
+
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("scan_logs")) throw new TypeError("fetch failed");
+    return real(url, init);
+  };
+  let broken;
+  try {
+    broken = await call("GET", "/shell", null, col.token);
+  } finally {
+    globalThis.fetch = real;
+  }
+  assert.equal(broken.status, 200, "the chrome still draws — it is on every page");
+  assert.deepEqual(broken.body.unavailable, ["feed"],
+    "and one half of the feed failing takes the whole feed, not a silent half of it");
+  assert.deepEqual(broken.body.feed, []);
+  assert.equal(broken.body.unread, 0,
+    "no badge on a feed nobody could read: a count would present the failure as news");
+  // The parts that DID load are still served, which is the point of failing one at a time.
+  assert.ok(broken.body.org.name);
+  assert.equal(broken.body.adminContactEmail, ok.body.adminContactEmail);
+});
+
 test("a read that fails is not served as an empty catalogue", async () => {
   // routes_phase1 used to wrap nearly every read in `.catch(() => [])`, so a database that
   // could not be reached produced a rail reading "Nothing to feature yet — run an

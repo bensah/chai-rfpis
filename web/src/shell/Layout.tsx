@@ -15,7 +15,9 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   Bell, ChevronsLeft, ChevronsRight, Eye, HelpCircle, LogOut, Menu, Search, Settings, User as UserIcon, X,
 } from "lucide-react";
-import { fetchShell, markAllRead, signOut, viewAs, type Shell, type User } from "../api";
+import {
+  fetchShell, markAllRead, shellPartFailed, signOut, viewAs, type Shell, type User,
+} from "../api";
 import { goToCrumb, hrefOf, Link, navigate, navTrail, PAGES, type PageKey } from "../router";
 import { NAV_ICON } from "./navIcons";
 import Popover from "./Popover";
@@ -461,7 +463,15 @@ function Notifications({ shell, onRead, close }: { shell: Shell | null; onRead: 
         )}
       </div>
       <div className="mt-3 space-y-2.5">
-        {!feed.length && <p className="py-4 text-center text-xs text-ink-500">No recent activity yet.</p>}
+        {/* "No recent activity yet" is a claim about the org's week, so it is only made
+            when the feed was actually read. A read that failed says so instead — the two
+            used to look identical, which is how a broken bell passed for a quiet one. */}
+        {!feed.length && (shellPartFailed(shell, "feed")
+          ? <p className="py-4 text-center text-xs text-ink-500">
+              Notifications couldn't be loaded. Reload the page to try again.
+            </p>
+          : <p className="py-4 text-center text-xs text-ink-500">No recent activity yet.</p>
+        )}
         {feed.slice(0, 15).map((it, i) => {
           const isNew = shell?.seen == null || it.ts > shell.seen;
           const to = it.nav === "opportunity" && it.uid ? hrefOf("opportunity", { uid: it.uid }) : hrefOf(it.nav as PageKey);
