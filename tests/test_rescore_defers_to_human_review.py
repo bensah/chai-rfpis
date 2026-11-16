@@ -19,7 +19,9 @@ exactly the rows the skip exists to protect.
 """
 from __future__ import annotations
 
+import ast
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from core.score_stamp import STAMP_COLUMNS, human_assessed
@@ -29,9 +31,36 @@ class TestWhatCountsAsAssessed(unittest.TestCase):
     def test_a_decision_date_counts(self):
         self.assertTrue(human_assessed({"decision_date": "2026-11-09"}))
 
-    def test_an_editor_save_counts(self):
-        """The Streamlit editor stamps the author on every save, with no decision date."""
-        self.assertTrue(human_assessed({"decision_overridden_by": "a@example.org"}))
+    def test_an_editor_save_on_a_decided_row_counts(self):
+        """The editor stamps the author and records a decision, with no decision date.
+
+        Three of the five rows this rule was written for look exactly like this.
+        """
+        self.assertTrue(human_assessed({"decision_overridden_by": "a@example.org",
+                                        "decision": "Proceed"}))
+
+    def test_a_bare_save_does_not_count(self):
+        """THE BUG THIS REPLACES, caught by the react-migration session.
+
+        Both apps stamp `decision_overridden_by` on every save of any field
+        (pipeline_writes.ts:343, rfp_editor.py:616), so on its own it means "somebody
+        edited this once". Taking it as an assessment exempted a row from re-scoring for
+        ever the first time anyone touched one field on it — measured at 29 of 271 live
+        rows, and growing with every edit.
+        """
+        self.assertFalse(human_assessed({"decision_overridden_by": "a@example.org"}))
+        self.assertFalse(human_assessed({"decision_overridden_by": "a@example.org",
+                                         "remarks": "fixed a typo in the title"}))
+
+    def test_a_decision_the_engine_made_does_not_count(self):
+        """A decision without a date or an author is the engine's, not a person's.
+
+        `web/src/api.ts` says so, and 33 of 271 live rows carry one: the engine writes
+        this column too, so it cannot stand alone either.
+        """
+        self.assertFalse(human_assessed({"decision": "Proceed"}))
+        self.assertFalse(human_assessed({"decision": "Decline",
+                                         "auto_recommendation": "Decline"}))
 
     def test_a_scanned_row_does_not(self):
         for row in ({}, {"decision_date": None}, {"decision_overridden_by": ""},
@@ -39,9 +68,53 @@ class TestWhatCountsAsAssessed(unittest.TestCase):
                     {"alignment_score": 92.0, "auto_recommendation": "Proceed"}):
             self.assertFalse(human_assessed(row), row)
 
-    def test_a_decision_the_engine_made_does_not_count(self):
-        """`decision` alone is the engine's; only the two stamps mean a person."""
-        self.assertFalse(human_assessed({"decision": "Proceed"}))
+    def test_the_predicate_reads_only_the_columns_it_declares(self):
+        """ASSESSED_BY_A_HUMAN is pinned against the TypeScript copy by check-rescore."""
+        from core.score_stamp import ASSESSED_BY_A_HUMAN
+        self.assertEqual(set(ASSESSED_BY_A_HUMAN),
+                         {"decision_date", "decision_overridden_by", "decision"})
+
+
+class TestTheEditorStampsTheDateItAssesses(unittest.TestCase):
+    """`views/rfp_editor.py` records decisions, so it must leave the flag that says so.
+
+    Without it an assessment made in the editor is invisible to everything that reads
+    `decision_date` as "a person has reviewed this" — the Review screen, both halves of
+    the API, and `human_assessed` here. That is why the predicate still needs its second
+    clause; as this stamp reaches the rows people edit, `decision_date` becomes the whole
+    answer.
+    """
+
+    @staticmethod
+    def _save_block() -> ast.If:
+        src = (Path(__file__).resolve().parents[1] / "views" / "rfp_editor.py").read_text(
+            encoding="utf-8")
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, ast.If):
+                continue
+            test = ast.dump(node.test)
+            if "'decision'" in test and "'decision_date'" in test:
+                return node
+        raise AssertionError(
+            "views/rfp_editor.py no longer stamps decision_date on first capture — an "
+            "assessment made there goes back to looking like a scan row")
+
+    def test_it_stamps_only_when_a_decision_is_being_recorded(self):
+        test = ast.dump(self._save_block().test)
+        self.assertIn("'decision'", test)
+
+    def test_it_never_overwrites_a_date_the_team_set(self):
+        """A system date may stand in at a row's FIRST capture and nowhere else."""
+        test = ast.dump(self._save_block().test)
+        self.assertIn("Not", test,
+                      "the stamp must be conditional on the row having NO decision_date: "
+                      "re-dating an existing one from a screen with no date field is the "
+                      "silent re-dating the owner ruled out on 2026-11-09")
+
+    def test_it_writes_a_date_into_the_update(self):
+        body = ast.dump(ast.Module(body=self._save_block().body, type_ignores=[]))
+        self.assertIn("decision_date", body)
+        self.assertIn("today", body)
 
 
 class _FakeTable:
@@ -74,6 +147,7 @@ class TestTheJobSkipsThem(unittest.TestCase):
     REVIEWED = {"uid": "REVIEWED-1", "alignment_score": 100.0,
                 "auto_recommendation": "Proceed",
                 "decision_overridden_by": "reviewer@example.org",
+                "decision": "Proceed",
                 "scored_at": "2026-11-03T05:06:25+00:00", "score_profile_sig": "abc123"}
     SCANNED = {"uid": "SCANNED-1", "alignment_score": 40.0,
                "auto_recommendation": "Decline"}

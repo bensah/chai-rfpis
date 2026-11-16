@@ -616,6 +616,21 @@ def render_rfp_editor(row: dict, *, sb, user, is_admin: bool = False,
             "decision_overridden_by": user.get("email"),
             "decision_overridden_at": datetime.now(timezone.utc).isoformat(),
         }
+        # FIRST CAPTURE OF A DECISION STAMPS THE DATE (2026-11-16). `decision_date` is what
+        # the rest of the app reads as "a person has reviewed this" — the Review screen
+        # (`_reviewed`), `web/src/api.ts`, `pipeline_writes.ts` and now
+        # `core.score_stamp.human_assessed`, which is how the re-score job knows not to
+        # re-derive someone's assessment. This screen records decisions and never stamped
+        # it, so an assessment made here was invisible to all four.
+        #
+        # ONLY WHEN THE ROW HAS NONE, and only when a decision is actually being recorded.
+        # A system date may stand in at a row's FIRST capture and nowhere else (owner,
+        # 2026-11-09): a call settled on the 3rd and written up on the 20th must not be
+        # dated by its data entry. An existing date is the team's and is left alone; this
+        # screen has no date field to offer, so re-dating from here would be exactly the
+        # silent re-dating that rule forbids.
+        if update.get("decision") and not str(row.get("decision_date") or "").strip():
+            update["decision_date"] = date.today().isoformat()
         # NO SILENT DEFAULT HERE ANY MORE (owner, 2026-08-17). This used to force
         # donor_decision to "Under Review" whenever Progress was Completed and the answer was
         # blank. The intent was right - a Completed row with no donor decision leaves Tracking
