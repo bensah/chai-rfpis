@@ -301,7 +301,7 @@ export default function SubmitPage({ user }: { user: User }) {
           <OtherChoice
             label="Donor" required options={d.donors ?? []} value={f.funder ?? ""}
             onChange={(v) => set("funder", v)}
-            hint="The donor (full name) — matches the Donor Intelligence catalog. Pick
+            hint="The donor (full name) — matches the Donors catalog. Pick
                   'Other' if not listed."
           />
           <Text label="Brief description" area value={f.brief ?? ""}

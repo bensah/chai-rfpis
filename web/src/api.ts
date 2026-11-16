@@ -851,8 +851,9 @@ export type ReportExportResult = {
 export const requestReportExport = (sel: ReportSelection, rid: string | null) =>
   post<{ job: Job; filename: string }>("/report/export", { ...sel, r: rid ?? "" });
 
-// ── Bids Submitted ───────────────────────────────────────────────────────────
+// ── Applications ───────────────────────────────────────────────────────────
 //
+// The rail called this Bids Submitted until 2026-11-16.
 // Every application ever sent to a funder, with no date window. Deliberately NOT the
 // Pipeline's Outcome stage, which answers "what did funders decide in this window" — live
 // the two win rates are 17% and 44%, and both are right because they divide by different
@@ -928,7 +929,7 @@ export type GrantSelection = {
 };
 
 /**
- * Every figure on Bids Submitted for one window.
+ * Every figure on the Applications page for one window.
  *
  * The window is a QUERY PARAMETER rather than something the page applies to what it got,
  * because the tiles, the money, the win rate and the by-funder table are all aggregates
@@ -948,7 +949,7 @@ export const fetchGrants = (sel?: GrantSelection) => {
   return call<Grants>(`/grants${qs ? `?${qs}` : ""}`);
 };
 
-// ── Meeting Actions ──────────────────────────────────────────────────────────
+// ── Meetings ──────────────────────────────────────────────────────────
 //
 // One read for all four tabs — they are small, they are read together, and four round
 // trips to paint a Monday-morning screen is how a page comes to feel slow.

@@ -18,9 +18,18 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
  * when a title changes: they ARE the slugs, and bookmarks and emailed links resolve
  * through them.
  *
- * WHERE THE TITLES CAME FROM. The owner set these on 2026-11-09, naming both apps in one
- * instruction ("change this for both platforms"), so these ARE theirs and the Streamlit
- * rail carries the same words.
+ * WHERE THE TITLES CAME FROM. The owner set the first set on 2026-11-09, naming both apps
+ * in one instruction ("change this for both platforms"). On 2026-11-16 they asked for
+ * shorter ones — "something single word, max 2, that is representative of the concept and
+ * looks professional" — this session proposed five, and they answered "Yes, rename". So
+ * these ARE theirs, and each one's own note below says what it is naming and why that
+ * word rather than the obvious alternative.
+ *
+ * THIS APP ONLY, until they say otherwise. The renaming instruction was given here, about
+ * the rail they are reviewing here, and the last time a rename came up they were explicit
+ * that it should not travel ("do not change for streamlit"). So the Streamlit rail still
+ * reads Funding Pipeline / Outcomes / Meeting Actions / BDRM Report / Donor Intelligence,
+ * and the two apps differ until that is settled. Do not infer the carry-across.
  *
  * The history is worth keeping, because this comment was wrong once in each direction.
  * The owner first renamed the pages in the STREAMLIT app only, and an earlier version here
@@ -31,7 +40,10 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
  * point: a title changed here under the redesign's naming latitude may be changed again by
  * the next author, and one the owner set may not.
  *
- * `grants` is the exception and is NOT the Streamlit title. See its own note below.
+ * THE SLUGS DID NOT CHANGE, and that is deliberate rather than incidental. `/grants`,
+ * `/actions`, `/report` and `/pipelines` are what bookmarks, emailed links and the
+ * Streamlit app's own `url_path`s resolve through; the keys ARE those slugs. A rename is a
+ * word on a screen, and nothing that was ever sent to anybody stops working because of it.
  *
  * EVERY TITLE IS TITLE CASE — owner, 2026-11-09, after their own names arrived mixed
  * ("Submit new notice" beside "BDRM Report" as first given). Every word is capitalised,
@@ -61,32 +73,42 @@ type PageInfo = { title: string; icon: string; rail?: boolean; adminOnly?: boole
  */
 export const PAGES: Record<PageKey, PageInfo> = {
   home: { title: "Dashboard", icon: "🏠", rail: true },
-  pipelines: { title: "Funding Pipeline", icon: "📚", rail: true },
+  pipelines: { title: "Pipeline", icon: "📚", rail: true },
   // A RAIL ITEM, AND THE OWNER SETTLED THAT ON 2026-11-09 — said to this session directly,
   // not relayed: "keep Funding as its own page in the React not in the RFPIS". The two
   // apps differ here on purpose. On the Streamlit side Funding stopped being a page and
-  // became the "Outcomes" tab of Funding Pipeline; here it stays its own page.
+  // became the "Outcomes" tab of the Pipeline; here it stays its own page.
   //
-  // ITS TITLE IS ALSO THE EXCEPTION. Every other name below matches the Streamlit rail
-  // word for word; this one is "Bids Submitted" where that app says "Outcomes", and
-  // the owner named the difference when they set them: "do not change for streamlit as it
-  // is now moved to pipeline screen as a tab". A tab inside the Pipeline can be called
-  // Outcomes because the stages around it supply the context; a standalone rail item has
-  // to say what it holds.
+  // ITS TITLE IS ALSO THE EXCEPTION. It is "Applications" where that app says "Outcomes",
+  // and the owner named the difference when they first set it: "do not change for
+  // streamlit as it is now moved to pipeline screen as a tab". A tab inside the Pipeline
+  // can be called Outcomes because the stages around it supply the context; a standalone
+  // rail item has to say what it holds.
+  //
+  // NOT "Bids": the Pipeline has a `bidding` STAGE, which is where an application sits
+  // BEFORE it is sent. Two rail-level words one letter apart, naming opposite sides of
+  // the submission, is the kind of collision that gets a figure read off the wrong page.
+  // "Applications" is also what this page already calls them in its own headings — "Pick
+  // an application", "Applications by funder".
   //
   // The reason it is not simply folded into the Pipeline's Outcome stage: that stage covers
   // only what a funder has ANSWERED, while this page also holds the pending applications,
   // the per-funder breakdown and the reporting tab. Making it a tab today would drop those
   // three rather than move them. Revisit when the Outcome stage can carry them — until
   // then this is a decision, not an oversight. /grants resolves either way.
-  grants: { title: "Bids Submitted", icon: "💼", rail: true },
-  actions: { title: "Meeting Actions", icon: "🗒️", rail: true },
-  // "BDRM Report" in the rail, "Business Development and Resource Mobilization Report" as
-  // the page's own heading (owner, 2026-11-15). The rail has one line per item and the
-  // expansion does not fit it; the page has room to say what the initials stand for, which
-  // is where somebody meeting them for the first time will be looking.
-  report: { title: "BDRM Report", icon: "📊", rail: true },
-  donors: { title: "Donor Intelligence", icon: "🗺️", rail: true },
+  grants: { title: "Applications", icon: "💼", rail: true },
+  // Everything on this page is a meeting: the weekly internal call, the donor engagements
+  // (calls, pitches, conferences, site visits) and the rota for the call. "Meeting
+  // Actions" named one tab of the three and the one that is no longer a tab at all —
+  // Pending moved inside Meetings on 2026-11-16.
+  actions: { title: "Meetings", icon: "🗒️", rail: true },
+  // "Performance" in the rail, "Business Development and Resource Mobilization Report" as
+  // the page's own heading. The split is the owner's (2026-11-15) and only the rail word
+  // changed: the rail has one line per item and the expansion does not fit it, while the
+  // page has room to say what the report is, which is where somebody meeting it for the
+  // first time will be looking. BDRM was an initialism nobody meets cold.
+  report: { title: "Performance", icon: "📊", rail: true },
+  donors: { title: "Donors", icon: "🗺️", rail: true },
   organization: { title: "My Organization", icon: "🏢", rail: true },
   // The slug stays `submit-new-rfp`. The page is named for what it takes in now, but a
   // bookmark or an emailed link still has to resolve.

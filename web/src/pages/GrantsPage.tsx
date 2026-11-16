@@ -1,5 +1,5 @@
 /**
- * Bids Submitted (views/outcomes.py — "Your Applied Funding").
+ * Applications (views/outcomes.py — "Your Applied Funding").
  *
  * Every application ever sent to a funder, declined ones included. It is a RECORD, not a
  * list of wins: dropping the losses would make the win rate it reports meaningless.
@@ -167,7 +167,7 @@ export default function GrantsPage() {
     return (
       <div className="space-y-6">
         <PageHeader
-          title="Bids Submitted"
+          title="Applications"
           lead="Every application sent to a funder — approved, awaiting an answer, and declined."
         />
         {data.hiddenByPeriod > 0 && periodBar}
@@ -195,7 +195,7 @@ export default function GrantsPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Bids Submitted"
+        title="Applications"
         lead="Every application sent to a funder — approved, awaiting an answer, and declined."
       />
 

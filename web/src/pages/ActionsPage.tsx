@@ -1,5 +1,6 @@
 /**
- * Meeting Actions (app_pages/actions.py) — "Your Meetings and Engagements".
+ * Meetings (app_pages/actions.py — "Your Meetings and Engagements"; the rail called
+ * this Meeting Actions until 2026-11-16).
  *
  * Four tabs: the week's call notes, the donor engagement log, everything still open across
  * both, and the check-in rota.
@@ -99,7 +100,7 @@ export default function ActionsPage({ user }: { user: User }) {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Meeting Actions"
+        title="Meetings"
         lead="This week's call, the donor engagement log, and everything still open across both."
       />
 
