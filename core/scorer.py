@@ -153,8 +153,22 @@ def bid_effort_label(days_to_deadline: int | None, has_bd_team: bool) -> str | N
 
 # Canonical per-criterion response options (best → worst), reused by every form
 # (Review, Submit, MS Form). Every label is recognised by criterion_score above.
-# "Not sure" → null (missing) for the human-answered eight; bid_effort is
-# auto-derived on a 5/6-point time×resources scale (no "Not sure").
+# "Not sure" → null (missing), and ALL NINE carry it (owner, 2026-11-17).
+#
+# bid_effort is DERIVED on a time×resources scale and for that reason used to have no
+# "Not sure" — the derivation always produces one of the six, so an unknown never arose
+# on that path. But the forms ask a human all nine, and `views/submit_form.py::_crit`
+# falls back to `opts[0]` when there is no "Not sure" to default to: best → worst, so an
+# untouched PREFER-9 asserted "Ample time, sufficient resources" and scored a full 2. A
+# submitter who filled in only the four required fields had told the scorer the bid was
+# comfortably resourced. Measured before the change: an otherwise-untouched form scored
+# 54.5 instead of the 50.0 nine unanswered criteria should give.
+#
+# Adding the option fixes it with no code change anywhere — `_crit` is
+# `opts.index("Not sure") if "Not sure" in opts else 0`, and the React form asks the same
+# question — and it moves no stored row: every value in the live table already maps, and
+# the derivation never returns "Not sure". Same spirit as f32a52d, which stopped PREFER-9
+# asserting a time verdict it never measured.
 CRITERION_RESPONSES: dict[str, list[str]] = {
     "qualification": [
         "Yes, fully", "Mostly, one item unclear", "No, not eligible", "Not sure"],
@@ -175,7 +189,7 @@ CRITERION_RESPONSES: dict[str, list[str]] = {
     "bid_effort": [
         "Ample time, sufficient resources", "Ample time, but no dedicated team",
         "Tight but doable, with a team", "Tight, and no dedicated team",
-        "Not enough time, even with a team", "Not enough time, no team"],
+        "Not enough time, even with a team", "Not enough time, no team", "Not sure"],
 }
 
 
@@ -192,12 +206,14 @@ def default_response(key: str, stored) -> str:
     if sc is None:
         if "Not sure" in opts:
             return "Not sure"
-        # This criterion has no "Not sure" in its vocabulary (only bid_effort). Do NOT
-        # fall back to opts[-1] — the list is ordered best→worst, so that made an
-        # UNDETERMINABLE criterion assert the single most damaging verdict and score 0.
-        # For bid_effort that turned "we never captured a deadline" into "Not enough
-        # time, no team", which then fed the gauge and the auto-decision. Prefer the
-        # Park midpoint (score 1); the best option only if the scale has no midpoint.
+        # UNREACHABLE SINCE 2026-11-17, when bid_effort gained "Not sure" and all nine
+        # criteria came to carry it — but kept, because it is the safe answer for any
+        # vocabulary that loses the option again. Do NOT fall back to opts[-1]: the list
+        # is ordered best→worst, so that made an UNDETERMINABLE criterion assert the
+        # single most damaging verdict and score 0. For bid_effort that turned "we never
+        # captured a deadline" into "Not enough time, no team", which then fed the gauge
+        # and the auto-decision. Prefer the Park midpoint (score 1); the best option only
+        # if the scale has no midpoint.
         mid = [o for o in opts if criterion_score(o) == 1]
         return mid[0] if mid else opts[0]
     for o in opts:

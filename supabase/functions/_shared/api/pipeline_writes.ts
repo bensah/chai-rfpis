@@ -229,6 +229,7 @@ const REPORTING = ["status", "report_type", "report_due_date", "owner", "remarks
 // for the Pipeline's write rules.
 export { isNoAnswer, isOutcome } from "./donor_decision.ts";
 import { isNoAnswer } from "./donor_decision.ts";
+import { PROVENANCE_COLUMN, record } from "./provenance.ts";
 
 const norm = (v: unknown) => str(v).trim().toLowerCase();
 
@@ -363,6 +364,19 @@ export function createPipelineWrites(db: Db, enqueue: Enqueue | null = null) {
       update.decision_overridden_by = ctx.session.email;
       update.decision_overridden_at = nowIso();
     }
+
+    // WHO ANSWERED WHICH CRITERION — `core/criteria_provenance.record`, ported in
+    // api/provenance.ts. Both Streamlit editors write this (2b6d42f) and this one did not,
+    // which made the React app the single place where a reviewer's answer was
+    // indistinguishable from the scan's own output — the exact fault migration 102 was
+    // added to end, surviving in the app replacing the one that was fixed.
+    //
+    // Compared against `before[0]`, the row as it stood: a save carries all nine criteria
+    // whether or not anybody touched them, so only a value that MOVES is recorded. `record`
+    // returns null when nothing moved, which is what keeps this column out of the update
+    // entirely rather than rewriting it to its own value on every save.
+    const provenance = record(before[0] ?? null, fields, str(ctx.session.email));
+    if (provenance) update[PROVENANCE_COLUMN] = provenance;
 
     const saved = Object.keys(update).length
       ? await sb.update("rfp_submissions", `uid=eq.${q(uid)}`, update)

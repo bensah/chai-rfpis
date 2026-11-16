@@ -21,6 +21,7 @@
  */
 import { CRITERION_ANSWERS } from "./form_vocab.ts";
 import { CRITERIA, scoreSubmission } from "./scorer.ts";
+import { PROVENANCE_COLUMN, record } from "./provenance.ts";
 
 const s = (v: unknown): string => (v === null || v === undefined ? "" : String(v));
 const trimmed = (v: unknown): string => s(v).trim();
@@ -196,17 +197,13 @@ export function validate(p: SubmitPayload): string[] {
  * So eight criteria open on "Not sure" — the submitter sets only what they actually know,
  * and an unscored criterion is rated 0.5, the Park midpoint, rather than zero.
  *
- * `bid_effort` IS THE EXCEPTION AND IT IS NOT A HARMLESS ONE. Its vocabulary has no
- * "Not sure", so `else 0` takes the FIRST option — and the list runs best to worst, so an
- * untouched PREFER-9 asserts "Ample time, sufficient resources", the top answer, worth a
- * full 2. A submitter who fills in nothing but the required fields has nevertheless told
- * the scorer the bid is comfortably resourced.
- *
- * It is reproduced rather than corrected, because the two apps are live together and the
- * same form must not score the same input two ways. It is visible, at least: the dropdown
- * shows the answer it picked, unlike `core/scorer.default_response`, whose own fallback for
- * this case is the midpoint and whose docstring explains at length why the last option
- * would be wrong. Worth revisiting in the Python first.
+ * BID_EFFORT USED TO BE THE EXCEPTION AND NO LONGER IS (owner, 2026-11-17). Its
+ * vocabulary had no "Not sure", so `else 0` took the FIRST option — the list runs best to
+ * worst — and an untouched PREFER-9 asserted "Ample time, sufficient resources", worth a
+ * full 2. A submitter who filled in only the four required fields had told the scorer the
+ * bid was comfortably resourced, and an otherwise-untouched form scored 54.5 instead of
+ * 50.0. The option was added to `core.scorer.CRITERION_RESPONSES`, so the same one-line
+ * rule now reaches the right answer in both apps with no code change here.
  *
  * A key the browser omits therefore behaves like an untouched dropdown, not like a blank,
  * and a value outside the vocabulary is dropped rather than stored: a free-text criterion
@@ -220,6 +217,9 @@ export function criteriaValues(raw: unknown): Record<string, string> {
     const answers = CRITERION_ANSWERS[c] ?? [];
     out[c] = given && answers.includes(given)
       ? given
+      // All nine carry "Not sure" since 2026-11-17; the opts[0] arm is kept for a
+      // vocabulary that ever loses it again, where asserting the BEST answer is still
+      // less wrong than asserting the worst.
       : (answers.includes("Not sure") ? "Not sure" : (answers[0] ?? ""));
   }
   return out;
@@ -245,7 +245,11 @@ export const needsSubmissionCheck = (deadline: string | null, today: string): bo
 /** The row, exactly as `views/submit_form.py` builds it. */
 export function buildRow(
   p: SubmitPayload,
-  opts: { uid: string; submitter: string; email: string; nowIso: string; reviewWeek: string },
+  opts: {
+    uid: string; submitter: string; email: string; nowIso: string; reviewWeek: string;
+    /** The submitter's own calendar day, for `decision_date` — a date, not a timestamp. */
+    today: string;
+  },
 ): Record<string, unknown> {
   const criteria = criteriaValues(p.criteria);
   const declineBool = p.declineFlags === true || trimmed(p.declineFlags) === "Yes";
@@ -283,11 +287,32 @@ export function buildRow(
     submission_format: none(p.submissionFormat),
     feasibility: none(p.feasibility),
     ...criteria,
+    // WHO ANSWERED WHICH CRITERION, against THE FORM'S OWN DEFAULTS rather than an empty
+    // row. An insert has nothing stored to compare with, so the baseline is what the nine
+    // dropdowns would say if the submitter touched none of them — `criteriaValues({})`,
+    // which is the same function that fills them. Compared against an empty row instead,
+    // every default would read as an answer and the submitter's name would go on nine
+    // things they never said.
+    //
+    // `views/submit_form.py` does exactly this (fd81bdd) and calls the argument
+    // `baseline`; its `_crit_default` is this module's own fallback rule, which is why
+    // the two paths record the same thing for the same form.
+    [PROVENANCE_COLUMN]: record(criteriaValues({}) as never, criteria, opts.email,
+      opts.nowIso) ?? null,
     decline_flags_present: declineBool,
     key_risks: none(p.keyRisks),
     alignment_score: score,
     auto_recommendation: recommendation,
     decision: none(p.decision),
+    // A DECISION RECORDED AT SUBMISSION IS THIS ROW'S FIRST CAPTURE, which is the one
+    // moment a system date may stand in for one nobody typed (owner, 2026-11-09) — the
+    // form has no date field. Stamped only when a decision is actually present: a
+    // submission without one has nothing to date.
+    //
+    // It also brings the row under the re-score job's skip immediately, instead of
+    // waiting for provenance to reach it through a later editor save. `views/submit_form
+    // .py` stamps it on the same condition.
+    decision_date: none(p.decision) ? opts.today : null,
     decision_note: none(p.rationale),
     proposal_lead: none(p.proposalLead),
     contributors: list(p.contributors),

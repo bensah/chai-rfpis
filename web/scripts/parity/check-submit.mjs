@@ -123,7 +123,11 @@ SCORE_CASES.push({
 // ── Backdated intake ─────────────────────────────────────────────────────────
 // `needs_submission_check` also asks whether the row is COMPLETED, which a row this route
 // has just created never is. These cases are shaped like one.
-const TODAY = "2026-11-16";
+// NOT A LITERAL. `needs_submission_check` reads `date.today()` and takes no override, so
+// a hard-coded day here compares two different todays the moment the clock rolls over —
+// which it did, turning this green check red overnight on a fixture nobody had touched.
+// The Python sends its own day back and both halves ask about that one.
+let TODAY = "1970-01-01";
 const ROW_CASES = [
   { call_submission_deadline: "2026-11-15" },
   { call_submission_deadline: "2026-11-16" },
@@ -138,6 +142,7 @@ const want = py({
   scores: SCORE_CASES,
   rows: ROW_CASES,
 });
+TODAY = want.today;
 
 // 1. UIDs
 for (const [i, c] of UID_CASES.entries()) {
@@ -248,27 +253,30 @@ for (const [i, r] of ROW_CASES.entries()) {
 // 6. Criterion defaults — an omitted key must behave like an untouched dropdown.
 {
   const v = S.criteriaValues({});
-  same("an untouched form sends Not sure, not blank",
-    CRIT.filter((c) => v[c] !== "Not sure"), ["bid_effort"]);
-  // THE CLAIM THIS CHECK GOT WRONG FIRST TIME, and the finding is worth more than the
-  // line. The port defaulted bid_effort to blank, reasoning that an unanswered criterion
-  // should be unscored and so rated the 0.5 midpoint — which is what
-  // `core/scorer.default_response` does for this case, at length and on purpose.
+  same("an untouched form sends Not sure on ALL NINE now, not eight",
+    CRIT.filter((c) => v[c] !== "Not sure"), []);
+  // THE CLAIM THIS CHECK HAS NOW HELD TWICE, IN BOTH DIRECTIONS, which is the argument
+  // for pinning a default by name rather than letting it be whatever opts[0] happens to be.
   //
-  // The SUBMIT FORM does not use default_response. `_crit` is
-  // `opts.index("Not sure") if "Not sure" in opts else 0`, and bid_effort has no
-  // "Not sure", so `else 0` takes the FIRST option — and the list runs best to worst.
-  // An untouched PREFER-9 therefore asserts "Ample time, sufficient resources", scoring a
-  // full 2 rather than a midpoint 1, on a form where the submitter may have touched
-  // nothing but the four required fields.
+  // It first asserted that bid_effort fell back to the MIDPOINT, reasoning that an
+  // unanswered criterion should be unscored. Measurement said otherwise: `_crit` is
+  //     didx = opts.index("Not sure") if "Not sure" in opts else 0
+  // and bid_effort had no "Not sure", so `else 0` took the FIRST option — best of a
+  // best-to-worst list. An untouched PREFER-9 asserted "Ample time, sufficient resources"
+  // and scored a full 2. The check was corrected to assert that, because both apps were
+  // live and one input must not score two ways.
   //
-  // Asserted as it is rather than as it ought to be: the two apps are live together and
-  // the same input must not score two ways. Changing it is a change to the Python.
-  ok("bid_effort, which has no Not sure, defaults to the BEST answer",
-    SC.criterionScore("bid_effort", v.bid_effort) === 2
-      && v.bid_effort === V.CRITERION_ANSWERS.bid_effort[0],
-    `got ${j(v.bid_effort)} scoring ${SC.criterionScore("bid_effort", v.bid_effort)} — `
-    + "views/submit_form.py::_crit falls back to opts[0], not to the midpoint.");
+  // The owner ruled on 2026-11-17 and bid_effort gained "Not sure", so all nine criteria
+  // now carry it and the SAME one-line rule reaches the opposite answer with no code
+  // change. An otherwise-untouched form scores 50.0 where it scored 54.5.
+  ok("bid_effort now defaults to Not sure, like the other eight",
+    v.bid_effort === "Not sure"
+      && SC.criterionScore("bid_effort", v.bid_effort) === null,
+    `got ${j(v.bid_effort)} scoring ${j(SC.criterionScore("bid_effort", v.bid_effort))}`);
+  ok("so an untouched form sits at the Park midpoint rather than above it",
+    SC.alignmentScore(S.criteriaValues({})) === 50,
+    `got ${SC.alignmentScore(S.criteriaValues({}))} — nine unanswered criteria are nine `
+    + "halves, and anything higher is the form answering one of them for the submitter.");
   ok("a value outside the vocabulary is dropped, not stored",
     S.criteriaValues({ capacity: "something nobody offered" }).capacity === "Not sure");
 }
@@ -290,7 +298,18 @@ for (const [i, r] of ROW_CASES.entries()) {
     + "the original.");
 }
 
-// 8. Job kinds, both sides.
+// 8. THE PROVENANCE BASELINE, which the two submit paths must agree on exactly.
+//
+// Provenance records only what moves off the baseline, so if the two forms disagree about
+// what "untouched" looks like they record DIFFERENT AUTHORS FOR THE SAME ANSWERS — and
+// nothing else would catch it, because no score changes. The rule is
+// `opts.index("Not sure") if "Not sure" in opts else opts[0]`, which for a vocabulary
+// without "Not sure" depends on the ORDER of CRITERION_RESPONSES. Both sides read that
+// order from the same constant, so they agree by construction; this is the tripwire for
+// the day a generation step reorders one.
+same("the baseline each criterion starts from", S.criteriaValues({}), want.crit_defaults);
+
+// 9. Job kinds, both sides.
 same("job kinds the API queues vs the runner's", J.jobKinds().sort(), want.job_kinds);
 
 console.log(`\n${checks} comparisons, ${diffs} differing`);

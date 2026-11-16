@@ -2084,11 +2084,21 @@ test("a row on the old criterion vocabulary opens on the right answer", async ()
   assert.equal(d.qualification.no, "No, not eligible");
   assert.equal(d.funding_quality["1"], "High", "the legacy numeric spelling too");
 
-  // bid_effort is the criterion with no "Not sure": an undeterminable value there must
-  // land on the Park midpoint, never on the worst option — core/scorer says so at length,
-  // because that turned "we never captured a deadline" into "Not enough time, no team".
-  assert.ok(!r.body.criterionAnswers.bid_effort.includes("Not sure"));
+  // bid_effort WAS the criterion with no "Not sure", and gained one on 2026-11-17 (owner).
+  // Until then `views/submit_form.py::_crit` fell back to `opts[0]` for it — best of a
+  // best-to-worst list — so an untouched PREFER-9 asserted "Ample time, sufficient
+  // resources" and scored a full 2.
+  assert.ok(r.body.criterionAnswers.bid_effort.includes("Not sure"),
+    "all nine criteria carry Not sure now, so the one-line default rule reaches the " +
+    "right answer for every one of them");
+
+  // THE OLDER RULE STILL HOLDS AND IS THE REASON THIS BLOCK EXISTS. An undeterminable
+  // value must never land on the WORST option: the list is ordered best to worst, and
+  // falling to opts[-1] turned "we never captured a deadline" into "Not enough time, no
+  // team", which then fed the gauge and the auto-decision.
   assert.notEqual(d.bid_effort.no, "Not enough time, no team");
+  assert.equal(d.bid_effort.wat ?? "Not sure", "Not sure",
+    "and an unrecognised spelling now resolves to Not sure rather than to a verdict");
 
   // Every criterion resolves every legacy spelling onto one of its OWN answers.
   for (const [key, answers] of Object.entries(r.body.criterionAnswers)) {
