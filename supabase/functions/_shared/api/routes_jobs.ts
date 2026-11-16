@@ -161,6 +161,44 @@ const KINDS: Record<string, JobKind> = {
     allowed: () => true,
     group: (ctx, _id, params) => `decision-${tenantOf(ctx)}-${subject(params)}`,
   },
+
+  /**
+   * One web-discovery run for the Search page — `core/web_search.py`, which holds the
+   * provider keys, fans one keyword into several RFP-framed searches across Serper and
+   * Tavily, fetches candidate pages to read their posted dates, and filters the hits
+   * through seven rules. Measured live at 21.4 seconds for one query, so it is nobody's
+   * request to serve.
+   *
+   * Open to any signed-in member, matching the Streamlit button on a page open to
+   * everyone.
+   *
+   * ONE GROUP PER READER, not per tenant and not per query. The hazard being bounded is
+   * provider quota, and the way it is spent is one person flicking through keywords: each
+   * new query cancels their pending run instead of queueing a second. Two people searching
+   * at once is not a collision and must not become one, so the group carries the session
+   * rather than the tenant.
+   */
+  web_search: {
+    allowed: () => true,
+    group: (ctx) => `web-search-${ctx.session.sub}`,
+  },
+
+  /**
+   * Rating a web result, or tracking it into Found Records.
+   *
+   * `decision_log.log_feedback` writes the ML training label; `found_loader.load_candidate`
+   * scores the candidate with `auto_scorer`, checks `deduplicator`, and may route it to
+   * the Sources registry instead. Three Python modules, one of which is the scorer this
+   * repo must never hold a second copy of.
+   *
+   * ONE GROUP PER JOB, because these collide with nothing: the feedback table is
+   * append-only and a track inserts a new row whose duplicate check is its own. Anything
+   * wider would have a reader's second rating cancel their first.
+   */
+  search_action: {
+    allowed: () => true,
+    group: (_c, id) => `search-action-${id}`,
+  },
 };
 
 /**

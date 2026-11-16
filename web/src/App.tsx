@@ -15,6 +15,7 @@ import OpportunitiesPage from "./pages/OpportunitiesPage";
 import PipelinePage from "./pages/PipelinePage";
 import SettingsPage from "./pages/SettingsPage";
 import SubmitPage from "./pages/SubmitPage";
+import SearchPage from "./pages/SearchPage";
 import { EmptyState } from "./ui";
 
 export default function App() {
@@ -100,6 +101,8 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
     body = <GrantsPage />;
   } else if (shown === "report") {
     body = <ReportPage />;
+  } else if (shown === "search") {
+    body = <SearchPage />;
   } else if (shown === "submit-new-rfp") {
     body = <SubmitPage user={user} />;
   } else if (shown === "donors") {

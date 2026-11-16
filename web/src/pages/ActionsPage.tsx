@@ -22,13 +22,37 @@ import { Badge, Button, Card, EmptyState, Field, Notice, PageHeader, Select, Spi
 import { DataTable, fmtInt, fmtPct, Tile, Tiles } from "../report/charts";
 
 const dash = "—";
-type TabKey = "pending" | "meetings" | "engagements" | "schedule";
+
+/**
+ * THREE TABS, and Pending is not one of them (owner, 2026-11-16).
+ *
+ * It was a fourth, opening first, on the argument that the page exists to be read before a
+ * Monday call and what is still open is the reading. That was half right and the half it
+ * got wrong matters: a list of open items with no agenda around it is a to-do list, and
+ * the thing a Monday call actually works through is THIS week — who is running it, what is
+ * still open from before, and the notes taken as it goes. So Pending moved INSIDE Meetings,
+ * between the hosts and the notes, which is the order the meeting itself runs in.
+ *
+ * The badge moved with it: it now counts what is open on the Meetings tab, because that is
+ * where a reader will now find it.
+ */
+type TabKey = "meetings" | "engagements" | "schedule";
 const TABS: { key: TabKey; label: string; icon: typeof ClipboardList }[] = [
-  { key: "pending", label: "Pending", icon: ClipboardList },
   { key: "meetings", label: "Meetings", icon: CalendarDays },
   { key: "engagements", label: "Engagements", icon: Handshake },
   { key: "schedule", label: "Schedule", icon: RotateCcw },
 ];
+
+/**
+ * CHAIR IS CALLED MODERATOR ON SCREEN (owner, 2026-11-16) — and only on screen.
+ *
+ * The stored key stays `chair`, in the rota blob and in every payload, because
+ * `core/schedule.py` still reads that row and the Streamlit app is still live. Renaming
+ * the key here would empty the rota in the app people are using today, and renaming it in
+ * both would be a migration of a JSON blob for a word. One constant, used everywhere the
+ * label is drawn, so the two cannot drift.
+ */
+const MODERATOR = "Moderator";
 
 /** Monday of the week holding `iso` — the same snap the server applies on write. */
 function mondayOf(iso: string): string {
@@ -41,7 +65,7 @@ function mondayOf(iso: string): string {
 export default function ActionsPage({ user }: { user: User }) {
   const [data, setData] = useState<Actions | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<TabKey>("pending");
+  const [tab, setTab] = useState<TabKey>("meetings");
   const [week, setWeek] = useState<string>(() => mondayOf(new Date().toISOString().slice(0, 10)));
   const [busy, setBusy] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -82,7 +106,7 @@ export default function ActionsPage({ user }: { user: User }) {
       <div role="tablist" aria-label="Meeting actions" className="flex flex-wrap gap-1 border-b border-ink-200">
         {TABS.map((t) => {
           const on = tab === t.key;
-          const count = t.key === "pending"
+          const count = t.key === "meetings"
             ? data.pending.notes.length + data.pending.engagements.length : null;
           return (
             <button key={t.key} role="tab" aria-selected={on} onClick={() => setTab(t.key)}
@@ -99,7 +123,6 @@ export default function ActionsPage({ user }: { user: User }) {
 
       {saveError && <Notice tone="bad">{saveError}</Notice>}
 
-      {tab === "pending" && <Pending data={data} busy={busy} run={run} />}
       {tab === "meetings" && (
         <Meetings data={data} week={week} setWeek={setWeek} busy={busy} run={run} user={user} />
       )}
@@ -111,29 +134,43 @@ export default function ActionsPage({ user }: { user: User }) {
 
 type Run = (key: string, fn: () => Promise<unknown>) => Promise<void>;
 
-// ── Pending ──────────────────────────────────────────────────────────────────
+// ── Still open ───────────────────────────────────────────────────────────────
 
 /** "12.5% of 40", or "none logged" — a percentage of nothing is not a percentage. */
 const share = (pct: number, total: number, noun: string) =>
   total > 0 ? `${fmtPct(pct)} of ${fmtInt(total)}` : `none ${noun}`;
 
+/**
+ * What is still open, as a section of the Meetings tab rather than a tab of its own.
+ *
+ * IT IS NOT THE WHOLE OF THE OLD TAB. The four KPI tiles became one line of counts,
+ * because a block of tiles between the rota and the notes would push this week's agenda
+ * below the fold on the one screen that exists to show it. Nothing was lost by dropping
+ * them: three restated numbers this line now carries, and the fourth — engagements this
+ * quarter against its 2-4 target — was already a tile on the Engagements tab, so the old
+ * Pending tab had been showing it twice.
+ *
+ * It spans EVERY week, not the week selected above it. That is the point of it: an action
+ * from three weeks ago that nobody closed is exactly what a Monday call needs in front of
+ * it, and scoping it to the chosen week would hide the only items that are late.
+ */
 function Pending({ data, busy, run }: { data: Actions; busy: string | null; run: Run }) {
   const p = data.pending;
   const nothing = p.notes.length === 0 && p.engagements.length === 0;
   return (
-    <div className="space-y-5">
-      <Tiles>
-        <Tile label="Open meeting actions" value={fmtInt(p.meetingOpen)}
-          tone={p.meetingOpen ? "warn" : "good"}
-          note={share(p.meetingPct, p.meetingTotal, "notes")} />
-        <Tile label="Open engagements" value={fmtInt(p.engagementOpen)}
-          tone={p.engagementOpen ? "warn" : "good"}
-          note={share(p.engagementPct, p.engagementTotal, "logged")} />
-        <Tile label="People with something open" value={fmtInt(p.owners.length)} />
-        <Tile label="Engagements this quarter" value={fmtInt(data.quarter.count)}
-          note={`since ${data.quarter.from} · target 2–4`}
-          tone={data.quarter.count >= 2 ? "good" : "warn"} />
-      </Tiles>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
+        <h2 className="text-sm font-bold text-brand-700">Still open</h2>
+        <span className="text-xs text-ink-500">
+          <strong className="tabular-nums text-ink-700">{fmtInt(p.meetingOpen)}</strong>{" "}
+          meeting action{p.meetingOpen === 1 ? "" : "s"} ({share(p.meetingPct, p.meetingTotal, "notes")})
+          {" · "}
+          <strong className="tabular-nums text-ink-700">{fmtInt(p.engagementOpen)}</strong>{" "}
+          engagement{p.engagementOpen === 1 ? "" : "s"} ({share(p.engagementPct, p.engagementTotal, "logged")})
+          {p.owners.length > 0 && <> · <strong className="tabular-nums text-ink-700">{fmtInt(p.owners.length)}</strong> {p.owners.length === 1 ? "person" : "people"} with something open</>}
+          {" · across every week, not just this one"}
+        </span>
+      </div>
 
       {p.owners.length > 0 && (
         <Card className="p-4">
@@ -152,9 +189,10 @@ function Pending({ data, busy, run }: { data: Actions; busy: string | null; run:
       )}
 
       {nothing ? (
-        <EmptyState icon={<Check size={28} aria-hidden />} title="Nothing is open">
-          Every meeting action and every engagement has been marked resolved.
-        </EmptyState>
+        <Card className="flex items-center gap-2 p-4 text-sm text-ink-500">
+          <Check size={16} aria-hidden className="text-good-600" />
+          Nothing is open — every meeting action and every engagement has been marked resolved.
+        </Card>
       ) : (
         <>
           {p.notes.length > 0 && (
@@ -267,7 +305,7 @@ function Meetings({ data, week, setWeek, busy, run, user }: {
               <dd className="font-semibold text-brand-700">{data.rota.noteTaker || dash}</dd></div>
             <div><dt className="text-xs text-ink-500">Presenter</dt>
               <dd className="font-semibold text-brand-700">{data.rota.presenter || dash}</dd></div>
-            <div><dt className="text-xs text-ink-500">Chair</dt>
+            <div><dt className="text-xs text-ink-500">{MODERATOR}</dt>
               <dd className="font-semibold text-brand-700">{data.rota.chair || dash}</dd></div>
           </dl>
         ) : (
@@ -276,6 +314,10 @@ function Meetings({ data, week, setWeek, busy, run, user }: {
           </p>
         )}
       </Card>
+
+      {/* Below the hosts, above the notes — the order the call itself runs in: who is
+          running it, what is still open from before, then what is said today. */}
+      <Pending data={data} busy={busy} run={run} />
 
       {(adding || editing) && (
         <NoteForm
@@ -467,7 +509,8 @@ function Schedule({ data, busy, run }: { data: Actions; busy: string | null; run
       <Card className="p-4">
         <h3 className="mb-1 text-sm font-semibold text-brand-700">Check-in rota</h3>
         <p className="mb-3 text-xs text-ink-500">
-          Who takes notes, presents and chairs each Monday. Only an administrator can change it.
+          Who takes notes, presents and moderates each Monday. Only an administrator can
+          change it.
         </p>
         <DataTable
           rows={data.schedule.filter((r) => r.date >= today).slice(0, 12)} keyOf={(r) => r.date}
@@ -476,7 +519,7 @@ function Schedule({ data, busy, run }: { data: Actions; busy: string | null; run
             { head: "Monday", cell: (r) => <span className={r.date === mondayOf(today) ? "font-semibold text-brand-700" : "text-ink-600"}>{r.date}</span> },
             { head: "Note-taker", cell: (r) => r.noteTaker || dash },
             { head: "Presenter", cell: (r) => r.presenter || dash },
-            { head: "Chair", cell: (r) => r.chair || dash },
+            { head: MODERATOR, cell: (r) => r.chair || dash },
           ]}
         />
       </Card>
@@ -518,7 +561,7 @@ function Schedule({ data, busy, run }: { data: Actions; busy: string | null; run
               <th scope="col" className="px-2 py-2 font-semibold">Monday</th>
               <th scope="col" className="px-2 py-2 font-semibold">Note-taker</th>
               <th scope="col" className="px-2 py-2 font-semibold">Presenter</th>
-              <th scope="col" className="px-2 py-2 font-semibold">Chair</th>
+              <th scope="col" className="px-2 py-2 font-semibold">{MODERATOR}</th>
             </tr>
           </thead>
           <tbody>

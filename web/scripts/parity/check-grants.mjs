@@ -206,53 +206,98 @@ ok("still-in-play never goes negative",
 // ── The period filter ────────────────────────────────────────────────────────
 // NEW, and with no Python counterpart: Bids Submitted has no period filter in the
 // Streamlit app at all (owner, 2026-11-16). So these are claims about the model's own
-// arithmetic and about the one property that makes a filter trustworthy — that the windows
-// partition the log rather than overlapping it or losing rows out of it.
+// arithmetic and about the two properties that make a filter trustworthy — that the
+// windows partition the log rather than overlapping it or losing rows, and that the year
+// list can never need a code change to admit a new year.
 {
   const TODAY = "2026-11-16";
-  const b = (period, year = null, quarter = null) =>
-    G.grantBounds({ period, year, quarter }, TODAY);
+  const b = (window, year = null, quarter = null) =>
+    G.grantBounds({ window, year, quarter }, TODAY);
 
-  same("all time has no bounds", b("all"), { start: null, end: null });
-  // Inclusive of today and counting back N-1 days, so a week is seven dates, not eight.
+  same("the whole record has no bounds", b("all"), { start: null, end: null });
+  // Inclusive of both ends and counting back N-1 days, so a week is seven dates, not eight.
   same("last 7 days is a week containing today", b("7d"),
     { start: "2026-11-10", end: "2026-11-16" });
   same("last 30 days", b("30d"), { start: "2026-10-18", end: "2026-11-16" });
   same("last 90 days", b("90d"), { start: "2026-08-19", end: "2026-11-16" });
   same("last 365 days", b("365d"), { start: "2025-11-17", end: "2026-11-16" });
-  same("a whole year", b("year", 2025), { start: "2025-01-01", end: "2025-12-31" });
-  same("Q1", b("year", 2026, 1), { start: "2026-01-01", end: "2026-03-31" });
-  same("Q2 ends on a 30th", b("year", 2026, 2), { start: "2026-04-01", end: "2026-06-30" });
-  same("Q4", b("year", 2026, 4), { start: "2026-10-01", end: "2026-12-31" });
+
+  // THE ANCHOR RULE. The current year anchors on today; a past year anchors on its own
+  // 31 December, which is what "which year are we viewing the last 7 days for" has to mean
+  // if it is to mean anything a reader can act on.
+  same("this year's window still ends today", b("7d", 2026),
+    { start: "2026-11-10", end: "2026-11-16" });
+  same("last 7 days OF 2025 is the end of 2025", b("7d", 2025),
+    { start: "2025-12-25", end: "2025-12-31" });
+  same("last 30 days of 2025", b("30d", 2025),
+    { start: "2025-12-02", end: "2025-12-31" });
+  // CLAMPED, so a year's window never reaches into the year before it. Without this,
+  // "last 365 days of 2025" would quietly include December 2024 and the year control
+  // would be a lie.
+  same("last 365 days of 2025 is 2025, not thirteen months",
+    b("365d", 2025), { start: "2025-01-01", end: "2025-12-31" });
+  same("last 90 days of a leap year ends on its own 31 December",
+    b("90d", 2024), { start: "2024-10-03", end: "2024-12-31" });
+
+  same("a whole year", b("all", 2025), { start: "2025-01-01", end: "2025-12-31" });
+  same("Q1", b("all", 2026, 1), { start: "2026-01-01", end: "2026-03-31" });
+  same("Q2 ends on a 30th", b("all", 2026, 2), { start: "2026-04-01", end: "2026-06-30" });
+  same("Q4", b("all", 2026, 4), { start: "2026-10-01", end: "2026-12-31" });
   // February, because a quarter's end is computed rather than tabulated.
-  same("Q1 of a leap year still ends in March", b("year", 2024, 1),
+  same("Q1 of a leap year still ends in March", b("all", 2024, 1),
     { start: "2024-01-01", end: "2024-03-31" });
-  same("a year with no year chosen is all time", b("year", null), { start: null, end: null });
+  // A quarter is only honoured for the whole-period window: two windows at once is not
+  // something the page offers, and silently intersecting them would answer a question
+  // nobody asked.
+  same("a quarter is ignored when a rolling window is active",
+    b("30d", 2025, 2), b("30d", 2025));
+  same("a year with no year chosen is the whole record", b("all", null),
+    { start: null, end: null });
 
   ok("both ends are inclusive",
     G.inGrantPeriod("2026-11-10", b("7d")) && G.inGrantPeriod("2026-11-16", b("7d"))
     && !G.inGrantPeriod("2026-11-09", b("7d")) && !G.inGrantPeriod("2026-11-17", b("7d")));
-  ok("an undated row belongs to no window but survives all time",
+  ok("an undated row belongs to no window but survives the whole record",
     !G.inGrantPeriod(null, b("90d")) && G.inGrantPeriod(null, b("all")),
     "quietly keeping it would make the windows fail to sum to the whole, which is worse "
     + "than one row being invisible until the filter is cleared.");
+
+  // THE YEAR LIST, which is the thing the owner asked about: it must never need editing.
+  same("the current year is offered even with no data in it",
+    G.offeredYears([], "2027-01-01"), [2027]);
+  same("years come from the rows, newest first, with the current one always present",
+    G.offeredYears(["2025-06-01", "2023-01-01", "2025-12-31", null], "2026-11-16"),
+    [2026, 2025, 2023]);
+  ok("a future year is never offered",
+    !G.offeredYears(["2031-01-01", "2026-01-01"], "2026-11-16").includes(2031),
+    JSON.stringify(G.offeredYears(["2031-01-01", "2026-01-01"], "2026-11-16")));
+  ok("next January admits the new year with no code change",
+    G.offeredYears(["2026-05-01"], "2027-01-01")[0] === 2027,
+    "the list is derived from the rows and the clock, never written down.");
 
   // THE PROPERTY THAT MATTERS: the four quarters of a year are exactly that year, with
   // nothing double-counted and nothing lost. Checked on the live rows rather than asserted.
   for (const year of ts.years) {
     const whole = G.buildGrants({ rfps, rates, table, orgShort: ORG, today: TODAY,
-      selection: { period: "year", year, quarter: null } });
+      selection: { window: "all", year, quarter: null } });
     const quarters = [1, 2, 3, 4].map((q) => G.buildGrants({
       rfps, rates, table, orgShort: ORG, today: TODAY,
-      selection: { period: "year", year, quarter: q },
+      selection: { window: "all", year, quarter: q },
     }));
     same(`${year}'s quarters partition the year`,
       quarters.reduce((a, x) => a + x.rows.length, 0), whole.rows.length);
     same(`${year}'s quarters partition its submitted count`,
       quarters.reduce((a, x) => a + x.counts.submitted, 0), whole.counts.submitted);
-    ok(`${year} is a subset of all time`,
+    ok(`${year} is a subset of the whole record`,
       whole.rows.length + whole.hiddenByPeriod === ts.rows.length,
       `${whole.rows.length} in ${year} + ${whole.hiddenByPeriod} hidden vs ${ts.rows.length} total`);
+    // And a rolling window inside a year is a subset of that year — the clamp, measured
+    // on live rows rather than only on bounds.
+    const w365 = G.buildGrants({ rfps, rates, table, orgShort: ORG, today: TODAY,
+      selection: { window: "365d", year, quarter: null } });
+    ok(`${year}'s last 365 days never reaches outside ${year}`,
+      w365.rows.every((r) => !r.periodDate || r.periodDate.slice(0, 4) === String(year)),
+      JSON.stringify(w365.rows.map((r) => r.periodDate)));
   }
 
   // The ordering the owner asked for, on the live rows.
@@ -278,16 +323,23 @@ ok("still-in-play never goes negative",
     active.filter((r) => r.date_completed).every((r) => G.submittedOn(r).source === "completed"));
 
   // The query string, which is the only part a browser controls.
-  const parse = (qs) => G.parseGrantSelection(new URLSearchParams(qs));
-  same("a plain year", parse("period=year&year=2025"),
-    { period: "year", year: 2025, quarter: null });
-  same("a quarter", parse("period=year&year=2025&quarter=3"),
-    { period: "year", year: 2025, quarter: 3 });
-  same("an unknown period falls back to all time", parse("period=forever"),
-    { period: "all", year: null, quarter: null });
-  same("a nonsense quarter is dropped, not clamped", parse("period=year&year=2025&quarter=9"),
-    { period: "year", year: 2025, quarter: null });
-  same("no query string at all", parse(""), { period: "all", year: null, quarter: null });
+  const YEARS = [2026, 2025];
+  const parse = (qs) => G.parseGrantSelection(new URLSearchParams(qs), YEARS);
+  same("a plain year", parse("year=2025"),
+    { window: "all", year: 2025, quarter: null });
+  same("a window inside a year", parse("window=30d&year=2025"),
+    { window: "30d", year: 2025, quarter: null });
+  same("a quarter", parse("year=2025&quarter=3"),
+    { window: "all", year: 2025, quarter: 3 });
+  same("an unknown window falls back to the whole period", parse("window=forever"),
+    { window: "all", year: null, quarter: null });
+  same("a nonsense quarter is dropped, not clamped", parse("year=2025&quarter=9"),
+    { window: "all", year: 2025, quarter: null });
+  // A stale bookmark naming a year the data cannot support must not render an empty page
+  // under a heading nobody can explain.
+  same("a year the data does not have falls back to the whole record",
+    parse("year=2031"), { window: "all", year: null, quarter: null });
+  same("no query string at all", parse(""), { window: "all", year: null, quarter: null });
 }
 
 console.log(`\n${checks} comparisons, ${diffs} differing`);

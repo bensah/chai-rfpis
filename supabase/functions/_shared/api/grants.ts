@@ -84,60 +84,106 @@ export function submittedOn(r: Row): { date: string | null; source: DateSource }
 // ── The period filter ────────────────────────────────────────────────────────
 
 /**
- * The windows the page offers. Rolling ones first, then a calendar year, optionally
- * narrowed to a quarter.
+ * TWO CONTROLS, NOT ONE (owner, 2026-11-16). A WINDOW, and the YEAR it is anchored in.
+ *
+ * The first version put the rolling windows and the calendar years in one dropdown, which
+ * made them look like alternatives and made the year list look hard-coded — the owner read
+ * "2026, 2025" and reasonably asked whether 2027 would need a code change. It would not;
+ * the list is computed from the rows. But the shape invited the question, and a control
+ * that invites a wrong question about the data is the wrong control.
+ *
+ * So the window is one thing and the year is another:
+ *
+ *   window   all | 7d | 30d | 90d | 365d       — drawn as buttons, one click each
+ *   year     a calendar year, or null for the whole record
+ *   quarter  narrows a year; only meaningful when the window is `all`
+ *
+ * THE ANCHOR RULE, which is what makes "last 30 days of 2025" mean anything: a rolling
+ * window ends on TODAY when the chosen year is the current one (or no year is chosen), and
+ * on 31 DECEMBER of the chosen year otherwise. "Last 30 days" of 2025 is therefore 2–31
+ * December 2025, which is the reading of "which year are we viewing the last 7 days for"
+ * that a reader can act on: it is the end of that year's run-up.
+ *
+ * It is also clamped: a window anchored in a year never reaches outside that year. "Last
+ * 365 days" of 2025 is the whole of 2025 and not thirteen months of it, because a window
+ * that silently spilled into 2024 would make the year control a lie.
  *
  * DELIBERATELY NOT `report_period.ts`. That module is a port of the Report page's own
- * selectors — "This year", "Specific month", "Last 12 months" — and it exists to agree
- * with `views/report.py` figure for figure; a parity check pins it. Bending it to carry
- * 7/30/90/365-day windows and quarters would change what that check is checking. These
- * are a different page's windows and they answer to nothing in the Python, because Bids
- * Submitted has no period filter there at all: this is new (owner, 2026-11-16).
+ * selectors and a parity check pins it to `views/report.py` figure for figure. These
+ * windows answer to nothing in the Python, because Bids Submitted has no period filter
+ * there at all.
  */
-export const GRANT_PERIODS = ["all", "7d", "30d", "90d", "365d", "year"] as const;
-export type GrantPeriod = (typeof GRANT_PERIODS)[number];
+export const GRANT_WINDOWS = ["all", "7d", "30d", "90d", "365d"] as const;
+export type GrantWindow = (typeof GRANT_WINDOWS)[number];
 
-export type GrantSelection = { period: GrantPeriod; year: number | null; quarter: number | null };
+export type GrantSelection = {
+  window: GrantWindow;
+  /** null = the whole record, every year. */
+  year: number | null;
+  /** 1-4, and only applied when `window` is "all" — see `grantBounds`. */
+  quarter: number | null;
+};
 export type GrantBounds = { start: string | null; end: string | null };
 
 const QUARTER_MONTHS: Record<number, [number, number]> = {
   1: [1, 3], 2: [4, 6], 3: [7, 9], 4: [10, 12],
 };
+const WINDOW_DAYS: Record<string, number> = { "7d": 7, "30d": 30, "90d": 90, "365d": 365 };
 const pad = (n: number) => String(n).padStart(2, "0");
 const lastDay = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+const addDays = (iso: string, n: number) =>
+  new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
 
 /**
  * `today` is passed in rather than read, for the reason report_period.ts gives: a model
  * with a clock of its own cannot be pinned by a test, and UTC is not the reader's day.
  *
- * A rolling window is INCLUSIVE of today and counts back N-1 further days, so "Last 7
- * days" is a week containing today rather than eight dates. Both ends are inclusive
- * everywhere, which is also what `inGrantPeriod` assumes.
+ * A rolling window is INCLUSIVE of both ends and counts back N-1 days from its anchor, so
+ * "Last 7 days" is a week containing the anchor rather than eight dates.
  */
 export function grantBounds(sel: GrantSelection, today: string): GrantBounds {
-  const days = { "7d": 7, "30d": 30, "90d": 90, "365d": 365 }[sel.period as string];
-  if (days) {
-    const end = new Date(`${today}T00:00:00Z`);
-    const start = new Date(end.getTime() - (days - 1) * 86400000);
-    return { start: start.toISOString().slice(0, 10), end: today };
-  }
-  if (sel.period === "year" && sel.year) {
-    const [a, b] = sel.quarter && QUARTER_MONTHS[sel.quarter]
+  const thisYear = Number(today.slice(0, 4));
+  const year = sel.year;
+
+  // The year's own bounds, narrowed by a quarter when one is asked for. A quarter is only
+  // honoured for the `all` window: "Q2, last 30 days" is two windows fighting, and the
+  // page does not offer it.
+  const yearBounds = (): GrantBounds => {
+    if (!year) return { start: null, end: null };
+    const [a, b] = sel.window === "all" && sel.quarter && QUARTER_MONTHS[sel.quarter]
       ? QUARTER_MONTHS[sel.quarter] : [1, 12];
     return {
-      start: `${sel.year}-${pad(a)}-01`,
-      end: `${sel.year}-${pad(b)}-${pad(lastDay(sel.year, b))}`,
+      start: `${year}-${pad(a)}-01`,
+      end: `${year}-${pad(b)}-${pad(lastDay(year, b))}`,
     };
-  }
-  return { start: null, end: null };
+  };
+
+  if (sel.window === "all") return yearBounds();
+
+  const days = WINDOW_DAYS[sel.window];
+  // A PAST year anchors on its last day; the current year, and "every year", anchor on
+  // today. A FUTURE year cannot be selected — `offeredYears` does not offer one — but if
+  // one arrives in a URL it anchors on its last day like any other past year rather than
+  // being treated as now.
+  const anchor = !year || year === thisYear ? today : `${year}-12-31`;
+  const start = addDays(anchor, -(days - 1));
+
+  if (!year) return { start, end: anchor };
+  // Clamped into the year, so a window anchored in one year never reaches into the one
+  // before it. Without this, "last 365 days" of 2025 would quietly include December 2024.
+  const yb = yearBounds();
+  return {
+    start: yb.start && start < yb.start ? yb.start : start,
+    end: yb.end && anchor > yb.end ? yb.end : anchor,
+  };
 }
 
 /**
  * Is this row's date inside the window?
  *
- * A row with NO date at all is kept only by "All time". It cannot be shown to belong to a
- * window, and quietly including it would make the periods fail to sum to the whole — which
- * is worse than one row being invisible until the filter is cleared.
+ * A row with NO date at all is kept only when there are no bounds at all. It cannot be
+ * shown to belong to a window, and quietly including it would make the periods fail to sum
+ * to the whole — which is worse than one row being invisible until the filter is cleared.
  */
 export function inGrantPeriod(date: string | null, b: GrantBounds): boolean {
   if (!b.start && !b.end) return true;
@@ -147,30 +193,57 @@ export function inGrantPeriod(date: string | null, b: GrantBounds): boolean {
   return true;
 }
 
-/** What the reader is looking at, in words, for the caption under the controls. */
-export function grantPeriodLabel(sel: GrantSelection): string {
-  switch (sel.period) {
-    case "7d": return "Last 7 days";
-    case "30d": return "Last 30 days";
-    case "90d": return "Last 90 days";
-    case "365d": return "Last 365 days";
-    case "year":
-      if (!sel.year) return "All time";
-      return sel.quarter ? `Q${sel.quarter} ${sel.year}` : String(sel.year);
-    default: return "All time";
-  }
+/**
+ * THE YEARS THE PAGE MAY OFFER: every year that has a submitted bid, plus the current one,
+ * newest first, and never a future one.
+ *
+ * The current year is included even with no bids in it yet, because it is the default and
+ * a default that is not on its own list is a control that opens empty. On 1 January the
+ * page must still open on this year and say, correctly, that nothing has been submitted.
+ *
+ * Everything after the current year is absent rather than disabled — a year that cannot
+ * hold data is not a choice a reader should have to rule out. That is what makes 2027
+ * "invalid" today and ordinary on 1 January 2027, with no code change: the list is derived
+ * from the rows and the clock, never written down.
+ */
+export function offeredYears(dates: (string | null)[], today: string): number[] {
+  const thisYear = Number(today.slice(0, 4));
+  const found = dates
+    .filter((d): d is string => !!d)
+    .map((d) => Number(d.slice(0, 4)))
+    .filter((y) => Number.isInteger(y) && y <= thisYear);
+  return [...new Set([thisYear, ...found])].sort((a, b) => b - a);
 }
 
-/** The selection a query string asks for, with anything unparseable falling back to all. */
-export function parseGrantSelection(p: URLSearchParams): GrantSelection {
-  const raw = s(p.get("period")).trim().toLowerCase();
-  const period = (GRANT_PERIODS as readonly string[]).includes(raw)
-    ? raw as GrantPeriod : "all";
+/** What the reader is looking at, in words, for the caption under the controls. */
+export function grantPeriodLabel(sel: GrantSelection): string {
+  const win = {
+    "7d": "Last 7 days", "30d": "Last 30 days",
+    "90d": "Last 90 days", "365d": "Last 365 days",
+  }[sel.window as string];
+  if (!sel.year) return win ? `${win} (to today)` : "Every year";
+  if (win) return `${win} of ${sel.year}`;
+  return sel.quarter ? `Q${sel.quarter} ${sel.year}` : String(sel.year);
+}
+
+/**
+ * The selection a query string asks for.
+ *
+ * A year the data cannot support is dropped rather than honoured, which is why this takes
+ * the offered list: a bookmark to `?year=2031`, or a hand-edited URL, must not produce a
+ * page that says "0 of 0" under a heading nobody can explain. It falls back to the whole
+ * record, which is always a true answer.
+ */
+export function parseGrantSelection(p: URLSearchParams, years: number[] = []): GrantSelection {
+  const raw = s(p.get("window")).trim().toLowerCase();
+  const window = (GRANT_WINDOWS as readonly string[]).includes(raw)
+    ? raw as GrantWindow : "all";
   const year = Number(p.get("year"));
   const quarter = Number(p.get("quarter"));
+  const allowed = years.length === 0 || years.includes(year);
   return {
-    period,
-    year: Number.isInteger(year) && year >= 1990 && year <= 2100 ? year : null,
+    window,
+    year: Number.isInteger(year) && year >= 1990 && allowed ? year : null,
     quarter: Number.isInteger(quarter) && quarter >= 1 && quarter <= 4 ? quarter : null,
   };
 }
@@ -281,8 +354,9 @@ export type GrantsPayload = {
   /** What the reader is looking at, and the years they can ask for. */
   period: { selection: GrantSelection; bounds: GrantBounds; label: string };
   /**
-   * Every year that has a submitted bid in it, newest first — computed BEFORE the filter,
-   * or choosing 2025 would empty the list that offers 2025.
+   * The years the page may offer: every year with a submitted bid, plus the current one,
+   * newest first, never a future one. Computed BEFORE the filter, or choosing 2025 would
+   * empty the list that offers 2025. See `offeredYears`.
    */
   years: number[];
   /** Submitted bids outside the window, so a reader can tell a filter from an empty table. */
@@ -330,6 +404,20 @@ const num = (v: unknown): number | null => {
 const list = (v: unknown): string[] =>
   Array.isArray(v) ? v.map((x) => s(x).trim()).filter(Boolean) : (s(v).trim() ? [s(v).trim()] : []);
 
+/**
+ * The years a selection may name, from the raw rows — the same answer `buildGrants` puts
+ * in its payload, without the aggregation.
+ *
+ * The route needs it BEFORE it can parse the query string, because a `?year=` the data
+ * cannot support has to fall back rather than render an empty page nobody can explain.
+ * Running `buildGrants` twice to learn one list would read every row, convert every
+ * amount and group every funder for an answer that is four lines of date arithmetic.
+ */
+export function yearsFor(rfps: Row[], today: string): number[] {
+  const everSubmitted = rfps.filter((r) => r.is_duplicate !== true && isSubmitted(r));
+  return offeredYears(everSubmitted.map((r) => submittedOn(r).date), today);
+}
+
 export function buildGrants(input: {
   rfps: Row[]; rates: Record<string, Rate>; table: Currency[]; orgShort: string;
   selection?: GrantSelection; today?: string;
@@ -346,17 +434,13 @@ export function buildGrants(input: {
   // moves all of them together. A page that filtered its own list would leave the tiles
   // above it answering a different question.
   const selection: GrantSelection =
-    input.selection ?? { period: "all", year: null, quarter: null };
+    input.selection ?? { window: "all", year: null, quarter: null };
   const today = input.today ?? new Date().toISOString().slice(0, 10);
   const bounds = grantBounds(selection, today);
   const active = everSubmitted.filter((r) => inGrantPeriod(submittedOn(r).date, bounds));
 
   // Offered before the filter, so picking a year never removes that year from the list.
-  const years = [...new Set(everSubmitted
-    .map((r) => submittedOn(r).date)
-    .filter((d): d is string => !!d)
-    .map((d) => Number(d.slice(0, 4))))]
-    .filter((y) => Number.isInteger(y)).sort((a, b) => b - a);
+  const years = yearsFor(rfps, today);
 
   const rows: GrantRow[] = active.map((r) => {
     const when = submittedOn(r);

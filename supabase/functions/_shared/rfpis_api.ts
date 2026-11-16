@@ -31,10 +31,11 @@ import { createPhase1Routes } from "./api/routes_phase1.ts";
 import { createPipelineWrites } from "./api/pipeline_writes.ts";
 import { createPipelineRoutes } from "./api/routes_pipelines.ts";
 import { createReportRoutes } from "./api/routes_report.ts";
-import { buildGrants, loadGrants, parseGrantSelection } from "./api/grants.ts";
+import { buildGrants, loadGrants, parseGrantSelection, yearsFor } from "./api/grants.ts";
 import { createActionRoutes } from "./api/routes_actions.ts";
 import { loadOrgIdentity } from "./api/report_section2.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
+import { createSearchRoutes } from "./api/routes_search.ts";
 import { createSubmitRoutes } from "./api/routes_submit.ts";
 import { createSessions } from "./api/session.ts";
 import { createTenants } from "./api/tenants.ts";
@@ -77,6 +78,9 @@ export function createApi(env: Env, deps: Deps) {
   // Submit New Notice queues through the same path too: the insert is this function's,
   // the seen-ledger tombstone and the share to the global pool are Python's.
   const submitNotice = createSubmitRoutes(db, jobs.enqueue);
+  // Search: the in-app half answers in the request, the web half is a job — 21.4s
+  // against the live providers, in Python that holds the keys. See api/routes_search.ts.
+  const siteSearch = createSearchRoutes(db, jobs.enqueue);
 
   async function route(req: Request, path: string): Promise<Response> {
     const m = req.method;
@@ -142,10 +146,14 @@ export function createApi(env: Env, deps: Deps) {
       return actions.patchEngagement(req, ctx, decodeURIComponent(path.slice("/actions/engagements/".length)));
     }
 
-    // `?period=all|7d|30d|90d|365d|year[&year=&quarter=]`. The window is applied on the
+    // `?window=all|7d|30d|90d|365d[&year=&quarter=]`. The window is applied on the
     // server, before anything is counted, so the tiles, the money, the win rate, the
     // by-funder table and the picker cannot answer different questions — see
     // api/grants.ts::buildGrants.
+    //
+    // The selection is parsed AGAINST THE YEARS THE DATA SUPPORTS: `?year=2031` from a
+    // stale bookmark falls back to the whole record rather than rendering an empty page
+    // under a heading nobody can explain.
     //
     // NO-STORE, and that is the point of saying it rather than leaving it off. This page
     // is read right after somebody edits a bid, and a figure served from any cache on the
@@ -154,9 +162,11 @@ export function createApi(env: Env, deps: Deps) {
       const tid = db.scopeTid(ctx.scope);
       const org = await loadOrgIdentity(db, /^0{8}-/.test(tid) ? null : tid);
       const { rfps, rates, table } = await loadGrants(db, ctx.scope);
-      const selection = parseGrantSelection(new URL(req.url).searchParams);
+      const today = new Date().toISOString().slice(0, 10);
+      const selection = parseGrantSelection(
+        new URL(req.url).searchParams, yearsFor(rfps, today));
       return gzipped(req, json(
-        buildGrants({ rfps, rates, table, orgShort: org.short, selection }),
+        buildGrants({ rfps, rates, table, orgShort: org.short, selection, today }),
         200, { "Cache-Control": "no-store" }));
     }
 
@@ -164,6 +174,10 @@ export function createApi(env: Env, deps: Deps) {
     // never refuses a row for being a duplicate — see api/submit.ts on the 2026-06-05
     // policy that de-duplication happens at display time instead.
     if (path === "/submit" && m === "POST") return submitNotice.submit(req, ctx);
+
+    if (path === "/search" && m === "GET") return siteSearch.search(req, ctx);
+    if (path === "/search/web" && m === "POST") return siteSearch.web(req, ctx);
+    if (path === "/search/action" && m === "POST") return siteSearch.action(req, ctx);
 
     if (path === "/pipelines/weeks" && m === "GET") return pipelines.weeks(req, ctx);
     if (path === "/pipelines/screen" && m === "GET") return pipelines.screen(req, ctx);

@@ -20,7 +20,7 @@ import {
   Briefcase, ChevronLeft, ChevronRight, ExternalLink, RotateCw, Search,
 } from "lucide-react";
 import {
-  ApiError, fetchGrants, type GrantPeriod, type Grants, type GrantSelection,
+  ApiError, fetchGrants, type Grants, type GrantSelection, type GrantWindow,
 } from "../api";
 import { hrefOf, Link } from "../router";
 import { Badge, Card, EmptyState, Notice, PageHeader, Select, Spinner, fieldClass } from "../ui";
@@ -56,8 +56,9 @@ function Amount({ usd, native, currency }: { usd: number; native: number | null;
   );
 }
 
-const PERIOD_LABELS: [GrantPeriod, string][] = [
-  ["all", "All time"],
+/** The window buttons, in the order they are drawn. */
+const WINDOWS: [GrantWindow, string][] = [
+  ["all", "Whole period"],
   ["7d", "Last 7 days"],
   ["30d", "Last 30 days"],
   ["90d", "Last 90 days"],
@@ -70,7 +71,14 @@ export default function GrantsPage() {
   const [picked, setPicked] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
-  const [sel, setSel] = useState<GrantSelection>({ period: "all", year: null, quarter: null });
+  /**
+   * Opens on the CURRENT YEAR, whole period — "default will be the current date" (owner,
+   * 2026-11-16). The year is read from the browser's clock rather than waited for from the
+   * server, so the first request already asks for the right window; `offeredYears` always
+   * includes the current year, so this can never name one the server will reject.
+   */
+  const [sel, setSel] = useState<GrantSelection>(
+    { window: "all", year: new Date().getFullYear(), quarter: null });
   const [readAt, setReadAt] = useState<Date | null>(null);
   const [busy, setBusy] = useState(false);
   // Keeps the LAST selection the page actually displayed, so a reload triggered by a tab
@@ -376,42 +384,68 @@ export default function GrantsPage() {
 /**
  * The window every figure on this page was computed for.
  *
- * It sits ABOVE the tiles because it governs them (owner, 2026-11-16: "it should be at the
- * top of the cards so we can filter the cards and everything on that page"). A filter
- * placed beside the list it obviously narrows, with aggregate tiles above it, invites
- * exactly the reading it should prevent — that the tiles are the whole log and the list is
- * a slice of it. Here, everything below changes together.
+ * TWO CONTROLS, AND THEY ARE NOT THE SAME KIND OF THING (owner, 2026-11-16). The rolling
+ * windows are BUTTONS, because they are the common move — one click, no dropdown to open
+ * and read — and a row of them shows at a glance which one is active. The year is a
+ * dropdown beside them, because it is a different question: not "how far back" but "back
+ * from when". Putting both in one list made them look like alternatives and made the year
+ * list look hard-coded, which is what prompted a fair question about what happens in 2027.
  *
- * The quarter picker appears only once a year is chosen, because "Q2" of a rolling 90-day
- * window is not a thing and a control that is meaningless half the time teaches people to
- * ignore it.
+ * It does not need to happen. The years come from the rows plus today's date, so the list
+ * grows on its own; a year after this one is never offered, because no bid can be in it.
+ *
+ * It sits ABOVE the tiles because it governs them. A filter placed beside the list it
+ * obviously narrows, with aggregates above it, invites exactly the reading it should
+ * prevent — that the tiles are the whole log and the list is a slice of it.
+ *
+ * The quarter picker appears only for a whole year, because "Q2, last 30 days" is two
+ * windows fighting and the page does not offer it.
  */
 function PeriodBar({ sel, years, busy, readAt, hidden, label, onChange, onRefresh }: {
   sel: GrantSelection; years: number[]; busy: boolean; readAt: Date | null;
   hidden: number; label: string;
   onChange: (s: GrantSelection) => void; onRefresh: () => void;
 }) {
-  const value = sel.period === "year" && sel.year ? `y${sel.year}` : sel.period;
+  const thisYear = new Date().getFullYear();
   return (
     <Card className="p-3">
-      <div className="flex flex-wrap items-end gap-3">
+      <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
+        <div>
+          <span className="mb-1 block text-xs font-semibold text-ink-600">Window</span>
+          <div role="group" aria-label="Period" className="flex flex-wrap gap-1">
+            {WINDOWS.map(([k, text]) => {
+              const on = sel.window === k;
+              return (
+                <button key={k} type="button" aria-pressed={on}
+                  onClick={() => onChange({ ...sel, window: k, quarter: k === "all" ? sel.quarter : null })}
+                  className={`rounded-lg border px-2.5 py-1.5 text-sm transition-colors ${on
+                    ? "border-accent-600 bg-accent-600 font-semibold text-white"
+                    : "border-ink-300 text-ink-700 hover:border-accent-600 hover:text-accent-700"}`}>
+                  {text}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         <label className="min-w-0">
-          <span className="mb-1 block text-xs font-semibold text-ink-600">Period</span>
+          <span className="mb-1 block text-xs font-semibold text-ink-600">Year</span>
           <Select
-            value={value}
+            value={sel.year ? String(sel.year) : ""}
             onChange={(e) => {
-              const v = e.target.value;
-              if (v.startsWith("y")) onChange({ period: "year", year: Number(v.slice(1)), quarter: null });
-              else onChange({ period: v as GrantPeriod, year: null, quarter: null });
+              const y = e.target.value ? Number(e.target.value) : null;
+              onChange({ ...sel, year: y, quarter: y ? sel.quarter : null });
             }}
-            className="w-48"
+            className="w-40"
           >
-            {PERIOD_LABELS.map(([k, text]) => <option key={k} value={k}>{text}</option>)}
-            {years.map((y) => <option key={y} value={`y${y}`}>{y}</option>)}
+            <option value="">Every year</option>
+            {years.map((y) => (
+              <option key={y} value={y}>{y === thisYear ? `${y} · this year` : y}</option>
+            ))}
           </Select>
         </label>
 
-        {sel.period === "year" && sel.year !== null && (
+        {sel.window === "all" && sel.year !== null && (
           <label className="min-w-0">
             <span className="mb-1 block text-xs font-semibold text-ink-600">Quarter</span>
             <Select
@@ -432,7 +466,6 @@ function PeriodBar({ sel, years, busy, readAt, hidden, label, onChange, onRefres
           <RotateCw size={14} aria-hidden className={busy ? "animate-spin" : ""} />
           {busy ? "Reading…" : "Refresh"}
         </button>
-
       </div>
 
       {/* Its own line rather than squeezed beside the controls: it has to say three
@@ -443,6 +476,9 @@ function PeriodBar({ sel, years, busy, readAt, hidden, label, onChange, onRefres
         Showing <strong>{label}</strong>, by the date each bid was completed. Every figure
         on this page is for this window — the tiles, the money, the win rate, the
         application list and the by-funder table.
+        {sel.year !== null && sel.year !== thisYear && sel.window !== "all" && (
+          <> A past year's rolling window ends on 31 December of that year.</>
+        )}
         {hidden > 0 && <> {fmtInt(hidden)} submitted {hidden === 1 ? "bid falls" : "bids fall"} outside it.</>}
         {readAt && <span className="text-ink-400"> Read at {readAt.toLocaleTimeString()}; it re-reads when you come back to this tab.</span>}
       </p>

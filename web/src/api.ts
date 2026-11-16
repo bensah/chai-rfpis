@@ -901,15 +901,31 @@ export type Grants = {
     bounds: { start: string | null; end: string | null };
     label: string;
   };
-  /** Years with a submitted bid, newest first — computed before the filter. */
+  /**
+   * The years the page may offer: every year with a bid, plus the current one, newest
+   * first, never a future one. Derived from the rows and the clock, so next year appears
+   * on its own without a code change.
+   */
   years: number[];
   /** Submitted bids outside the window, so an empty table can be told from no data. */
   hiddenByPeriod: number;
 };
 
-/** The windows Bids Submitted offers. `year` needs a year; a quarter narrows it. */
-export type GrantPeriod = "all" | "7d" | "30d" | "90d" | "365d" | "year";
-export type GrantSelection = { period: GrantPeriod; year: number | null; quarter: number | null };
+/**
+ * Two controls, not one: a WINDOW, and the YEAR it is anchored in.
+ *
+ * A rolling window ends on today when the chosen year is the current one (or none is
+ * chosen) and on 31 December of that year otherwise, clamped so it never reaches outside
+ * it. "Last 30 days" of 2025 is 2-31 December 2025. See api/grants.ts for why.
+ */
+export type GrantWindow = "all" | "7d" | "30d" | "90d" | "365d";
+export type GrantSelection = {
+  window: GrantWindow;
+  /** null = the whole record, every year. */
+  year: number | null;
+  /** Only applied when `window` is "all". */
+  quarter: number | null;
+};
 
 /**
  * Every figure on Bids Submitted for one window.
@@ -921,12 +937,12 @@ export type GrantSelection = { period: GrantPeriod; year: number | null; quarter
  */
 export const fetchGrants = (sel?: GrantSelection) => {
   const p = new URLSearchParams();
-  if (sel && sel.period !== "all") {
-    p.set("period", sel.period);
-    if (sel.period === "year" && sel.year) {
-      p.set("year", String(sel.year));
-      if (sel.quarter) p.set("quarter", String(sel.quarter));
-    }
+  if (sel) {
+    if (sel.window !== "all") p.set("window", sel.window);
+    if (sel.year) p.set("year", String(sel.year));
+    // A quarter only means something inside a whole year; sending it with a rolling
+    // window would ask the server to honour two windows at once, which it will not.
+    if (sel.year && sel.quarter && sel.window === "all") p.set("quarter", String(sel.quarter));
   }
   const qs = p.toString();
   return call<Grants>(`/grants${qs ? `?${qs}` : ""}`);
@@ -1047,3 +1063,81 @@ export type SubmitResult = {
  */
 export const submitNotice = (payload: SubmitPayload) =>
   post<SubmitResult>("/submit", { ...payload, offsetMinutes: -new Date().getTimezoneOffset() });
+
+// ── Search ───────────────────────────────────────────────────────────────────
+//
+// Two halves with two shapes. The in-app search is a static nav registry and two ilike
+// queries, so it answers in the request. Web discovery holds the provider keys, fans one
+// keyword into several searches, fetches candidate pages and filters them through seven
+// rules — 21.4 seconds live — so it is a job the page polls.
+
+export type NavHit = { label: string; href: string; score: number };
+export type OppHit = {
+  title: string; funder: string; deadline: string; decision: string; source: string;
+  uid: string;
+};
+export type DonorHit = { name: string };
+
+export type SiteSearch = {
+  query: string;
+  nav: NavHit[];
+  opportunities: OppHit[];
+  donors: DonorHit[];
+  total: number;
+};
+
+export const siteSearch = (q: string) =>
+  call<SiteSearch>(`/search?q=${encodeURIComponent(q)}`);
+
+/** One hit from the web, as core/web_search.py yields it. */
+export type WebHit = {
+  title: string; link: string; domain: string; snippet: string;
+  deadline?: string | null; page_date?: string | null;
+};
+
+/**
+ * The web job's result.
+ *
+ * `available` is false when no provider key is set, which is an administrator's answer the
+ * browser cannot work out for itself — the environment holding the keys is the Python's.
+ * The `dropped_*` counts are the filter explaining itself: a run that kept 12 of 43 should
+ * say where the other 31 went, or the filter looks like a failure.
+ */
+export type WebSearchResult = {
+  available: boolean;
+  ok?: boolean;
+  mode?: "discovery" | "lookup" | string;
+  error?: string;
+  raw_count?: number;
+  results?: WebHit[];
+  suggest?: string[];
+  dropped_aggregator?: number;
+  dropped_expired?: number;
+  dropped_old?: number;
+  dropped_notrfp?: number;
+  dropped_geo?: number;
+  dropped_scholarship?: number;
+  dropped_offtopic?: number;
+  dropped_lang?: number;
+};
+
+/** Queue one web-discovery run. `fresh` drops the 15-minute cache first. */
+export const startWebSearch = (q: string, fresh = false) =>
+  post<{ jobId: string }>("/search/web", { q, fresh });
+
+export type TrackResult = {
+  action: "track";
+  ok?: boolean; uid?: string | null; skipped?: boolean; reason?: string;
+  routed?: string; rejected?: boolean;
+};
+
+/**
+ * Rate a web hit, or track it into Found Records.
+ *
+ * Both run in Python: the rating writes the ML training label, and tracking scores the
+ * candidate with auto_scorer, checks the deduplicator and may route it to the Sources
+ * registry instead of inserting it. Four outcomes, all the module's judgement.
+ */
+export const searchAction = (
+  action: "feedback" | "track", result: WebHit, verdict?: "good" | "neutral" | "bad",
+) => post<{ jobId: string }>("/search/action", { action, result, verdict });

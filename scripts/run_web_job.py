@@ -423,6 +423,128 @@ def _submit_followup(job: JobRow, params: dict, runner: str) -> dict:
         reset_tenant_override(token)
 
 
+def _web_search(job: JobRow, params: dict, runner: str) -> dict:
+    """One web-discovery run for the Search page — `core/web_search.py`.
+
+    WHY THIS IS A JOB. The module holds the provider keys (SERPER / TAVILY / EXA), fans one
+    keyword out into several RFP-framed searches, FETCHES candidate pages to read their
+    first-posted dates, and filters the hits through seven rules — health theme, RFP signal,
+    blacklist, geography, expiry, staleness and language. Measured against the live
+    providers on 2026-11-16, one query took 21.4 seconds and returned 12 of 43 hits. No
+    Edge Function budget survives that, and the seven rules are the part nobody should own
+    a second copy of.
+
+    `available` travels back whether or not anything was searched, because "no provider is
+    configured" is an administrator's answer and the browser cannot see the environment to
+    work it out. The Streamlit page prints exactly that instead of a button.
+
+    params: {"q": required, "num": optional (30), "fresh": optional, "tenant_id": optional}
+
+    Prints counts and nothing else: this log is public (the repository is).
+    """
+    from auth.tenant_context import reset_tenant_override, set_tenant_override
+
+    q = str(params.get("q") or "").strip()
+    if len(q) < 2:
+        raise ValueError("web_search needs a query of at least two characters")
+    num = int(params.get("num") or 30)
+    tenant_id = str(params.get("tenant_id") or (job.get() or {}).get("tenant_id") or "").strip()
+
+    # The blacklist and the geography rules are TENANT-SCOPED — they read the organisation's
+    # own blocked domains and its operating countries — so the whole body runs inside the
+    # override. Without it one tenant's search would be filtered by another's rules, which
+    # is invisible in the results and changes which calls they are shown.
+    token = set_tenant_override(tenant_id) if tenant_id else None
+    try:
+        from core import web_search
+        if not web_search.available():
+            job.progress(100, "No provider configured")
+            return {"available": False, "ok": False, "results": [],
+                    "error": "No web-search provider is configured.", "runner": runner}
+
+        if params.get("fresh"):
+            # The Streamlit Refresh button's own first line. The cache is 15 minutes, and
+            # re-running without clearing it would return the same page of results.
+            try:
+                web_search.search.clear()
+            except Exception:
+                pass
+
+        job.progress(15, "Searching")
+        res = dict(web_search.search(q, num=num))
+        job.progress(85, "Filtering")
+        res["available"] = True
+        res["runner"] = runner
+        # Related searches come back with the results rather than from a second call: they
+        # are a pure expansion of the query and the page shows them beside the hits.
+        try:
+            res["suggest"] = list(web_search.suggest_terms(q))
+        except Exception:
+            res["suggest"] = []
+        kept = len(res.get("results") or [])
+        job.progress(100, f"{kept} of {res.get('raw_count', 0)} kept")
+        return res
+    finally:
+        if token is not None:
+            reset_tenant_override(token)
+
+
+def _search_action(job: JobRow, params: dict, runner: str) -> dict:
+    """Rate a web result, or track it into Found Records.
+
+    Both halves are Python's and neither is a one-liner behind a REST call:
+
+      * `decision_log.log_feedback(row, verdict, by, reason="search-result")` writes the ML
+        training label. `reason` is what keeps a rating on a web hit — which has no rfp_uid
+        yet — distinguishable from feedback on a row the app already holds.
+      * `found_loader.load_candidate` maps the hit to a candidate, scores it with
+        `auto_scorer`, asks `deduplicator` whether something already tracks it, and may
+        route it to the Sources registry instead of inserting it. Its four outcomes
+        (inserted / routed / rejected / skipped) are what the page reports, and they are
+        the module's judgement rather than this job's.
+
+    params: {"action": "feedback"|"track", "result": {...}, "verdict": …, "by": …}
+
+    Prints counts and nothing else: this log is public (the repository is).
+    """
+    from auth.tenant_context import reset_tenant_override, set_tenant_override
+
+    action = str(params.get("action") or "").strip()
+    result = params.get("result")
+    if action not in ("feedback", "track"):
+        raise ValueError("search_action needs action=feedback or action=track")
+    if not isinstance(result, dict) or not result:
+        raise ValueError("search_action needs a result to act on")
+    tenant_id = str(params.get("tenant_id") or (job.get() or {}).get("tenant_id") or "").strip()
+
+    # A tracked candidate becomes a row in rfp_submissions, so the tenant must be the
+    # reader's: inserting against the ambient default would put somebody's find in another
+    # organisation's pipeline.
+    token = set_tenant_override(tenant_id) if tenant_id else None
+    try:
+        from core import decision_log, found_loader
+        cand = found_loader.candidate_from_web_result(result)
+        by = str(params.get("by") or "").strip() or None
+
+        if action == "feedback":
+            job.progress(50, "Recording")
+            ok = decision_log.log_feedback(
+                cand, str(params.get("verdict") or ""), by=by, reason="search-result")
+            job.progress(100, "Recorded" if ok else "Not recorded")
+            return {"action": "feedback", "logged": bool(ok), "runner": runner}
+
+        job.progress(40, "Scoring")
+        res = dict(found_loader.load_candidate(cand, {"email": by} if by else None,
+                                               provenance="search"))
+        job.progress(100, "Tracked" if res.get("ok") else str(res.get("reason") or "Skipped"))
+        res["action"] = "track"
+        res["runner"] = runner
+        return res
+    finally:
+        if token is not None:
+            reset_tenant_override(token)
+
+
 KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "ping": _ping,
     "rescore": _rescore,
@@ -430,6 +552,8 @@ KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "delete_rfp": _delete_rfp,
     "export_report_xlsx": _export_report_xlsx,
     "submit_followup": _submit_followup,
+    "web_search": _web_search,
+    "search_action": _search_action,
 }
 
 
