@@ -31,7 +31,7 @@ import { createPhase1Routes } from "./api/routes_phase1.ts";
 import { createPipelineWrites } from "./api/pipeline_writes.ts";
 import { createPipelineRoutes } from "./api/routes_pipelines.ts";
 import { createReportRoutes } from "./api/routes_report.ts";
-import { buildGrants, loadGrants } from "./api/grants.ts";
+import { buildGrants, loadGrants, parseGrantSelection } from "./api/grants.ts";
 import { createActionRoutes } from "./api/routes_actions.ts";
 import { loadOrgIdentity } from "./api/report_section2.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
@@ -142,11 +142,22 @@ export function createApi(env: Env, deps: Deps) {
       return actions.patchEngagement(req, ctx, decodeURIComponent(path.slice("/actions/engagements/".length)));
     }
 
+    // `?period=all|7d|30d|90d|365d|year[&year=&quarter=]`. The window is applied on the
+    // server, before anything is counted, so the tiles, the money, the win rate, the
+    // by-funder table and the picker cannot answer different questions — see
+    // api/grants.ts::buildGrants.
+    //
+    // NO-STORE, and that is the point of saying it rather than leaving it off. This page
+    // is read right after somebody edits a bid, and a figure served from any cache on the
+    // way is a figure that contradicts the editor the reader just used.
     if (path === "/grants" && m === "GET") {
       const tid = db.scopeTid(ctx.scope);
       const org = await loadOrgIdentity(db, /^0{8}-/.test(tid) ? null : tid);
       const { rfps, rates, table } = await loadGrants(db, ctx.scope);
-      return gzipped(req, json(buildGrants({ rfps, rates, table, orgShort: org.short })));
+      const selection = parseGrantSelection(new URL(req.url).searchParams);
+      return gzipped(req, json(
+        buildGrants({ rfps, rates, table, orgShort: org.short, selection }),
+        200, { "Cache-Control": "no-store" }));
     }
 
     // Submit New Notice (views/submit_form.py). Open to any signed-in member, and it

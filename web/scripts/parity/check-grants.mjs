@@ -203,5 +203,92 @@ ok("still-in-play never goes negative",
   ts.money.balance >= 0,
   `requested ${ts.money.requested}, secured ${ts.money.secured}, unsecured ${ts.money.unsecured}`);
 
+// ── The period filter ────────────────────────────────────────────────────────
+// NEW, and with no Python counterpart: Bids Submitted has no period filter in the
+// Streamlit app at all (owner, 2026-11-16). So these are claims about the model's own
+// arithmetic and about the one property that makes a filter trustworthy — that the windows
+// partition the log rather than overlapping it or losing rows out of it.
+{
+  const TODAY = "2026-11-16";
+  const b = (period, year = null, quarter = null) =>
+    G.grantBounds({ period, year, quarter }, TODAY);
+
+  same("all time has no bounds", b("all"), { start: null, end: null });
+  // Inclusive of today and counting back N-1 days, so a week is seven dates, not eight.
+  same("last 7 days is a week containing today", b("7d"),
+    { start: "2026-11-10", end: "2026-11-16" });
+  same("last 30 days", b("30d"), { start: "2026-10-18", end: "2026-11-16" });
+  same("last 90 days", b("90d"), { start: "2026-08-19", end: "2026-11-16" });
+  same("last 365 days", b("365d"), { start: "2025-11-17", end: "2026-11-16" });
+  same("a whole year", b("year", 2025), { start: "2025-01-01", end: "2025-12-31" });
+  same("Q1", b("year", 2026, 1), { start: "2026-01-01", end: "2026-03-31" });
+  same("Q2 ends on a 30th", b("year", 2026, 2), { start: "2026-04-01", end: "2026-06-30" });
+  same("Q4", b("year", 2026, 4), { start: "2026-10-01", end: "2026-12-31" });
+  // February, because a quarter's end is computed rather than tabulated.
+  same("Q1 of a leap year still ends in March", b("year", 2024, 1),
+    { start: "2024-01-01", end: "2024-03-31" });
+  same("a year with no year chosen is all time", b("year", null), { start: null, end: null });
+
+  ok("both ends are inclusive",
+    G.inGrantPeriod("2026-11-10", b("7d")) && G.inGrantPeriod("2026-11-16", b("7d"))
+    && !G.inGrantPeriod("2026-11-09", b("7d")) && !G.inGrantPeriod("2026-11-17", b("7d")));
+  ok("an undated row belongs to no window but survives all time",
+    !G.inGrantPeriod(null, b("90d")) && G.inGrantPeriod(null, b("all")),
+    "quietly keeping it would make the windows fail to sum to the whole, which is worse "
+    + "than one row being invisible until the filter is cleared.");
+
+  // THE PROPERTY THAT MATTERS: the four quarters of a year are exactly that year, with
+  // nothing double-counted and nothing lost. Checked on the live rows rather than asserted.
+  for (const year of ts.years) {
+    const whole = G.buildGrants({ rfps, rates, table, orgShort: ORG, today: TODAY,
+      selection: { period: "year", year, quarter: null } });
+    const quarters = [1, 2, 3, 4].map((q) => G.buildGrants({
+      rfps, rates, table, orgShort: ORG, today: TODAY,
+      selection: { period: "year", year, quarter: q },
+    }));
+    same(`${year}'s quarters partition the year`,
+      quarters.reduce((a, x) => a + x.rows.length, 0), whole.rows.length);
+    same(`${year}'s quarters partition its submitted count`,
+      quarters.reduce((a, x) => a + x.counts.submitted, 0), whole.counts.submitted);
+    ok(`${year} is a subset of all time`,
+      whole.rows.length + whole.hiddenByPeriod === ts.rows.length,
+      `${whole.rows.length} in ${year} + ${whole.hiddenByPeriod} hidden vs ${ts.rows.length} total`);
+  }
+
+  // The ordering the owner asked for, on the live rows.
+  const dates = ts.rows.map((r) => r.periodDate);
+  const dated = dates.filter(Boolean);
+  ok("rows come back newest first", dated.every((d, i) => i === 0 || dated[i - 1] >= d),
+    J(dates));
+  ok("undated rows sort last",
+    dates.indexOf(null) === -1 || dates.slice(dates.indexOf(null)).every((d) => d === null),
+    J(dates));
+  ok("every row carries the date it was ordered by, or says it has none",
+    ts.rows.every((r) => r.periodDate === null || /^\d{4}-\d{2}-\d{2}$/.test(r.periodDate)));
+  // The chain, against the rows it was measured on: a date is never invented.
+  ok("the ordering date is one of the row's own columns",
+    active.every((r) => {
+      const { date, source } = G.submittedOn(r);
+      if (source === "none") return date === null;
+      const col = { completed: r.date_completed, deadline: r.call_submission_deadline,
+        logged: r.submitted_at }[source];
+      return date === String(col ?? "").slice(0, 10);
+    }));
+  ok("the chain prefers a recorded completion over a deadline",
+    active.filter((r) => r.date_completed).every((r) => G.submittedOn(r).source === "completed"));
+
+  // The query string, which is the only part a browser controls.
+  const parse = (qs) => G.parseGrantSelection(new URLSearchParams(qs));
+  same("a plain year", parse("period=year&year=2025"),
+    { period: "year", year: 2025, quarter: null });
+  same("a quarter", parse("period=year&year=2025&quarter=3"),
+    { period: "year", year: 2025, quarter: 3 });
+  same("an unknown period falls back to all time", parse("period=forever"),
+    { period: "all", year: null, quarter: null });
+  same("a nonsense quarter is dropped, not clamped", parse("period=year&year=2025&quarter=9"),
+    { period: "year", year: 2025, quarter: null });
+  same("no query string at all", parse(""), { period: "all", year: null, quarter: null });
+}
+
 console.log(`\n${checks} comparisons, ${diffs} differing`);
 process.exit(diffs ? 1 : 0);

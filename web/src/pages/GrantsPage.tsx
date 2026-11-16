@@ -15,9 +15,13 @@
  * rather than quietly picking one, because a reader who adds the by-funder column up and
  * compares it to the headline deserves to find out why they differ from the page itself.
  */
-import { useEffect, useMemo, useState } from "react";
-import { Briefcase, ChevronLeft, ChevronRight, ExternalLink, Search } from "lucide-react";
-import { ApiError, fetchGrants, type GrantRow, type Grants } from "../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Briefcase, ChevronLeft, ChevronRight, ExternalLink, RotateCw, Search,
+} from "lucide-react";
+import {
+  ApiError, fetchGrants, type GrantPeriod, type Grants, type GrantSelection,
+} from "../api";
 import { hrefOf, Link } from "../router";
 import { Badge, Card, EmptyState, Notice, PageHeader, Select, Spinner, fieldClass } from "../ui";
 import { DataTable, fmtInt, fmtUsd, Tile, Tiles } from "../report/charts";
@@ -52,32 +56,79 @@ function Amount({ usd, native, currency }: { usd: number; native: number | null;
   );
 }
 
+const PERIOD_LABELS: [GrantPeriod, string][] = [
+  ["all", "All time"],
+  ["7d", "Last 7 days"],
+  ["30d", "Last 30 days"],
+  ["90d", "Last 90 days"],
+  ["365d", "Last 365 days"],
+];
+
 export default function GrantsPage() {
   const [data, setData] = useState<Grants | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
+  const [sel, setSel] = useState<GrantSelection>({ period: "all", year: null, quarter: null });
+  const [readAt, setReadAt] = useState<Date | null>(null);
+  const [busy, setBusy] = useState(false);
+  // Keeps the LAST selection the page actually displayed, so a reload triggered by a tab
+  // regaining focus asks for the same window rather than whatever the closure captured.
+  const selRef = useRef(sel);
+  selRef.current = sel;
 
-  useEffect(() => {
-    let live = true;
-    fetchGrants()
-      .then((d) => { if (live) { setData(d); setPicked(d.rows[0]?.uid ?? null); } })
-      .catch((e) => live && setError(e instanceof ApiError ? e.message : "Couldn't load applied funding."));
-    return () => { live = false; };
+  const load = useCallback(async () => {
+    setBusy(true);
+    try {
+      const d = await fetchGrants(selRef.current);
+      setData(d);
+      setReadAt(new Date());
+      setError(null);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Couldn't load applied funding.");
+    } finally {
+      setBusy(false);
+    }
   }, []);
 
+  useEffect(() => { void load(); }, [load, sel]);
+
   /**
-   * Approved first, then pending, then the rest; within each, by deadline descending.
-   * The page's own order — what a reader wants at the top is what has been won, and after
-   * that what is still in play.
+   * RE-READ WHEN THE TAB COMES BACK, which is this page's answer to "the table didn't
+   * change after I edited a bid" (owner, 2026-11-16).
+   *
+   * Every figure here is an aggregate the server computes, and the page used to read them
+   * once on mount. Editing a call in the Streamlit app, or in a second tab, left this one
+   * showing the figures from before the edit with nothing saying they were old. Nothing in
+   * the browser notices a row changing in Postgres, so the honest options are to poll or
+   * to re-read at the moments a reader expects fresh numbers; this takes the second.
+   * `visibilitychange` covers coming back to the tab, `focus` covers returning to the
+   * window with the tab already showing, and the Refresh control covers an edit made with
+   * this page in view the whole time. The caption says when the figures were read, so a
+   * number on screen can always be dated.
    */
-  const ordered = useMemo(() => {
-    if (!data) return [];
-    const rank = (g: GrantRow) => (g.approved ? 2 : g.pending ? 1 : 0);
-    return [...data.rows].sort((a, b) =>
-      rank(b) - rank(a) || String(b.deadline ?? "").localeCompare(String(a.deadline ?? "")));
-  }, [data]);
+  useEffect(() => {
+    const again = () => { if (document.visibilityState === "visible") void load(); };
+    document.addEventListener("visibilitychange", again);
+    window.addEventListener("focus", again);
+    return () => {
+      document.removeEventListener("visibilitychange", again);
+      window.removeEventListener("focus", again);
+    };
+  }, [load]);
+
+  /**
+   * The server already ordered `rows` newest first by the date it filters on, so this page
+   * does not re-sort them. It used to — Approved, then pending, then the rest — which was
+   * this author's guess at what a reader wants at the top and not what was asked for.
+   *
+   * The ordering lives on the server now because TWO things read it: this list and the
+   * picker's default, which took `rows[0]` from the RAW server order while the dropdown
+   * listed the re-sorted one. They disagreed, so opening the page selected a bid from the
+   * middle of the list and the dropdown appeared to have chosen at random.
+   */
+  const ordered = data?.rows ?? [];
 
   const funders = useMemo(() => {
     if (!data) return [];
@@ -92,18 +143,46 @@ export default function GrantsPage() {
 
   if (error) return <EmptyState title="Applied funding is unavailable">{error}</EmptyState>;
   if (!data) return <Spinner label="Loading applied funding…" />;
+
+  const c = data.counts;
+  const periodBar = (
+    <PeriodBar sel={sel} years={data.years} busy={busy} readAt={readAt}
+      hidden={data.hiddenByPeriod} label={data.period.label}
+      onChange={(next) => { setSel(next); setPage(1); setPicked(null); }}
+      onRefresh={() => void load()} />
+  );
+
+  // AN EMPTY WINDOW IS NOT AN EMPTY LOG, and the two need different words. The first is a
+  // filter the reader can clear; the second is a page that has nothing to show yet, and
+  // offering a period picker over it would be absurd.
   if (!data.rows.length) {
     return (
-      <EmptyState icon={<Briefcase size={28} aria-hidden />} title="No bids submitted yet">
-        An application shows up here once it has been <strong>submitted</strong> to a funder —
-        its decision is Approved, Under Review or Not Approved, or its progress is marked
-        <strong> Completed</strong>.
-      </EmptyState>
+      <div className="space-y-6">
+        <PageHeader
+          title="Bids Submitted"
+          lead="Every application sent to a funder — approved, awaiting an answer, and declined."
+        />
+        {data.hiddenByPeriod > 0 && periodBar}
+        <EmptyState icon={<Briefcase size={28} aria-hidden />}
+          title={data.hiddenByPeriod > 0 ? `No bids submitted in ${data.period.label}` : "No bids submitted yet"}>
+          {data.hiddenByPeriod > 0 ? (
+            <>
+              {fmtInt(data.hiddenByPeriod)} submitted {data.hiddenByPeriod === 1 ? "bid falls" : "bids fall"}{" "}
+              outside this window. Widen it above to see them.
+            </>
+          ) : (
+            <>
+              An application shows up here once it has been <strong>submitted</strong> to a funder —
+              its decision is Approved, Under Review or Not Approved, or its progress is marked
+              <strong> Completed</strong>.
+            </>
+          )}
+        </EmptyState>
+      </div>
     );
   }
 
   const g = ordered.find((r) => r.uid === picked) ?? ordered[0];
-  const c = data.counts;
 
   return (
     <div className="space-y-6">
@@ -111,6 +190,8 @@ export default function GrantsPage() {
         title="Bids Submitted"
         lead="Every application sent to a funder — approved, awaiting an answer, and declined."
       />
+
+      {periodBar}
 
       {/* Counts and money on separate rows, as the page has them: a dollar figure beside a
           count invites reading one as the other. */}
@@ -147,10 +228,13 @@ export default function GrantsPage() {
         <div className="mb-3 flex flex-wrap items-end gap-3">
           <label className="min-w-0 flex-1">
             <span className="mb-1 block text-xs font-semibold text-ink-600">Pick an application</span>
+            {/* Newest first, in the server's order — the same order the list is filtered
+                and counted in. The date is on the option because the list is sorted by it
+                and an ordering a reader cannot see is one they will think is broken. */}
             <Select value={g.uid} onChange={(e) => setPicked(e.target.value)}>
               {ordered.map((r) => (
                 <option key={r.uid} value={r.uid}>
-                  {r.title} · {r.uid} · {r.status || dash}
+                  {r.periodDate ?? "undated"} · {r.title} · {r.uid} · {r.status || dash}
                 </option>
               ))}
             </Select>
@@ -176,7 +260,18 @@ export default function GrantsPage() {
             <Fact label="Lead applicant" value={g.leadApplicant} />
             <Fact label="Sub applicant" value={g.subApplicant} />
             <Fact label="Proposal lead" value={g.proposalLead || dash} />
-            <Fact label="Date submitted" value={g.dateSubmitted ?? dash} />
+            {/* The stored column, and then — only when it is empty — what stood in for it
+                in the ordering and the filter. Showing the stand-in as if it were the
+                answer would be a date the app invented. */}
+            <Fact label="Date submitted" value={g.dateSubmitted ?? (
+              g.periodDate
+                ? <span className="text-ink-500">{g.periodDate}{" "}
+                    <span className="text-xs text-ink-400">
+                      ({g.dateSource === "deadline" ? "its deadline" : "logged"}, not recorded)
+                    </span>
+                  </span>
+                : dash
+            )} />
             <Fact label="Funder's decision date" value={g.expectedAward ?? dash} />
             <Fact label="Requested"
               value={<Amount usd={g.usdRequested} native={g.amountRequested} currency={g.requestCurrency} />} />
@@ -275,6 +370,83 @@ export default function GrantsPage() {
         )}
       </Card>
     </div>
+  );
+}
+
+/**
+ * The window every figure on this page was computed for.
+ *
+ * It sits ABOVE the tiles because it governs them (owner, 2026-11-16: "it should be at the
+ * top of the cards so we can filter the cards and everything on that page"). A filter
+ * placed beside the list it obviously narrows, with aggregate tiles above it, invites
+ * exactly the reading it should prevent — that the tiles are the whole log and the list is
+ * a slice of it. Here, everything below changes together.
+ *
+ * The quarter picker appears only once a year is chosen, because "Q2" of a rolling 90-day
+ * window is not a thing and a control that is meaningless half the time teaches people to
+ * ignore it.
+ */
+function PeriodBar({ sel, years, busy, readAt, hidden, label, onChange, onRefresh }: {
+  sel: GrantSelection; years: number[]; busy: boolean; readAt: Date | null;
+  hidden: number; label: string;
+  onChange: (s: GrantSelection) => void; onRefresh: () => void;
+}) {
+  const value = sel.period === "year" && sel.year ? `y${sel.year}` : sel.period;
+  return (
+    <Card className="p-3">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="min-w-0">
+          <span className="mb-1 block text-xs font-semibold text-ink-600">Period</span>
+          <Select
+            value={value}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v.startsWith("y")) onChange({ period: "year", year: Number(v.slice(1)), quarter: null });
+              else onChange({ period: v as GrantPeriod, year: null, quarter: null });
+            }}
+            className="w-48"
+          >
+            {PERIOD_LABELS.map(([k, text]) => <option key={k} value={k}>{text}</option>)}
+            {years.map((y) => <option key={y} value={`y${y}`}>{y}</option>)}
+          </Select>
+        </label>
+
+        {sel.period === "year" && sel.year !== null && (
+          <label className="min-w-0">
+            <span className="mb-1 block text-xs font-semibold text-ink-600">Quarter</span>
+            <Select
+              value={sel.quarter ? String(sel.quarter) : ""}
+              onChange={(e) => onChange({ ...sel, quarter: e.target.value ? Number(e.target.value) : null })}
+              className="w-40"
+            >
+              <option value="">Whole year</option>
+              {[1, 2, 3, 4].map((n) => (
+                <option key={n} value={n}>Q{n} ({["Jan–Mar", "Apr–Jun", "Jul–Sep", "Oct–Dec"][n - 1]})</option>
+              ))}
+            </Select>
+          </label>
+        )}
+
+        <button type="button" onClick={onRefresh} disabled={busy}
+          className="mb-0.5 inline-flex items-center gap-1.5 rounded-lg border border-ink-300 px-3 py-2 text-sm text-ink-700 transition-colors hover:border-accent-600 hover:text-accent-700 disabled:text-ink-300">
+          <RotateCw size={14} aria-hidden className={busy ? "animate-spin" : ""} />
+          {busy ? "Reading…" : "Refresh"}
+        </button>
+
+      </div>
+
+      {/* Its own line rather than squeezed beside the controls: it has to say three
+          separate things — what the window is, that it governs the whole page, and when
+          the figures were read — and a caption nobody finishes reading is one that will
+          not stop somebody comparing a filtered tile with an unfiltered memory. */}
+      <p className="mt-2.5 border-t border-ink-100 pt-2 text-xs text-ink-500">
+        Showing <strong>{label}</strong>, by the date each bid was completed. Every figure
+        on this page is for this window — the tiles, the money, the win rate, the
+        application list and the by-funder table.
+        {hidden > 0 && <> {fmtInt(hidden)} submitted {hidden === 1 ? "bid falls" : "bids fall"} outside it.</>}
+        {readAt && <span className="text-ink-400"> Read at {readAt.toLocaleTimeString()}; it re-reads when you come back to this tab.</span>}
+      </p>
+    </Card>
   );
 }
 

@@ -46,7 +46,134 @@ export const GRANT_FIELDS = [
   "call_submission_deadline", "date_completed", "expected_award_date", "date_of_approval",
   "applicant_role", "lead_applicant", "sub_applicant", "proposal_lead",
   "call_geographic_scope", "opportunity_link", "is_duplicate", "stage",
+  // `submitted_at` is the last resort of the date chain below, not a figure the page
+  // shows: it is when the ROW was created in RFPIS, which for an imported bid is the day
+  // of the import rather than the day of the bid.
+  "submitted_at",
 ].join(",");
+
+// ── When a bid was submitted ─────────────────────────────────────────────────
+
+/**
+ * THE PAGE HAS NO SINGLE "DATE SUBMITTED" COLUMN, and that is why this is a chain rather
+ * than a field read. Measured on the live table, of 19 submitted bids:
+ *
+ *   date_completed            18 / 19   — when the bid was marked Completed. The real one.
+ *   call_submission_deadline  19 / 19   — a submitted bid went in by its deadline.
+ *   submitted_at              19 / 19   — when the ROW was created here. All 2026, because
+ *                                         the history was imported in one go, so it dates
+ *                                         the import and not the bid.
+ *
+ * So the chain is completed → deadline → logged, and which link answered travels with the
+ * row as `dateSource`. The page says so where it matters: ordering and a period filter
+ * both turn on this date, and a reader sorting by "latest" deserves to know that one row's
+ * date is its deadline standing in for a completion nobody recorded.
+ */
+export type DateSource = "completed" | "deadline" | "logged" | "none";
+
+export function submittedOn(r: Row): { date: string | null; source: DateSource } {
+  const completed = s(r.date_completed).slice(0, 10);
+  if (completed) return { date: completed, source: "completed" };
+  const deadline = s(r.call_submission_deadline).slice(0, 10);
+  if (deadline) return { date: deadline, source: "deadline" };
+  const logged = s(r.submitted_at).slice(0, 10);
+  if (logged) return { date: logged, source: "logged" };
+  return { date: null, source: "none" };
+}
+
+// ── The period filter ────────────────────────────────────────────────────────
+
+/**
+ * The windows the page offers. Rolling ones first, then a calendar year, optionally
+ * narrowed to a quarter.
+ *
+ * DELIBERATELY NOT `report_period.ts`. That module is a port of the Report page's own
+ * selectors — "This year", "Specific month", "Last 12 months" — and it exists to agree
+ * with `views/report.py` figure for figure; a parity check pins it. Bending it to carry
+ * 7/30/90/365-day windows and quarters would change what that check is checking. These
+ * are a different page's windows and they answer to nothing in the Python, because Bids
+ * Submitted has no period filter there at all: this is new (owner, 2026-11-16).
+ */
+export const GRANT_PERIODS = ["all", "7d", "30d", "90d", "365d", "year"] as const;
+export type GrantPeriod = (typeof GRANT_PERIODS)[number];
+
+export type GrantSelection = { period: GrantPeriod; year: number | null; quarter: number | null };
+export type GrantBounds = { start: string | null; end: string | null };
+
+const QUARTER_MONTHS: Record<number, [number, number]> = {
+  1: [1, 3], 2: [4, 6], 3: [7, 9], 4: [10, 12],
+};
+const pad = (n: number) => String(n).padStart(2, "0");
+const lastDay = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+
+/**
+ * `today` is passed in rather than read, for the reason report_period.ts gives: a model
+ * with a clock of its own cannot be pinned by a test, and UTC is not the reader's day.
+ *
+ * A rolling window is INCLUSIVE of today and counts back N-1 further days, so "Last 7
+ * days" is a week containing today rather than eight dates. Both ends are inclusive
+ * everywhere, which is also what `inGrantPeriod` assumes.
+ */
+export function grantBounds(sel: GrantSelection, today: string): GrantBounds {
+  const days = { "7d": 7, "30d": 30, "90d": 90, "365d": 365 }[sel.period as string];
+  if (days) {
+    const end = new Date(`${today}T00:00:00Z`);
+    const start = new Date(end.getTime() - (days - 1) * 86400000);
+    return { start: start.toISOString().slice(0, 10), end: today };
+  }
+  if (sel.period === "year" && sel.year) {
+    const [a, b] = sel.quarter && QUARTER_MONTHS[sel.quarter]
+      ? QUARTER_MONTHS[sel.quarter] : [1, 12];
+    return {
+      start: `${sel.year}-${pad(a)}-01`,
+      end: `${sel.year}-${pad(b)}-${pad(lastDay(sel.year, b))}`,
+    };
+  }
+  return { start: null, end: null };
+}
+
+/**
+ * Is this row's date inside the window?
+ *
+ * A row with NO date at all is kept only by "All time". It cannot be shown to belong to a
+ * window, and quietly including it would make the periods fail to sum to the whole — which
+ * is worse than one row being invisible until the filter is cleared.
+ */
+export function inGrantPeriod(date: string | null, b: GrantBounds): boolean {
+  if (!b.start && !b.end) return true;
+  if (!date) return false;
+  if (b.start && date < b.start) return false;
+  if (b.end && date > b.end) return false;
+  return true;
+}
+
+/** What the reader is looking at, in words, for the caption under the controls. */
+export function grantPeriodLabel(sel: GrantSelection): string {
+  switch (sel.period) {
+    case "7d": return "Last 7 days";
+    case "30d": return "Last 30 days";
+    case "90d": return "Last 90 days";
+    case "365d": return "Last 365 days";
+    case "year":
+      if (!sel.year) return "All time";
+      return sel.quarter ? `Q${sel.quarter} ${sel.year}` : String(sel.year);
+    default: return "All time";
+  }
+}
+
+/** The selection a query string asks for, with anything unparseable falling back to all. */
+export function parseGrantSelection(p: URLSearchParams): GrantSelection {
+  const raw = s(p.get("period")).trim().toLowerCase();
+  const period = (GRANT_PERIODS as readonly string[]).includes(raw)
+    ? raw as GrantPeriod : "all";
+  const year = Number(p.get("year"));
+  const quarter = Number(p.get("quarter"));
+  return {
+    period,
+    year: Number.isInteger(year) && year >= 1990 && year <= 2100 ? year : null,
+    quarter: Number.isInteger(quarter) && quarter >= 1 && quarter <= 4 ? quarter : null,
+  };
+}
 
 /**
  * `_submitted` — has this row been sent to a funder?
@@ -123,7 +250,12 @@ export type GrantRow = {
   requestCurrency: string;
   securedCurrency: string;
   deadline: string | null;
+  /** `date_completed` as stored — blank when nobody recorded one. */
   dateSubmitted: string | null;
+  /** The date this page ORDERS and FILTERS by: `submittedOn`'s chain. Never invented. */
+  periodDate: string | null;
+  /** Which link of that chain answered, so the page can say when it is a stand-in. */
+  dateSource: DateSource;
   expectedAward: string | null;
   role: string;
   leadApplicant: string;
@@ -146,6 +278,15 @@ export type GrantsPayload = {
   winRate: number;
   rows: GrantRow[];
   byFunder: FunderRow[];
+  /** What the reader is looking at, and the years they can ask for. */
+  period: { selection: GrantSelection; bounds: GrantBounds; label: string };
+  /**
+   * Every year that has a submitted bid in it, newest first — computed BEFORE the filter,
+   * or choosing 2025 would empty the list that offers 2025.
+   */
+  years: number[];
+  /** Submitted bids outside the window, so a reader can tell a filter from an empty table. */
+  hiddenByPeriod: number;
   /** What each currency converted at, so a reader can check a figure rather than trust it. */
   rates: Record<string, [number | null, string | null]>;
   /**
@@ -191,14 +332,34 @@ const list = (v: unknown): string[] =>
 
 export function buildGrants(input: {
   rfps: Row[]; rates: Record<string, Rate>; table: Currency[]; orgShort: string;
+  selection?: GrantSelection; today?: string;
 }): GrantsPayload {
   const { rfps, rates, table, orgShort } = input;
   // `eq("is_duplicate", False)` in the Python's own fetch. A duplicate is the same call
   // twice, and counting both would inflate every figure on the page.
   const unique = rfps.filter((r) => r.is_duplicate !== true);
-  const active = unique.filter(isSubmitted);
+  const everSubmitted = unique.filter(isSubmitted);
+
+  // THE FILTER IS APPLIED HERE, BEFORE ANYTHING IS COUNTED, and that is the whole point of
+  // doing it on the server. The KPI strip, the money, the win rate, the by-funder table,
+  // the picker and the ledger-gap notice are all derived from `rows` below, so one filter
+  // moves all of them together. A page that filtered its own list would leave the tiles
+  // above it answering a different question.
+  const selection: GrantSelection =
+    input.selection ?? { period: "all", year: null, quarter: null };
+  const today = input.today ?? new Date().toISOString().slice(0, 10);
+  const bounds = grantBounds(selection, today);
+  const active = everSubmitted.filter((r) => inGrantPeriod(submittedOn(r).date, bounds));
+
+  // Offered before the filter, so picking a year never removes that year from the list.
+  const years = [...new Set(everSubmitted
+    .map((r) => submittedOn(r).date)
+    .filter((d): d is string => !!d)
+    .map((d) => Number(d.slice(0, 4))))]
+    .filter((y) => Number.isInteger(y)).sort((a, b) => b - a);
 
   const rows: GrantRow[] = active.map((r) => {
+    const when = submittedOn(r);
     const { lead, sub } = applicants(r, orgShort);
     const reqCur = requestedCurrency(r as { currency_secured?: unknown; currency?: unknown });
     return {
@@ -224,6 +385,8 @@ export function buildGrants(input: {
       securedCurrency: s(r.currency_secured).trim(),
       deadline: s(r.call_submission_deadline).slice(0, 10) || null,
       dateSubmitted: s(r.date_completed).slice(0, 10) || null,
+      periodDate: when.date,
+      dateSource: when.source,
       expectedAward: s(r.expected_award_date).slice(0, 10) || s(r.date_of_approval).slice(0, 10) || null,
       role: s(r.applicant_role).trim(),
       leadApplicant: lead, subApplicant: sub,
@@ -231,6 +394,20 @@ export function buildGrants(input: {
       geography: list(r.call_geographic_scope),
       link: s(r.opportunity_link).trim(),
     };
+  });
+
+  // NEWEST FIRST, by the same date the period filter uses, with undated rows last
+  // (owner, 2026-11-16: "sorted from the latest to the earlier from top to bottom").
+  //
+  // It replaced an Approved-then-pending-then-the-rest ranking, which was this author's
+  // idea of what a reader wants at the top and is not what was asked for. Ordering here
+  // rather than in the page means the picker, the detail panel's neighbours and anything
+  // reading `rows` later cannot disagree about which bid is the most recent.
+  rows.sort((a, b) => {
+    if (!a.periodDate && !b.periodDate) return a.uid.localeCompare(b.uid);
+    if (!a.periodDate) return 1;
+    if (!b.periodDate) return -1;
+    return b.periodDate.localeCompare(a.periodDate) || a.uid.localeCompare(b.uid);
   });
 
   // The KPI strip, SUBMISSION-WEIGHTED throughout. One weight drives the total, each
@@ -291,6 +468,9 @@ export function buildGrants(input: {
     winRate: submitted > 0 ? (approved / submitted) * 100 : 0,
     rows,
     byFunder,
+    period: { selection, bounds, label: grantPeriodLabel(selection) },
+    years,
+    hiddenByPeriod: everSubmitted.length - active.length,
     rates: usedRates,
     ledgerGap: rows.filter((g) => ANSWERED.has(g.decision.toLowerCase()) && g.applications === 0)
       .map((g) => g.uid),

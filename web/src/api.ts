@@ -872,6 +872,10 @@ export type GrantRow = {
   amountRequested: number | null; amountSecured: number | null;
   requestCurrency: string; securedCurrency: string;
   deadline: string | null; dateSubmitted: string | null; expectedAward: string | null;
+  /** The date this page ORDERS and FILTERS by — `date_completed`, else the deadline, else
+   *  the day the row was logged. `dateSource` says which, so a stand-in can be labelled. */
+  periodDate: string | null;
+  dateSource: "completed" | "deadline" | "logged" | "none";
   role: string; leadApplicant: string; subApplicant: string; proposalLead: string;
   geography: string[]; link: string;
 };
@@ -891,9 +895,42 @@ export type Grants = {
   rates: Record<string, [number | null, string | null]>;
   /** Answered rows the weighted count scores as zero. Reported, never repaired. */
   ledgerGap: string[];
+  /** The window every figure above was computed for. */
+  period: {
+    selection: GrantSelection;
+    bounds: { start: string | null; end: string | null };
+    label: string;
+  };
+  /** Years with a submitted bid, newest first — computed before the filter. */
+  years: number[];
+  /** Submitted bids outside the window, so an empty table can be told from no data. */
+  hiddenByPeriod: number;
 };
 
-export const fetchGrants = () => call<Grants>("/grants");
+/** The windows Bids Submitted offers. `year` needs a year; a quarter narrows it. */
+export type GrantPeriod = "all" | "7d" | "30d" | "90d" | "365d" | "year";
+export type GrantSelection = { period: GrantPeriod; year: number | null; quarter: number | null };
+
+/**
+ * Every figure on Bids Submitted for one window.
+ *
+ * The window is a QUERY PARAMETER rather than something the page applies to what it got,
+ * because the tiles, the money, the win rate and the by-funder table are all aggregates
+ * the server computes. Filtering here would leave them answering a different question from
+ * the list underneath them.
+ */
+export const fetchGrants = (sel?: GrantSelection) => {
+  const p = new URLSearchParams();
+  if (sel && sel.period !== "all") {
+    p.set("period", sel.period);
+    if (sel.period === "year" && sel.year) {
+      p.set("year", String(sel.year));
+      if (sel.quarter) p.set("quarter", String(sel.quarter));
+    }
+  }
+  const qs = p.toString();
+  return call<Grants>(`/grants${qs ? `?${qs}` : ""}`);
+};
 
 // ── Meeting Actions ──────────────────────────────────────────────────────────
 //
