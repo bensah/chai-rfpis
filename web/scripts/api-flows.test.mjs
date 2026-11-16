@@ -825,6 +825,58 @@ test("Reviewed holds what a person decided, keyed on when the call was FOUND", a
   assert.deepEqual(earlier.body.rows, []);
 });
 
+test("'being recalculated' follows the job queue, not the save stamps", async () => {
+  // The Reviewed stage used to work this out in the browser, as
+  // `decision_overridden_at > scored_at`. Every save stamps the first and only a save that
+  // touched a scoring input queues a re-score, so recording a decision — which queues
+  // `record_decision`, a job that does not score — left the row spinning for good. Three
+  // live rows had been doing that since 9 November, under scores that were correct.
+  //
+  // The first assertion is the important one: it pins that the OLD test would have said
+  // yes here, so putting the inference back fails this rather than passing quietly.
+  const { call, signIn, db } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const FOUND = "2026-10-22";
+  const dayAfter = "2026-10-23";
+  const reviewed = async () => {
+    const r = await call("GET", `/pipelines/reviewed?from=${FOUND}&to=${dayAfter}`, null, col.token);
+    return r.body.rows.find((x) => x.uid === "R1");
+  };
+
+  const stored = db.tables.rfp_submissions.find((r) => r.uid === "R1");
+  stored.scored_at = "2026-10-22T00:00:00+00:00";
+  stored.score_profile_sig = "sig-1";
+
+  await call("POST", "/pipelines/decision", { uid: "R1", decision: "Park" }, col.token);
+  const after = await reviewed();
+  assert.ok(after.decision_overridden_at > after.scored_at,
+    "the stamps DO read as saved-since-scored, which is why believing them was wrong");
+  assert.equal(db.tables.web_jobs.filter((j) => j.kind === "rescore").length, 0,
+    "a decision queues no re-score — it is a verdict, not an input to the number");
+  assert.equal(after.rescore_pending, false, "so nothing is being recalculated");
+
+  // A re-score genuinely in flight is what the spinner is for.
+  db.tables.web_jobs.push({
+    id: "job-rescore-1", kind: "rescore", status: "running",
+    params: { tenant_id: T1, uid: "R1" }, tenant_id: T1,
+  });
+  assert.equal((await reviewed()).rescore_pending, true);
+
+  // A job that has finished, either way, is not in flight.
+  for (const status of ["done", "failed", "cancelled"]) {
+    db.tables.web_jobs.at(-1).status = status;
+    assert.equal((await reviewed()).rescore_pending, false,
+      `a ${status} job is not a recalculation in progress`);
+  }
+
+  // Another tenant's queued re-score never reaches this one, even on the same uid.
+  db.tables.web_jobs.push({
+    id: "job-rescore-2", kind: "rescore", status: "queued",
+    params: { tenant_id: T2, uid: "R1" }, tenant_id: T2,
+  });
+  assert.equal((await reviewed()).rescore_pending, false);
+});
+
 test("a migrated decision with no decision_date is still a decision", async () => {
   // The bug this route shipped with. 61 of the 83 decided rows on the live table have no
   // `decision_date` — the Excel migration carried the verdict and the rationale but never

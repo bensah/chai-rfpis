@@ -25,6 +25,7 @@ from core.scorer import (
     CRITERIA, criterion_score, default_response, score_submission,
 )
 from core.scorer import decline_flags as _scorer_decline_flags
+from core.score_stamp import editor_score_columns
 from core.records import clean_df, drop_concluded
 from db.supabase_client import get_client, safe_execute
 from views.rfp_editor import render_rfp_editor
@@ -1053,8 +1054,11 @@ else:
             **edited_values,
             "decline_flags_present": decline_in == "Yes",
             "key_risks": (risks_in.strip() or None),
-            "alignment_score": live_score,
-            "auto_recommendation": live_rec,
+            # The LIVE score this screen has been showing, written with both freshness
+            # stamps cleared — it is score_submission's answer, not the job's, and a row
+            # that claimed otherwise is what check-rescore was red on. See
+            # core/score_stamp.py.
+            **editor_score_columns(live_score, live_rec),
             "decision": new_decision,
             "decision_note": new_rationale.strip() or None,
             "donor_engaged": new_engaged,

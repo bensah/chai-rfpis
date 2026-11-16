@@ -21,6 +21,7 @@ import streamlit as st
 
 from core import dropdowns
 from core.scorer import (score_submission, CRITERION_RESPONSES, default_response)
+from core.score_stamp import editor_score_columns
 from core.donor_decision import is_no_answer as _dd_is_no_answer
 
 
@@ -587,8 +588,10 @@ def render_rfp_editor(row: dict, *, sb, user, is_admin: bool = False,
             **vals,
             "decline_flags_present": decline_bool,
             "key_risks": _val(risks_in),
-            "alignment_score": align,
-            "auto_recommendation": rec,
+            # The editor's own coarser number, with no claim that the server computed it:
+            # editor_score_columns nulls scored_at / score_profile_sig in the same write.
+            # See core/score_stamp.py for why this screen scores at all.
+            **editor_score_columns(align, rec),
             "submissions": int(submissions_in) if submissions_in else 1,
             "decision": _val(dec_in),
             "decision_note": _val(rat_in),
