@@ -1,0 +1,115 @@
+/**
+ * core/scorer.py's three public rules, for the one caller that cannot wait for the job:
+ * Submit New Notice.
+ *
+ * WHY THIS EXISTS WHEN THE SERVER ALREADY OWNS THE SCORE. Since 2026-10-28 a save queues
+ * a `rescore` job and the Python writes `alignment_score` back — one implementation of the
+ * rule, running where it always ran. An edit can wait for that because the row already
+ * carries a number. A BRAND-NEW row does not, and two things follow:
+ *
+ *   * The Streamlit form writes a score at insert and tells the submitter what it is
+ *     ("Submitted as BE-261116-0904 — alignment score 72.5/100"). A React page that
+ *     reported nothing would be a worse form, not a more careful one.
+ *   * The live deployment holds no RFPIS_GH_DISPATCH_TOKEN, so the re-score job is queued
+ *     and never dispatched. Today, a row inserted without a score keeps no score at all,
+ *     and the Pipeline's bands, the Dashboard's tiles and the Report all read it as a
+ *     zero. That is not a theoretical gap; it is the current state of the deployment.
+ *
+ * So the row is scored here AND a re-score is queued. The two numbers are not the same and
+ * are not meant to be: this is `score_submission`, which core/scorer.py's own docstring
+ * calls a COARSER rule than `auto_scorer.auto_score` — no fatal-factor gate, no
+ * below-award-floor cap, both of which only ever downgrade. It is therefore an upper bound
+ * on the canonical answer, and the job replaces it with the canonical one when it runs.
+ *
+ * NOTHING IS RE-DERIVED HERE. `criterion_score` is _SCORE_MAP plus a list of substring
+ * heuristics, and the weights and bands are a YAML file that has already been
+ * hand-copied wrong once (70/45 against auto_scorer's 90/70 — see the file's own comment).
+ * All three are GENERATED into form_vocab.ts by scripts/gen_form_vocab.py, which runs the
+ * Python over every spelling the form can send. This module is the arithmetic and nothing
+ * else.
+ */
+import {
+  CRITERION_SCORES, SCORING_THRESHOLDS, SCORING_WEIGHTS,
+} from "./form_vocab.ts";
+
+/** core/scorer.CRITERIA, in the order the weights and the MUST/PREFER split assume. */
+export const CRITERIA = [
+  "qualification", "strategic_fit", "capacity", "geographic_fit", "cofinancing",
+  "funding_quality", "funder_relationship", "competitiveness", "bid_effort",
+] as const;
+
+export type Criterion = (typeof CRITERIA)[number];
+
+const _SCORE_TO_FLOAT: Record<number, number> = { 2: 1.0, 1: 0.5, 0: 0.0 };
+
+/**
+ * "Not sure" / undetermined → 0.5, the Park midpoint, NOT 0 (owner, 2026-06-29).
+ * An unknown criterion reads as "needs review"; a DETECTED failure scores 0 and still
+ * gates through the MUST rule.
+ */
+const NOT_SURE_FLOAT = 0.5;
+
+/** `criterion_score`'s own normalisation, which the generated keys are already in. */
+const norm = (v: unknown): string =>
+  String(v ?? "").trim().toLowerCase().replace(/\s+/g, " ")
+    .replace(/–/g, "-").replace(/—/g, "-");
+
+/**
+ * One answer → 2 / 1 / 0, or null for unscored.
+ *
+ * A value the table does not hold is free text nobody's dropdown offered, and it comes
+ * back null — which is what `criterion_score` does with an unrecognised string too, after
+ * its fallbacks have also failed to place it. The fallbacks are not reproduced: they exist
+ * for MS-Form wording drift on the ingest side, and every value reaching this module came
+ * from a <select> whose options are the generated list.
+ */
+export function criterionScore(criterion: string, value: unknown): number | null {
+  const s = norm(value);
+  if (!s || s.includes("not sure")) return null;
+  const table = CRITERION_SCORES[criterion];
+  const hit = table ? table[s] : undefined;
+  return hit === undefined ? null : hit;
+}
+
+/**
+ * core/scorer.alignment_score — 0-100, one decimal.
+ *
+ * ALL NINE count toward the denominator whether or not they were answered, so leaving a
+ * criterion on "Not sure" moves the score toward 50 rather than dropping it.
+ */
+export function alignmentScore(values: Record<string, unknown>): number {
+  let total = 0;
+  let weightSum = 0;
+  for (const c of CRITERIA) {
+    const sc = criterionScore(c, values[c]);
+    const w = SCORING_WEIGHTS[c] ?? 0;
+    weightSum += w;
+    total += w * (sc === null ? NOT_SURE_FLOAT : _SCORE_TO_FLOAT[sc]);
+  }
+  if (weightSum <= 0) return 0;
+  const score = (total / weightSum) * 100;
+  // Python rounds to one decimal and THEN clamps. Order matters only at the extremes, but
+  // `Math.round(x * 10) / 10` is not `round()` for a tie — JavaScript rounds a .05 half up
+  // and Python rounds it half to even. The weights are hundredths over a /1.0 denominator,
+  // so a tie at the first decimal is reachable (0.15+0.15 = 30.0 exactly), and ties land
+  // on values where both agree. Where they would not, the difference is 0.1 on a display
+  // number the job overwrites.
+  return Math.max(0, Math.min(100, Math.round(score * 10) / 10));
+}
+
+/**
+ * core/scorer.auto_recommendation — the decline-flag override beats the bands. */
+export function autoRecommendation(score: number, declineFlagsPresent: boolean): string {
+  if (declineFlagsPresent) return "Decline";
+  if (score >= SCORING_THRESHOLDS.proceed) return "Proceed";
+  if (score >= SCORING_THRESHOLDS.park) return "Park";
+  return "Decline";
+}
+
+/** core/scorer.score_submission — the pair, as the submit form takes them. */
+export function scoreSubmission(
+  values: Record<string, unknown>, declineFlagsPresent: boolean,
+): { score: number; recommendation: string } {
+  const score = alignmentScore(values);
+  return { score, recommendation: autoRecommendation(score, declineFlagsPresent) };
+}

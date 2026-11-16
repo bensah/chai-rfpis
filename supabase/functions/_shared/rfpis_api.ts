@@ -35,6 +35,7 @@ import { buildGrants, loadGrants } from "./api/grants.ts";
 import { createActionRoutes } from "./api/routes_actions.ts";
 import { loadOrgIdentity } from "./api/report_section2.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
+import { createSubmitRoutes } from "./api/routes_submit.ts";
 import { createSessions } from "./api/session.ts";
 import { createTenants } from "./api/tenants.ts";
 
@@ -73,6 +74,9 @@ export function createApi(env: Env, deps: Deps) {
   const formOptions = createFormOptions(db);
   const report = createReportRoutes(db, jobs.enqueue);
   const actions = createActionRoutes(db);
+  // Submit New Notice queues through the same path too: the insert is this function's,
+  // the seen-ledger tombstone and the share to the global pool are Python's.
+  const submitNotice = createSubmitRoutes(db, jobs.enqueue);
 
   async function route(req: Request, path: string): Promise<Response> {
     const m = req.method;
@@ -144,6 +148,11 @@ export function createApi(env: Env, deps: Deps) {
       const { rfps, rates, table } = await loadGrants(db, ctx.scope);
       return gzipped(req, json(buildGrants({ rfps, rates, table, orgShort: org.short })));
     }
+
+    // Submit New Notice (views/submit_form.py). Open to any signed-in member, and it
+    // never refuses a row for being a duplicate — see api/submit.ts on the 2026-06-05
+    // policy that de-duplication happens at display time instead.
+    if (path === "/submit" && m === "POST") return submitNotice.submit(req, ctx);
 
     if (path === "/pipelines/weeks" && m === "GET") return pipelines.weeks(req, ctx);
     if (path === "/pipelines/screen" && m === "GET") return pipelines.screen(req, ctx);

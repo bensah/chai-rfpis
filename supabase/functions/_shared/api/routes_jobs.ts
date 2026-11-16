@@ -139,7 +139,40 @@ const KINDS: Record<string, JobKind> = {
     allowed: () => true,
     group: (ctx) => `report-export-${tenantOf(ctx)}`,
   },
+
+  /**
+   * The two consequences of a manual submission that live in Python: the seen-ledger
+   * tombstone (`core/seen_ledger`, whose column map is probed from the live table) and the
+   * share to the global opportunity pool (`core/extracted_store`, whose uid is a hash of
+   * the URL that must not be computed a second way). Queued by POST /submit.
+   *
+   * Anyone who can submit can cause its follow-up, so the gate is the route's own: a
+   * signed-in member. Both halves are best-effort in the Streamlit form and stay so here —
+   * the row is already saved when this runs.
+   *
+   * SHARES THE DECISION GROUP, per row, for the reason `delete_rfp` does: this writes
+   * `rfp_seen` for a uid, and so do a decision and a delete on that same uid. Serialised,
+   * whichever loses simply finds the row in the state the other left it. Different rows do
+   * not wait on each other, which matters because GitHub CANCELS a third pending run in a
+   * group rather than queueing it — a Friday of hand-captured calls would otherwise lose
+   * every tombstone but the last two.
+   */
+  submit_followup: {
+    allowed: () => true,
+    group: (ctx, _id, params) => `decision-${tenantOf(ctx)}-${subject(params)}`,
+  },
 };
+
+/**
+ * The kinds this function will queue, for the parity check that compares them against
+ * `scripts/run_web_job.py::KINDS`.
+ *
+ * A kind on one side only is a silent failure in whichever direction it goes: queued here
+ * and unknown to the runner, the job row sits `queued` for ever with nothing to say why;
+ * known to the runner and absent here, `enqueue` returns null and the caller is told
+ * "unknown job kind" for work that exists.
+ */
+export const jobKinds = (): string[] => Object.keys(KINDS);
 
 const JOB_COLUMNS = "id,kind,status,progress,message,result,created_at,started_at,finished_at,run_url,created_by,tenant_id";
 

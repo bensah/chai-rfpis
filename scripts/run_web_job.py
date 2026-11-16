@@ -338,12 +338,98 @@ def _export_report_xlsx(job: JobRow, params: dict, runner: str) -> dict:
     return _run(job, params, runner)
 
 
+def _submit_followup(job: JobRow, params: dict, runner: str) -> dict:
+    """What a manual submission does AFTER the row is inserted — the Python half.
+
+    `views/submit_form.py` runs both of these inline, each inside its own bare `except`,
+    straight after the insert. The React route cannot, and neither can be guessed at from
+    TypeScript:
+
+      * `seen_ledger.record_one` writes the permanent tombstone the SCAN reads, so the
+        call is remembered and never silently re-ingested even if the row is later
+        deleted. `seen_ledger.column_map()` probes the live rfp_seen table to learn
+        whether it carries the modern or the legacy column spelling and falls back to
+        identity-only columns when neither answers. A wrong guess writes no tombstone
+        while reporting success.
+      * `extracted_store.upsert_extracted` shares the call to the GLOBAL pool so every
+        other tenant's eligibility scan can match it against their own preferences. Its
+        uid is `make_uid(url, name)`, a hash; computing it a second way in another
+        language would key the same call twice and put it in the pool twice.
+
+    BEST-EFFORT, exactly as the form is. The submitter's row is already saved when this
+    runs, so neither failure is theirs to see, and raising here would mark a job failed
+    over work the Streamlit app also treats as optional. Both outcomes are REPORTED in the
+    result instead, because "tombstoned: false" is how anyone finds out why a call the team
+    already captured turned up in next Friday's scan.
+
+    params: {"tenant_id": required, "uid": required, "pool": optional record or null}
+
+    Prints counts and nothing else: this log is public (the repository is).
+    """
+    from auth.tenant_context import reset_tenant_override, set_tenant_override
+
+    tenant_id = str(params.get("tenant_id") or (job.get() or {}).get("tenant_id") or "").strip()
+    uid = str(params.get("uid") or "").strip()
+    if not tenant_id:
+        raise ValueError("submit_followup needs a tenant_id")
+    if not uid:
+        raise ValueError("submit_followup needs a uid")
+
+    # Both modules read the AMBIENT tenant through get_client, so the whole body runs
+    # inside the override — a tombstone written against the wrong tenant suppresses
+    # somebody else's opportunity, which is worse than not writing one.
+    token = set_tenant_override(tenant_id)
+    try:
+        from db.supabase_client import get_client
+        sb = get_client()
+        job.progress(10, "Loading")
+        # Read the row back rather than trust the params. It is the truth, the tombstone is
+        # built from its identity columns, and a submission since deleted is nothing to
+        # record.
+        rows = sb.table("rfp_submissions").select("*").eq("uid", uid).execute().data or []
+        if not rows:
+            return {"found": False, "tombstoned": False, "shared": None, "runner": runner}
+        row = dict(rows[0])
+
+        job.progress(40, "Recording")
+        tombstoned = True
+        try:
+            from core import seen_ledger
+            seen_ledger.record_one(row, reason="manual")
+        except Exception as exc:
+            tombstoned = False
+            print(f"  seen_ledger failed ({type(exc).__name__}) — the scan may re-find this")
+
+        # Two conditions, each checked where it is known. The route sends `pool: null` for
+        # a call with no URL, because the pool's uid is made from the URL and a record
+        # without one is refused anyway. Whether multi-tenancy is on at all is an
+        # environment fact the Edge Function does not hold, so it is read here.
+        job.progress(70, "Sharing")
+        shared = None
+        pool = params.get("pool")
+        if isinstance(pool, dict) and pool:
+            try:
+                from auth.tenant_context import multitenant_enabled
+                if multitenant_enabled():
+                    from core import extracted_store
+                    shared = extracted_store.upsert_extracted(dict(pool))
+            except Exception as exc:
+                print(f"  pool share failed ({type(exc).__name__}) — this call stays local")
+
+        job.progress(100, "Recorded")
+        return {"found": True, "tombstoned": tombstoned, "shared": bool(shared),
+                "runner": runner}
+    finally:
+        reset_tenant_override(token)
+
+
 KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "ping": _ping,
     "rescore": _rescore,
     "record_decision": _record_decision,
     "delete_rfp": _delete_rfp,
     "export_report_xlsx": _export_report_xlsx,
+    "submit_followup": _submit_followup,
 }
 
 

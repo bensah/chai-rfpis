@@ -954,3 +954,59 @@ export const patchEngagement = (id: string, patch: Record<string, unknown>) =>
 export const putSchedule = (schedule: RotaEntry[]) =>
   call<{ ok: true; count: number }>("/actions/schedule",
     { method: "PUT", body: JSON.stringify({ schedule }) });
+
+// ── Submit New Notice ────────────────────────────────────────────────────────
+
+/** What the form sends. Every key optional: the server validates, not the client. */
+export type SubmitPayload = {
+  title: string;
+  opportunityId?: string;
+  funder?: string;
+  brief?: string;
+  datePosted?: string;
+  deadline?: string;
+  awardDate?: string;
+  applicantRole?: string;
+  fundingWindow?: string;
+  timeToAward?: string;
+  submissionFormat?: string;
+  link?: string;
+  value?: string;
+  currency?: string;
+  duration?: string;
+  focusTheme?: string;
+  leadApplicant?: string;
+  subApplicant?: string;
+  geo?: string[];
+  programAreas?: string[];
+  criteria?: Record<string, string>;
+  feasibility?: string;
+  declineFlags?: boolean;
+  keyRisks?: string;
+  decision?: string;
+  rationale?: string;
+  proposalLead?: string;
+  contributors?: string[];
+  reviewers?: string[];
+};
+
+export type SubmitResult = {
+  uid: string;
+  alignmentScore: number;
+  autoRecommendation: string;
+  /** The deadline has already passed and nothing marks the bid submitted — the page
+   *  prompts for the one field that stops it reading as a missed opportunity. */
+  needsSubmissionCheck: boolean;
+  warnings: Warning[];
+};
+
+/**
+ * Capture one opportunity. Never refused for being a duplicate — that policy is the
+ * server's and the reasoning is in api/submit.ts.
+ *
+ * `offsetMinutes` is sent, not read from the server, because the UID carries the
+ * submitter's own date and minute the way the Streamlit app's does. The clock stays the
+ * server's; only the zone comes from here.
+ */
+export const submitNotice = (payload: SubmitPayload) =>
+  post<SubmitResult>("/submit", { ...payload, offsetMinutes: -new Date().getTimezoneOffset() });

@@ -48,109 +48,13 @@ import {
   type FormOptions, type Warning,
 } from "../api";
 import { awaitJob, JOB_STATUS_LABEL } from "../jobs";
-import MultiSelect from "../components/MultiSelect";
-import { Button, IconButton, Notice, Select, Spinner, fieldClass } from "../ui";
+import { Button, IconButton, Notice, Spinner } from "../ui";
+// The form controls are shared with Submit New Notice — see ./controls.tsx.
+import { Choice, DateBox, Lbl, Multi, Num, Row, Text } from "./controls";
 import {
   changedColumns, columnValue, dateText, numText, orNull, readRow, txt,
   type Form, type FormValue,
 } from "./values";
-
-// ── Small controls ───────────────────────────────────────────────────────────
-
-function Row({ children, cols = 2 }: { children: React.ReactNode; cols?: 2 | 3 | 4 }) {
-  const c = cols === 4 ? "sm:grid-cols-4" : cols === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2";
-  return <div className={`grid grid-cols-1 gap-x-4 ${c}`}>{children}</div>;
-}
-
-function Lbl({ children, hint }: { children: React.ReactNode; hint?: string }) {
-  return (
-    <div className="mb-1.5 text-sm font-medium text-ink-700" title={hint}>{children}</div>
-  );
-}
-
-function Text({ label, value, onChange, hint, area, required }: {
-  label: string; value: string; onChange: (v: string) => void;
-  hint?: string; area?: boolean; required?: boolean;
-}) {
-  return (
-    <div className="mb-4">
-      <Lbl hint={hint}>{label}{required && <span className="text-bad-600"> *</span>}</Lbl>
-      {area
-        ? <textarea className={`${fieldClass} min-h-24`} value={value}
-            onChange={(e) => onChange(e.target.value)} />
-        : <input className={fieldClass} value={value}
-            onChange={(e) => onChange(e.target.value)} />}
-      {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
-    </div>
-  );
-}
-
-function Num({ label, value, onChange, step = "1", hint }: {
-  label: string; value: string; onChange: (v: string) => void; step?: string; hint?: string;
-}) {
-  return (
-    <div className="mb-4">
-      <Lbl hint={hint}>{label}</Lbl>
-      <input type="number" min="0" step={step} className={fieldClass} value={value}
-        onChange={(e) => onChange(e.target.value)} />
-      {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
-    </div>
-  );
-}
-
-function DateBox({ label, value, onChange, hint }: {
-  label: string; value: string; onChange: (v: string) => void; hint?: string;
-}) {
-  return (
-    <div className="mb-4">
-      <Lbl hint={hint}>{label}</Lbl>
-      <input type="date" className={fieldClass} value={value}
-        onChange={(e) => onChange(e.target.value)} />
-      {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
-    </div>
-  );
-}
-
-/**
- * A controlled vocabulary, with one rule worth stating: a value already on the row that is
- * NOT in the list stays selectable. `_opt` and `_type_select` both do this, and it is not
- * politeness — a row carrying a value an older vocabulary allowed would otherwise be
- * silently rewritten to something else the moment anyone opened the editor on it.
- */
-function Choice({ label, value, onChange, options, hint, blank = "—" }: {
-  label: string; value: string; onChange: (v: string) => void;
-  options: string[]; hint?: string; blank?: string;
-}) {
-  const opts = useMemo(() => {
-    const list = [...new Set(options)];
-    return value && !list.includes(value) ? [...list, value] : list;
-  }, [options, value]);
-  return (
-    <div className="mb-4">
-      <Lbl hint={hint}>{label}</Lbl>
-      <Select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">{blank}</option>
-        {opts.map((o) => <option key={o} value={o}>{o}</option>)}
-      </Select>
-      {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
-    </div>
-  );
-}
-
-function Multi({ label, value, onChange, options, hint }: {
-  label: string; value: string[]; onChange: (v: string[]) => void;
-  options: string[]; hint?: string;
-}) {
-  // Same rule as Choice: stored values the vocabulary has since dropped stay selected.
-  const opts = useMemo(
-    () => [...new Set([...options, ...value])], [options, value]);
-  return (
-    <div className="mb-4">
-      <MultiSelect label={label} options={opts} value={value} onChange={onChange} help={hint} />
-      {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
-    </div>
-  );
-}
 
 // ── The nine criteria ────────────────────────────────────────────────────────
 
