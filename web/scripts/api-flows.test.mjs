@@ -825,6 +825,44 @@ test("Reviewed holds what a person decided, keyed on when the call was FOUND", a
   assert.deepEqual(earlier.body.rows, []);
 });
 
+test("a read that fails is not served as an empty catalogue", async () => {
+  // routes_phase1 used to wrap nearly every read in `.catch(() => [])`, so a database that
+  // could not be reached produced a rail reading "Nothing to feature yet — run an
+  // extraction": a statement about the user's pipeline, made when nobody had asked it.
+  //
+  // It cost a parity failure to notice. check-scoring reported
+  // `ts-rail.featured: python=5 ts=0` on 2026-11-16 and would not reproduce — one
+  // transient read of extracted_solicitations, served as an empty catalogue.
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const ok = await call("GET", "/opportunities/feed", null, col.token);
+  assert.equal(ok.status, 200, "the rail answers normally to begin with");
+
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("extracted_solicitations")) throw new TypeError("fetch failed");
+    return real(url, init);
+  };
+  let broken;
+  try {
+    broken = await call("GET", "/opportunities/feed", null, col.token);
+  } finally {
+    globalThis.fetch = real;
+  }
+  assert.equal(broken.status, 502,
+    "a catalogue that cannot be read is not a catalogue with nothing in it");
+  assert.match(broken.body.error, /could not be reached/);
+  assert.equal(broken.body.featured, undefined,
+    "and no card list is served alongside the failure for a page to draw");
+
+  // The point of the distinction: an EMPTY table still answers 200 with empty cards, as it
+  // always did. `.catch` only ever fired when the read itself broke.
+  const empty = await call("GET", "/opportunities/feed", null, col.token);
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body.featured, [], "no rows in the catalogue is a real, quiet answer");
+});
+
 test("'being recalculated' follows the job queue, not the save stamps", async () => {
   // The Reviewed stage used to work this out in the browser, as
   // `decision_overridden_at > scored_at`. Every save stamps the first and only a save that

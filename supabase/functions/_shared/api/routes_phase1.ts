@@ -14,6 +14,30 @@
  * measurably a different number from the one it shows.
  *
  * Both ports are held to the Python by web/scripts/parity/check-scoring.mjs.
+ *
+ * A FAILED READ IS NOT AN EMPTY TABLE, and this file used to say it was. Nearly every read
+ * below carried `.catch(() => [])`, so a database that could not be reached produced a rail
+ * reading "Nothing to feature yet — run an extraction" and a Dashboard of zeroes: the user
+ * was told a fact about their pipeline when the truth was that nobody had asked it.
+ *
+ * It cost a parity failure to notice. On 2026-11-16 `check-scoring` reported
+ * `ts-rail.featured: python=5 ts=0` for one tenant and would not reproduce — a transient
+ * read of `extracted_solicitations` had been served as an empty catalogue. The check saw a
+ * difference in the ranking rule; there was none.
+ *
+ * So these routes let a read fail. `rfpis_api.ts` already turns any unhandled throw into a
+ * 502 "The database could not be reached. Try again.", and both readers already render it
+ * — `OpportunityRail.tsx` as "Opportunity feed unavailable: …", `HomePage.tsx` as a warning
+ * notice. The catches were defeating an error path that already worked.
+ *
+ * Note what this does NOT change: a table with no rows in it still returns `[]` with no
+ * error, as it always did. `.catch` only ever fired when the read itself broke. `snapshot`
+ * below could not have been saved by its catches in any case — `donor_intel` has never had
+ * one, so one `Promise.all` rejection already failed the whole request.
+ *
+ * The one deliberate exception is the catalogue join in `opportunity`, marked where it sits:
+ * it is a best-effort second lookup whose failure means "no extraction found", which is a
+ * state the page already draws honestly.
  */
 import { q, type Db } from "./db.ts";
 import { json, gzipped, str } from "./http.ts";
@@ -84,18 +108,17 @@ export function createPhase1Routes(db: Db) {
     const tid = db.scopeTid(ctx.scope);
     const [policies, donors, tenantRow, programs, tenants, currencies] = await Promise.all([
       db.service.get("tenant_settings",
-        `select=value&tenant_id=eq.${q(tid)}&key=eq.scan_policies&limit=1`).catch(() => []),
+        `select=value&tenant_id=eq.${q(tid)}&key=eq.scan_policies&limit=1`),
       sb.get("donor_intel", "select=*"),
-      db.service.get("tenants", `select=name,org_profile,org_identity&id=eq.${q(tid)}&limit=1`).catch(() => []),
-      db.service.get("users", "select=program&is_active=eq.true").catch(() => []),
+      db.service.get("tenants", `select=name,org_profile,org_identity&id=eq.${q(tid)}&limit=1`),
+      db.service.get("users", "select=program&is_active=eq.true"),
       db.service.get("tenants",
-        "select=id,name,slug,status,parent_tenant_id,share_for_consortium_scoring&status=neq.blacklisted")
-        .catch(() => []),
+        "select=id,name,slug,status,parent_tenant_id,share_for_consortium_scoring&status=neq.blacklisted"),
       // The currencies this tenant's rows actually use — the only rates worth fetching.
       // getAll, because `limit=2000` was a lie: PostgREST caps a response at 1000 and says
       // nothing. A currency only used by row 1001 would have had no rate, and every amount
       // in it would have gone unconverted.
-      sb.getAll("rfp_submissions", "select=currency,uid", "uid").catch(() => []),
+      sb.getAll("rfp_submissions", "select=currency,uid", "uid"),
     ]);
     const row = (tenantRow[0] ?? {}) as Json;
     return gzipped(req, json({
@@ -277,8 +300,7 @@ export function createPhase1Routes(db: Db) {
   async function feed(req: Request, ctx: Ctx): Promise<Response> {
     const sb = db.as(ctx.scope);
     const [pipeline, catalog, links] = await Promise.all([
-      sb.get("rfp_submissions", `select=${PIPELINE_FIELDS}&order=created_at.desc&limit=800`)
-        .catch(() => [] as Json[]),
+      sb.get("rfp_submissions", `select=${PIPELINE_FIELDS}&order=created_at.desc&limit=800`),
       // Not tenant-scoped, by design: the shared catalogue is what makes a screening miss
       // recoverable. It holds no tenant data.
       //
@@ -288,11 +310,11 @@ export function createPhase1Routes(db: Db) {
       // newest 1000 by scraped_at is a sound basis and paging the whole catalogue would
       // grow this payload without end. The bound is now the real one, stated.
       db.service.get("extracted_solicitations",
-        `select=${CATALOG_FIELDS}&order=scraped_at.desc&limit=1000`).catch(() => [] as Json[]),
+        `select=${CATALOG_FIELDS}&order=scraped_at.desc&limit=1000`),
       // getAll, unlike the catalogue above: this is the set of calls already in the
       // pipeline, and the rail subtracts it to decide what is NEW. A short read here does
       // not rank anything badly, it offers the user a call they have already screened.
-      sb.getAll("rfp_submissions", "select=opportunity_link,uid", "uid").catch(() => [] as Json[]),
+      sb.getAll("rfp_submissions", "select=opportunity_link,uid", "uid"),
     ]);
     return gzipped(req, json({
       pipeline, catalog,
@@ -317,15 +339,17 @@ export function createPhase1Routes(db: Db) {
     const sb = db.as(ctx.scope);
     const tid = db.scopeTid(ctx.scope);
     const [pipeline, catalog, links, policyRow, tenantRow] = await Promise.all([
-      sb.get("rfp_submissions", `select=${PIPELINE_FIELDS}&order=created_at.desc&limit=800`)
-        .catch(() => [] as Json[]),
+      sb.get("rfp_submissions", `select=${PIPELINE_FIELDS}&order=created_at.desc&limit=800`),
       db.service.get("extracted_solicitations",
-        `select=${CATALOG_FIELDS}&order=scraped_at.desc&limit=1000`).catch(() => [] as Json[]),
-      sb.getAll("rfp_submissions", "select=opportunity_link,uid", "uid")
-        .catch(() => [] as Json[]),
+        `select=${CATALOG_FIELDS}&order=scraped_at.desc&limit=1000`),
+      sb.getAll("rfp_submissions", "select=opportunity_link,uid", "uid"),
+      // Policy and profile both legitimately have no row, which is `[]` and not an error.
+      // A read that BREAKS, though, would rank the whole rail against default policies and
+      // present the result as this tenant's own — plausible, different, and unreadable as
+      // wrong from the page.
       db.service.get("tenant_settings",
-        `select=value&tenant_id=eq.${q(tid)}&key=eq.scan_policies&limit=1`).catch(() => []),
-      db.service.get("tenants", `select=org_profile&id=eq.${q(tid)}&limit=1`).catch(() => []),
+        `select=value&tenant_id=eq.${q(tid)}&key=eq.scan_policies&limit=1`),
+      db.service.get("tenants", `select=org_profile&id=eq.${q(tid)}&limit=1`),
     ]);
 
     const profile = ((tenantRow[0] ?? {}).org_profile ?? null) as Json | null;
@@ -349,9 +373,8 @@ export function createPhase1Routes(db: Db) {
   async function opportunity(req: Request, ctx: Ctx, uid: string): Promise<Response> {
     const sb = db.as(ctx.scope);
     const [pipelineRows, catalogRows] = await Promise.all([
-      sb.get("rfp_submissions", `select=*&uid=eq.${q(uid)}&limit=1`).catch(() => [] as Json[]),
-      db.service.get("extracted_solicitations", `select=*&uid=eq.${q(uid)}&limit=1`)
-        .catch(() => [] as Json[]),
+      sb.get("rfp_submissions", `select=*&uid=eq.${q(uid)}&limit=1`),
+      db.service.get("extracted_solicitations", `select=*&uid=eq.${q(uid)}&limit=1`),
     ]);
     const pipelineRow = pipelineRows[0] ?? null;
 
@@ -364,6 +387,11 @@ export function createPhase1Routes(db: Db) {
     if (link) {
       const bare = link.replace(/^https?:\/\//, "");
       for (const pattern of [link, `%${bare}%`]) {
+        // THE ONE CATCH LEFT IN THIS FILE, and it earns its place. This is a best-effort
+        // SECOND lookup — the row is already in hand and drawn; this only tries to attach
+        // the fuller extraction behind it. "Could not be matched" and "there is no
+        // extraction" land the page in the same honest state, which it already draws, so
+        // failing the whole request over it would cost the reader the row they asked for.
         const hits = await db.service.get("extracted_solicitations",
           `select=*&opportunity_url=ilike.${q(pattern)}&limit=5`).catch(() => [] as Json[]);
         extraction = hits.find((r) =>
