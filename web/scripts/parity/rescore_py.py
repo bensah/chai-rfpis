@@ -111,6 +111,29 @@ def both_paths(row: dict, org: dict, org_set: dict, donors: list[dict]) -> dict:
     return out
 
 
+# The row shapes the TypeScript side asks about. Kept HERE so both halves are answering
+# about the same bytes, and answered by the Python's own predicate rather than by a list
+# of expectations written down twice — a shared fixture with two hand-written answer keys
+# is two things to keep in step, which is the problem this check exists to solve.
+HUMAN_CASES = [
+    {"decision_date": "2026-11-16"},
+    {"decision_date": "2026-11-16", "decision": "Proceed"},
+    {"decision_overridden_by": "ben@x.org"},
+    {"decision_overridden_by": "ben@x.org", "decision": "Proceed"},
+    {"decision_overridden_by": "ben@x.org", "decision": ""},
+    {"decision": "Proceed"},
+    {"decision_date": "", "decision_overridden_by": "   ", "decision": "Proceed"},
+    {"decision_date": None, "decision_overridden_by": None, "decision": None},
+    {},
+]
+
+
+def human_cases() -> list[bool]:
+    """What `core.score_stamp.human_assessed` answers for each shape above."""
+    from core.score_stamp import human_assessed
+    return [bool(human_assessed(r)) for r in HUMAN_CASES]
+
+
 def human_markers() -> list[str]:
     """`core.score_stamp.ASSESSED_BY_A_HUMAN` — the columns the re-score job's skip is
     keyed on, which `pipeline_writes.ts` must answer the same question with. Read from the
@@ -128,6 +151,7 @@ def main() -> None:
     report: dict = {}
     report_sig: dict = {}
     report_markers = human_markers()
+    report_cases = human_cases()
     for t in tenants:
         tid = str(t["id"])
         tok = tc.set_tenant_override(tid)
@@ -151,7 +175,9 @@ def main() -> None:
         finally:
             tc.reset_tenant_override(tok)
     sys.stdout.write(json.dumps({"rows": report, "current_profile_sig": report_sig,
-                                 "human_markers": report_markers},
+                                 "human_markers": report_markers,
+                                 "human_cases": HUMAN_CASES,
+                                 "human_answers": report_cases},
                                 default=str))
 
 

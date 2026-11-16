@@ -41,7 +41,10 @@ const root = path.resolve(here, "../../..");
 const venv = path.join(root, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
 const python = process.env.RFPIS_PYTHON || (existsSync(venv) ? venv : "python");
 
-const { rows: report, current_profile_sig: sigs, human_markers: markers } = JSON.parse(
+const {
+  rows: report, current_profile_sig: sigs, human_markers: markers,
+  human_cases: HUMAN_CASES, human_answers: humanWant,
+} = JSON.parse(
   execFileSync(python, [path.join(here, "rescore_py.py"), process.argv[2] ?? "120"],
     { encoding: "utf8", maxBuffer: 1 << 28, cwd: root }));
 
@@ -54,38 +57,38 @@ const EPSILON = 0.05;
 const moved = (a, b) => a !== null && b !== null && Math.abs(a - b) >= EPSILON;
 
 let failures = 0;
+let pinFailures = 0;
 
 // ── 0. The two apps must agree on what "a human assessed this" means ─────────
 // Since dcea067 the re-score job DECLINES a row a person has assessed, and PATCH
-// /pipelines/rfp has to answer the same question before the job does — it decides whether
-// to tell the editor a recalculation is coming. A column added on one side only would have
-// the job quietly declining a row the API has just promised to recalculate, which is a
-// number that never moves and no message saying why.
+// /pipelines/rfp answers the same question before the job does — it decides whether to
+// tell the editor a recalculation is coming. Drift means the job quietly declining a row
+// the API has just promised to recalculate: a number that never moves, with no message.
+//
+// BOTH HALVES ARE CHECKED, because the names alone are not the rule. The list is the
+// columns the predicate READS and the rule over them is a conjunction, so a port could
+// carry all three names and still answer differently — which is exactly what this port's
+// first draft did (any-of, and `decision_overridden_by` is stamped by every save).
 {
   const ts = [...W.ASSESSED_BY_A_HUMAN].sort();
   if (JSON.stringify(ts) !== JSON.stringify(markers)) {
-    failures++;
-    console.log("DIFF what counts as a human assessment"
+    pinFailures++;
+    console.log("DIFF the columns that decide whether a human assessed a row"
       + `
    ts: ${JSON.stringify(ts)}
    py: ${JSON.stringify(markers)}`);
-  } else {
-    console.log(`human-assessment markers agree: ${ts.join(", ")}`);
   }
-  // And the predicate itself, on the shapes a row actually arrives in.
-  const cases = [
-    [{ decision_date: "2026-11-16" }, true],
-    [{ decision_overridden_by: "ben@x.org" }, true],
-    [{ decision_date: null, decision_overridden_by: null }, false],
-    [{ decision_date: "", decision_overridden_by: "   " }, false],
-    [{}, false],
-    [{ decision: "Proceed" }, false],
-  ];
-  for (const [row, want] of cases) {
-    if (W.humanAssessed(row) !== want) {
-      failures++;
-      console.log(`DIFF humanAssessed(${JSON.stringify(row)}) = ${W.humanAssessed(row)}, want ${want}`);
+  // The answers, on the shapes that tell the three candidate rules apart. Compared against
+  // the PYTHON's own predicate over the same rows rather than against a list written here.
+  for (const [i, row] of HUMAN_CASES.entries()) {
+    const got = W.humanAssessed(row);
+    if (got !== humanWant[i]) {
+      pinFailures++;
+      console.log(`DIFF humanAssessed(${JSON.stringify(row)}) = ${got}, python says ${humanWant[i]}`);
     }
+  }
+  if (!pinFailures) {
+    console.log(`human-assessment rule agrees: ${ts.join(", ")}, over ${HUMAN_CASES.length} row shapes`);
   }
 }
 
@@ -169,7 +172,15 @@ if (moves.size) {
 console.log("  Cause: _evaluate derives criteria without auto_score's _apply_criteria_keywords pass.");
 console.log("  Nothing the server writes uses this path; the CLI re-score still does.");
 
+// TWO FAILURE KINDS, COUNTED AND WORDED APART. They shared one counter and one sentence,
+// so a drifted predicate printed "1 stored scores claim to be current and are not" — a
+// true number attached to the wrong claim, which is the sort of thing this check exists to
+// stop the APP doing. Caught by the session that wrote the Python half.
 console.log(failures
   ? `\n${failures} stored scores claim to be current and are not.`
   : "\nNo stored score claims to be current while disagreeing with a fresh computation.");
-process.exit(failures ? 1 : 0);
+if (pinFailures) {
+  console.log(`${pinFailures} disagreement${pinFailures === 1 ? "" : "s"} with `
+    + "core/score_stamp.py about what counts as a human assessment.");
+}
+process.exit(failures || pinFailures ? 1 : 0);
