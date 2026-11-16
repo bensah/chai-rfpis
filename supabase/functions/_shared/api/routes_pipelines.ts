@@ -374,10 +374,13 @@ export function deadlinePassed(row: Json, today: string): boolean {
 }
 
 /** `web_jobs.status` values that mean the job has not finished, one way or the other. */
-const JOB_IN_FLIGHT = ["queued", "dispatched", "running"];
+const JOB_IN_FLIGHT = new Set(["queued", "dispatched", "running"]);
+
+/** Where a row's score stands with the job that was supposed to produce it. */
+export type RescoreState = "pending" | "failed";
 
 /**
- * The uids with a re-score still outstanding, so a page can say a number is about to move.
+ * How far the last re-score got, per uid, so a page can say what a number is worth.
  *
  * ASK THE QUEUE, NOT THE STAMPS. The Reviewed stage used to decide this in the browser, by
  * comparing `decision_overridden_at` against `scored_at`: saved since it was scored, so a
@@ -397,28 +400,55 @@ const JOB_IN_FLIGHT = ["queued", "dispatched", "running"];
  * UPDATE timestamp and files nothing by it — evidence that somebody saved, not that
  * anything about the row moved. The browser was reading it as the second thing.
  *
- * One read, on `web_jobs_kind_status` (migration 099), scoped to the tenant by its own
- * column. The caller intersects the result with rows it has already scoped, so this can
- * only ever flag a row the reader can already see.
+ * TWO STATES, BECAUSE A FAILED RE-SCORE IS NOT THE SAME AS NO RE-SCORE. A job that was
+ * dispatched and then died leaves the row holding a number from before the edit that
+ * queued it, and the first version of this function reported that row as perfectly settled
+ * — quieter than the bug it replaced, and wrong in the direction that matters more. The
+ * save-time path warns when the ENQUEUE fails (`rescore_not_queued`); nothing covered a
+ * job that started and died, which is the case the dispatch-token outage produced.
+ *
+ * THE LATEST JOB PER ROW DECIDES, which is why `done` rows are read rather than filtered
+ * out in the query: a failure that a later run already put right is not worth a warning,
+ * and without the successes there is no way to tell one from a live failure. Newest first,
+ * first-seen wins, and a `done` or `cancelled` job yields no state at all.
+ *
+ * One read on `web_jobs_tenant_created` (migration 099), scoped to the tenant by the job's
+ * own column and bounded — a row whose jobs are all older than the window gets no state,
+ * which is the same safe direction as a queue that cannot be read at all. The caller
+ * intersects the result with rows it has already scoped, so this can only ever mark a row
+ * the reader can already see.
  */
-export async function pendingRescoreUids(db: Db, tid: string): Promise<Set<string>> {
-  const out = new Set<string>();
+const RESCORE_JOB_WINDOW = 500;
+
+export async function rescoreStateByUid(
+  db: Db, tid: string,
+): Promise<Map<string, RescoreState>> {
+  const out = new Map<string, RescoreState>();
   // The placeholder scope stores no tenant on the job, so there is nothing to match on.
   if (!tid || /^0{8}-/.test(tid)) return out;
   const rows = await db.service.get("web_jobs",
-    `select=params&kind=eq.rescore&status=in.(${JOB_IN_FLIGHT.join(",")})` +
-    `&tenant_id=eq.${q(tid)}`)
-    // A queue that cannot be read means NO spinner, and that direction is deliberate. A
-    // missing spinner understates that something is moving, for the minute the job takes;
-    // a wrong one asserts a recalculation that is not happening, which is the fault being
-    // fixed here. Jobs that never reached the runner are already `failed` rather than
-    // `queued` (routes_jobs.enqueue), so this does not inherit the bug that once reported
-    // four failed jobs as two queued ones.
+    `select=params,status&kind=eq.rescore&tenant_id=eq.${q(tid)}` +
+    `&order=created_at.desc&limit=${RESCORE_JOB_WINDOW}`)
+    // A queue that cannot be read means NO badge of either kind, and that direction is
+    // deliberate: saying nothing understates what is going on, while asserting a
+    // recalculation that is not happening — or a failure that did not occur — is the class
+    // of fault this whole function exists to end. Jobs that never reached the runner are
+    // already `failed` rather than `queued` (routes_jobs.enqueue), so a dispatch outage
+    // now shows as a failure rather than as the permanent "queued" it once did.
     .catch(() => [] as Json[]);
+  // Rows whose latest job has been read already. Separate from `out` because a `done` job
+  // settles a row by putting NOTHING in the result, and a Map cannot say "decided, nothing
+  // to report" — without this, an older failure underneath a success would be found.
+  const decided = new Set<string>();
   for (const r of rows) {
     const params = r.params && typeof r.params === "object" ? r.params as Json : null;
     const uid = str(params?.uid).trim();
-    if (uid) out.add(uid);
+    if (!uid || decided.has(uid)) continue;    // newest first, so the first seen is the latest
+    decided.add(uid);
+    const status = str(r.status).trim();
+    if (JOB_IN_FLIGHT.has(status)) out.set(uid, "pending");
+    else if (status === "failed") out.set(uid, "failed");
+    // `done` and `cancelled` say the row is settled, and settled rows are not reported.
   }
   return out;
 }
@@ -968,13 +998,13 @@ export function createPipelineRoutes(db: Db) {
     const decided = all.filter((r) => str(r.decision).trim() !== "");
 
     const reviewToday = new Date().toISOString().slice(0, 10);
-    // Whether each row's score is about to move, answered by the job queue rather than
-    // inferred from the save stamps — see `pendingRescoreUids`. Served as a field because
-    // the browser cannot ask: `web_jobs` is the server's, and the client guessing at it
-    // from `decision_overridden_at` is precisely the bug this replaces. Read BEFORE the
-    // map below, for the same reason that filter is: once a `Json` is spread into an
-    // object literal its index signature is gone and `r.uid` with it.
-    const pending = await pendingRescoreUids(db, db.scopeTid(ctx.scope));
+    // Where each row's score stands with the job meant to produce it, answered by the job
+    // queue rather than inferred from the save stamps — see `rescoreStateByUid`. Served as
+    // a field because the browser cannot ask: `web_jobs` is the server's, and the client
+    // guessing at it from `decision_overridden_at` is precisely the bug this replaces.
+    // Read BEFORE the map below, for the same reason that filter is: once a `Json` is
+    // spread into an object literal its index signature is gone and `r.uid` with it.
+    const rescore = await rescoreStateByUid(db, db.scopeTid(ctx.scope));
     const dated = decided
       // decidedOn is the LAST resort, not a peer: a row with no found date at all (an
       // old migrated one) still belongs on this stage somewhere, and dropping it would
@@ -1000,7 +1030,7 @@ export function createPipelineRoutes(db: Db) {
       })
       .map((r) => ({
         ...r, decided_on: decidedOn(r), found_on: foundOn(r) ?? decidedOn(r),
-        rescore_pending: pending.has(str(r.uid).trim()),
+        rescore_state: rescore.get(str(r.uid).trim()) ?? null,
       }))
       .filter((r) => r.found_on);
     // Half-open, matching web/src/pipeline/period.ts, so consecutive windows tile exactly

@@ -181,6 +181,10 @@ export type ScreenRow = {
   donor_decision?: string | null;
 };
 
+/** Where a row's score stands with the job meant to produce it. Null, or absent on an
+ *  older API, means settled: the stored number is the one the server computed. */
+export type RescoreState = "pending" | "failed";
+
 /**
  * Is a re-score actually on its way for this row?
  *
@@ -198,12 +202,24 @@ export type ScreenRow = {
  * had been spinning since 9 November under scores that were correct and settled.
  *
  * The queue is the only thing that knows, and the queue is the server's, so the server now
- * answers it: `rescore_pending`, from `routes_pipelines.pendingRescoreUids`. A row served
- * by an older API has no such field and simply does not spin, which is the right way for
- * this to degrade.
+ * answers it: `rescore_state`, from `routes_pipelines.rescoreStateByUid`. A row served by
+ * an older API has no such field and simply does not spin, which is the right way for this
+ * to degrade.
  */
-export const scoreIsBehind = (r: { rescore_pending?: boolean | null }) =>
-  r.rescore_pending === true;
+export const scoreIsBehind = (r: { rescore_state?: RescoreState | null }) =>
+  r.rescore_state === "pending";
+
+/**
+ * Did the re-score this row was waiting for die?
+ *
+ * A separate question from the one above and a louder one. A job that was dispatched and
+ * then failed leaves the row holding a number from BEFORE the edit that queued it, with
+ * nothing in flight to replace it — so a page that only knew about `pending` would show
+ * that number as settled. The save-time path warns when the enqueue itself fails; this is
+ * the case where it started and died, which is what the dispatch-token outage produced.
+ */
+export const rescoreFailed = (r: { rescore_state?: RescoreState | null }) =>
+  r.rescore_state === "failed";
 
 export type Weeks = {
   year: number;
@@ -233,11 +249,10 @@ export type ReviewedRow = ScreenRow & {
    *  `submitted_at`. Resolved by the API so the page does not own a second opinion about
    *  which period a decision belongs to. */
   decided_on: string;
-  /** A `rescore` job for this row is queued, dispatched or running, so the score on screen
-   *  is about to be replaced. Answered from the job queue by the API — see `scoreIsBehind`
-   *  for why the page cannot work this out from the save stamps. Optional because an older
-   *  API does not send it. */
-  rescore_pending?: boolean;
+  /** How the last `rescore` job for this row ended: still in flight, or dead. Answered
+   *  from the job queue by the API — see `scoreIsBehind` for why the page cannot work this
+   *  out from the save stamps. Null when the row is settled; absent on an older API. */
+  rescore_state?: RescoreState | null;
 };
 
 export type Reviewed = {

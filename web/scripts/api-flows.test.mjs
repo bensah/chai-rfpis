@@ -853,28 +853,46 @@ test("'being recalculated' follows the job queue, not the save stamps", async ()
     "the stamps DO read as saved-since-scored, which is why believing them was wrong");
   assert.equal(db.tables.web_jobs.filter((j) => j.kind === "rescore").length, 0,
     "a decision queues no re-score — it is a verdict, not an input to the number");
-  assert.equal(after.rescore_pending, false, "so nothing is being recalculated");
+  assert.equal(after.rescore_state, null, "so the row is settled, and says nothing");
 
   // A re-score genuinely in flight is what the spinner is for.
   db.tables.web_jobs.push({
     id: "job-rescore-1", kind: "rescore", status: "running",
     params: { tenant_id: T1, uid: "R1" }, tenant_id: T1,
+    created_at: "2026-11-16T10:00:00+00:00",
   });
-  assert.equal((await reviewed()).rescore_pending, true);
+  assert.equal((await reviewed()).rescore_state, "pending");
 
-  // A job that has finished, either way, is not in flight.
-  for (const status of ["done", "failed", "cancelled"]) {
+  // A job that finished cleanly settles the row and says nothing.
+  for (const status of ["done", "cancelled"]) {
     db.tables.web_jobs.at(-1).status = status;
-    assert.equal((await reviewed()).rescore_pending, false,
+    assert.equal((await reviewed()).rescore_state, null,
       `a ${status} job is not a recalculation in progress`);
   }
 
+  // A job that STARTED AND DIED is the case the first version of this missed: nothing is
+  // in flight, and the number on screen predates the edit that queued the job.
+  db.tables.web_jobs.at(-1).status = "failed";
+  assert.equal((await reviewed()).rescore_state, "failed",
+    "a dead re-score is not the same as no re-score");
+
+  // A later run that succeeded puts the failure to rest — which is why `done` jobs are
+  // read rather than filtered out of the query.
+  db.tables.web_jobs.push({
+    id: "job-rescore-2", kind: "rescore", status: "done",
+    params: { tenant_id: T1, uid: "R1" }, tenant_id: T1,
+    created_at: "2026-11-16T11:00:00+00:00",
+  });
+  assert.equal((await reviewed()).rescore_state, null,
+    "the latest job decides, so a repaired failure stops warning");
+
   // Another tenant's queued re-score never reaches this one, even on the same uid.
   db.tables.web_jobs.push({
-    id: "job-rescore-2", kind: "rescore", status: "queued",
+    id: "job-rescore-3", kind: "rescore", status: "queued",
     params: { tenant_id: T2, uid: "R1" }, tenant_id: T2,
+    created_at: "2026-11-16T12:00:00+00:00",
   });
-  assert.equal((await reviewed()).rescore_pending, false);
+  assert.equal((await reviewed()).rescore_state, null);
 });
 
 test("a migrated decision with no decision_date is still a decision", async () => {
