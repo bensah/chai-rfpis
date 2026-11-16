@@ -111,6 +111,15 @@ def both_paths(row: dict, org: dict, org_set: dict, donors: list[dict]) -> dict:
     return out
 
 
+def human_markers() -> list[str]:
+    """`core.score_stamp.ASSESSED_BY_A_HUMAN` — the columns the re-score job's skip is
+    keyed on, which `pipeline_writes.ts` must answer the same question with. Read from the
+    module rather than retyped: a column added on one side only would have the job
+    declining a row the API has just told the editor is being recalculated."""
+    from core.score_stamp import ASSESSED_BY_A_HUMAN
+    return sorted(ASSESSED_BY_A_HUMAN)
+
+
 def main() -> None:
     sb = service_client()
     donors = sb.table("donor_intel").select("*").limit(5000).execute().data or []
@@ -118,6 +127,7 @@ def main() -> None:
                .execute().data or [])
     report: dict = {}
     report_sig: dict = {}
+    report_markers = human_markers()
     for t in tenants:
         tid = str(t["id"])
         tok = tc.set_tenant_override(tid)
@@ -140,7 +150,8 @@ def main() -> None:
             report[t.get("slug") or tid] = [both_paths(r, org, org_set, donors) for r in rows]
         finally:
             tc.reset_tenant_override(tok)
-    sys.stdout.write(json.dumps({"rows": report, "current_profile_sig": report_sig},
+    sys.stdout.write(json.dumps({"rows": report, "current_profile_sig": report_sig,
+                                 "human_markers": report_markers},
                                 default=str))
 
 

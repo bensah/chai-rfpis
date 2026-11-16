@@ -280,6 +280,10 @@ export default function RfpEditor({
         );
         row = res.row;
         notes.push(...(res.warnings ?? []));
+        // Only when a recalculation is ACTUALLY coming. On a row somebody has assessed,
+        // the job declines and the route says so in its own warning instead — see
+        // pipeline_writes.ts. Claiming a recalculation and then not moving the number is
+        // how a reader comes to distrust every figure on the page.
         if (res.rescore) {
           notes.push({
             code: "rescoring",
