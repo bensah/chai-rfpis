@@ -44,12 +44,10 @@ from typing import Any
 # in tests/test_editor_saves_do_not_stamp.py reads them from here.
 STAMP_COLUMNS = ("scored_at", "score_profile_sig")
 
-# The columns that mean "a person has assessed this row". `decision_date` is the flag the
-# rest of the app reads that way — `web/src/api.ts` and
-# `supabase/functions/_shared/api/pipeline_writes.ts` both say so in as many words, and it
-# is stamped only by a human decision. `decision_overridden_by` catches the Streamlit
-# editor, which stamps the author on every save whether or not a decision date is set.
-ASSESSED_BY_A_HUMAN = ("decision_date", "decision_overridden_by")
+# The columns `human_assessed` reads. NOT an any-of list — see the rule in the function.
+# Pinned against the TypeScript copy in `supabase/functions/_shared/api/pipeline_writes.ts`
+# by check-rescore, so the two halves of the app cannot drift on what "assessed" means.
+ASSESSED_BY_A_HUMAN = ("decision_date", "decision_overridden_by", "decision")
 
 
 def human_assessed(row: dict[str, Any]) -> bool:
@@ -67,15 +65,51 @@ def human_assessed(row: dict[str, Any]) -> bool:
     auto-scoring only when the existing row has no alignment_score ... Otherwise human
     work wins"); this restores the same rule on the job that took scoring over.
 
-    THE PROXY IS THE DECISION, NOT THE CRITERIA, and that is a limitation worth naming:
-    nothing records WHO set a criterion. `scan_pipeline` writes the nine columns at scan
-    time and both Streamlit editors write them on save, so a reader cannot tell a human
-    answer from the scan's own earlier output. The one unambiguous human channel is
+    THE RULE: a decision date, or a person's save on a row that carries a decision.
+
+        decision_date                              -> assessed
+        decision_overridden_by AND decision        -> assessed
+        anything else                              -> not
+
+    NEITHER COLUMN WORKS ALONE, and the first draft of this used `decision_overridden_by`
+    on its own and was wrong. Measured over 271 live rows on 2026-11-16:
+
+        decision_date alone        exempts 31, and covers 2 of the 5 rows this rule was
+                                   written for. It is stamped by POST /pipelines/decision
+                                   and by the Review screen, but NOT by `views/rfp_editor.py`
+                                   — so an assessment recorded in the editor, which is where
+                                   three of those five came from, looks like a scan row.
+        decision_overridden_by     exempts 56, covers all five, and decays: BOTH apps stamp
+        alone                      it on every save of any field (pipeline_writes.ts:343,
+                                   rfp_editor.py:616), so it means "somebody edited this
+                                   once". 29 rows are exempt on the strength of a save
+                                   rather than a decision, and that number grows with every
+                                   edit anyone makes.
+        decision alone             exempts 92, but 33 of those carry no human marker at
+                                   all: the engine writes this column too, which is why
+                                   `web/src/api.ts` warns that a decision without a date is
+                                   the engine's, not a person's.
+
+    The conjunction keeps all five and bounds the decay: a save only confers the exemption
+    on a row that already holds a decision, so an untouched scan row cannot drift into it,
+    and `views/rfp_editor.py` now stamps `decision_date` the first time a reviewer records
+    a decision. As that reaches the rows people actually edit, `decision_date` becomes the
+    whole answer and the second clause can go.
+
+    THE PROXY IS THE DECISION, NOT THE CRITERIA, and that is the real limitation: nothing
+    records WHO set a criterion. `scan_pipeline` writes the nine columns at scan time and
+    both Streamlit editors write them on save, so a reader cannot tell a human answer from
+    the scan's own earlier output. The one unambiguous human channel is
     `criteria_component_overrides`, which only the Review screen writes — 5 rows of 271.
     Until a human answer carries provenance, a recorded decision is the best available
     evidence that a person has been through this row.
     """
-    return any(str((row or {}).get(c) or "").strip() for c in ASSESSED_BY_A_HUMAN)
+    row = row or {}
+
+    def _set(column: str) -> bool:
+        return bool(str(row.get(column) or "").strip())
+
+    return _set("decision_date") or (_set("decision_overridden_by") and _set("decision"))
 
 
 def editor_score_columns(score: float | None, rec: str | None) -> dict[str, Any]:
