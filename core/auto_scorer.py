@@ -3272,6 +3272,26 @@ def auto_score(
     # the derivation against the RFP text (see policies['criteria']).
     values = _apply_criteria_keywords(values, text, policies)
 
+    # A PERSON'S ANSWER BEATS THE DERIVATION, where the row records that a person gave one
+    # (migration 102, core.criteria_provenance). Everything above is an inference from the
+    # org profile, donor intel and the call text; a reviewer who has read the call and
+    # answered the question is better evidence than any of it, which is what
+    # `criteria_derive.apply_component_overrides` already says about the component-level
+    # half of this.
+    #
+    # ONLY the criteria a human actually answered. The stored columns as a whole are NOT
+    # consulted and must not be: the scan writes them too, so seeding from them would
+    # freeze the scan's own guesses and stop a profile edit reaching the score — measured
+    # at 178 of 271 rows moving, 16 of them onto a different recommendation. The
+    # provenance record is what separates the two, and it is why this is an overlay of a
+    # named few rather than a different base.
+    try:
+        from core import criteria_provenance as _prov
+        for _k, _answer in _prov.answers(candidate).items():
+            values[_k] = _answer
+    except Exception:
+        pass
+
     # DECLINE-FLAG RULE (owner, 2026-08-17) — now `scorer.decline_flags`, which carries
     # the rule and the reasoning. It moved there because the rule has a second caller:
     # any screen that shows the LIVE derivation has to recompute the flag from the values

@@ -22,6 +22,7 @@ import streamlit as st
 from core import dropdowns
 from core.scorer import (score_submission, CRITERION_RESPONSES, default_response)
 from core.score_stamp import editor_score_columns
+from core import criteria_provenance
 from core.donor_decision import is_no_answer as _dd_is_no_answer
 
 
@@ -631,6 +632,16 @@ def render_rfp_editor(row: dict, *, sb, user, is_admin: bool = False,
         # silent re-dating that rule forbids.
         if update.get("decision") and not str(row.get("decision_date") or "").strip():
             update["decision_date"] = date.today().isoformat()
+        # WHO ANSWERED WHICH CRITERION (migration 102). The nine dropdowns above are a
+        # person's answers, and until this column existed the scorer could not tell them
+        # from the scan's own output in the same columns — so `auto_score` re-derived over
+        # them and, once the server owned the score, wrote its answer over the reviewer's.
+        # `record` returns only what this save actually CHANGED, and None when nothing did,
+        # so an untouched criterion is never claimed as anybody's and the column is left
+        # out of the update entirely on a save that moved no criterion.
+        _prov = criteria_provenance.record(row, vals, user.get("email"))
+        if _prov is not None:
+            update[criteria_provenance.COLUMN] = _prov
         # NO SILENT DEFAULT HERE ANY MORE (owner, 2026-08-17). This used to force
         # donor_decision to "Under Review" whenever Progress was Completed and the answer was
         # blank. The intent was right - a Completed row with no donor decision leaves Tracking
