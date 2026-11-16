@@ -131,9 +131,12 @@ def record(
       * `views/submit_form.py` passes THE FORM'S OWN DEFAULTS, because an insert has no row
         to compare against and every value would otherwise look answered. Its `_crit`
         pre-selects "Not sure" where the vocabulary has one and the first option where it
-        does not — `bid_effort`, which therefore starts at the BEST answer. Against that
-        baseline a submitter who answered nothing records nothing, which is the same rule
-        and the same reason, with the right "before" for the screen.
+        does not. Against that baseline a submitter who answered nothing records nothing,
+        which is the same rule and the same reason, with the right "before" for the screen.
+        (Until 2026-11-17 `bid_effort` had no "Not sure" and so opened on the BEST answer,
+        and this baseline was the only thing stopping an untouched one being recorded as a
+        submitter's assertion. The vocabulary gained one; the baseline is what made that a
+        tidy-up rather than a fix.)
 
     Existing entries are kept: a criterion a reviewer answered last week is still theirs
     when somebody edits a different one today. An entry is dropped only when this save
