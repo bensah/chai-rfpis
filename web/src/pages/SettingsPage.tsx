@@ -1,8 +1,14 @@
 /**
- * Settings (app_pages/admin.py). Phase 0 builds the tab structure and two pieces:
- * Accounts → Active tenant (render_active_tenant) and, for the super_user, a test of the
- * background-job loop under Accounts → Deployment. Every other tab links to the classic app
- * until its phase lands.
+ * Settings (app_pages/admin.py). ALL EIGHT TABS ARE BUILT — Setup, Users, Sources,
+ * Records, Scan, Analytics, Suggestions and Archive, plus the Accounts sub-tabs. The
+ * ClassicPage below this is a fallback that nothing reaches today; it is kept for a tab
+ * added to the list before its panel exists, because showing the classic page is a better
+ * failure there than a blank tab.
+ *
+ * ACCOUNTS → DEPLOYMENT IS NOT A PORT. It reports what the *Edge Function* runtime is
+ * configured with, which is the half `core/env_diag.py` cannot see from the Python
+ * process — the two panels are meant to be read side by side when a deployment and a
+ * laptop disagree about the data.
  */
 import { useEffect, useState } from "react";
 import {
@@ -110,7 +116,8 @@ export default function SettingsPage({ user, classicUrl, shell }: {
         ) : (
           <>
             <Tabs tabs={acctTabs} active={acct} onPick={setAcct} variant="quiet" />
-            {/* Deployment shows the job test and, under it, the classic link for env_diag. */}
+            {/* Deployment, in the order somebody debugs: what this runtime holds, whether
+                the contact address resolves, then a live round-trip of the job loop. */}
             <div className="mt-5 space-y-6">
               {acct === "Active tenant" && <ActiveTenant user={user} />}
               {acct === "Users" && <UsersTab />}
