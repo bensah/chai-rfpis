@@ -11,7 +11,9 @@
 import { q, type Db } from "./db.ts";
 import { body, HttpError, json, str } from "./http.ts";
 import type { Json } from "./jwt.ts";
-import { isAdmin, isDeveloperAdmin, isSuperUser, type PermUser } from "./permissions.ts";
+import {
+  isAdmin, isDeveloperAdmin, isDeveloperSuper, isSuperUser, type PermUser,
+} from "./permissions.ts";
 import type { Ctx } from "./session.ts";
 
 export type Dispatch = (jobId: string, group: string) => Promise<void>;
@@ -243,6 +245,25 @@ const KINDS: Record<string, JobKind> = {
   excel_sync: {
     allowed: (u) => isAdmin(u),
     group: (ctx) => `excel-sync-${tenantOf(ctx)}`,
+  },
+
+  /**
+   * Settings → Suggestions: applying one proposal to a SHARED catalogue.
+   *
+   * `core/suggestions.approve` intersects the diff with a per-resource column allow-list
+   * and writes into donor_intel or donor_sources — tables every tenant's scan reads. A
+   * TypeScript version of those rules would be a second set of opinions about shared
+   * data, where the first cannot see it.
+   *
+   * DEVELOPER-TENANT SUPER ONLY, and the runner re-establishes that from the users table
+   * rather than trusting the params: by the time a job runs, the only record of who
+   * asked is what was written down.
+   *
+   * GROUPED PER SUGGESTION, so a double-click cannot apply one proposal twice.
+   */
+  suggestion_review: {
+    allowed: async (u, ctx) => isDeveloperSuper(u, await ctx.homeIsDeveloper()),
+    group: (_c, _id, params) => `suggestion-${str(params?.suggestion_id)}`,
   },
 };
 

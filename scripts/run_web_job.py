@@ -721,6 +721,68 @@ def _excel_sync(job: JobRow, params: dict, runner: str) -> dict:
     }
 
 
+def _suggestion_review(job: JobRow, params: dict, runner: str) -> dict:
+    """Settings → Suggestions: approve or reject one proposal to a SHARED resource.
+
+    WHY THIS IS A JOB AND NOT A ROUTE. `core.suggestions.approve` resolves the target
+    row, intersects the proposed diff with a per-resource column allow-list, derives a
+    slug key from the live table and then writes into donor_intel or donor_sources —
+    tables every tenant's scan and scoring read. A second implementation of those rules
+    in TypeScript would be a second set of opinions about shared data, sitting where the
+    first set cannot see it, and the failure would be a quietly wrong donor record rather
+    than an error.
+
+    THE GATE IS CHECKED TWICE, and deliberately. The route requires a developer-tenant
+    super_user before queueing, and `approve`/`reject` call `_require_dev_super`
+    themselves. The second check is not redundant: a job row carries params, and params
+    are data — by the time the runner picks it up, the only evidence of who asked is what
+    was written down, so the function re-establishes it from the user record rather than
+    trusting the queue.
+
+    An UNKNOWN DECISION is refused rather than defaulted. There is no safe default
+    between applying somebody's change to a shared catalogue and discarding it.
+    """
+    from core import suggestions as sug
+
+    suggestion_id = str(params.get("suggestion_id") or "").strip()
+    decision = str(params.get("decision") or "").strip().lower()
+    by = str(params.get("by") or "").strip()
+    note = params.get("note")
+    if not suggestion_id:
+        raise ValueError("suggestion_review needs a suggestion_id")
+    if decision not in ("approve", "reject"):
+        raise ValueError(f"suggestion_review: unknown decision {decision!r}")
+    if not by:
+        raise ValueError("suggestion_review needs the reviewer's email")
+
+    # The reviewer as the permission layer understands them — read from the users table,
+    # not reconstructed from the job params. `_require_dev_super` inside approve/reject
+    # then asks the same question of the same record the UI did.
+    from db.supabase_client import service_client
+    rows = (service_client().table("users")
+            .select("id,email,name,role,is_active,access_overrides")
+            .eq("email", by).limit(1).execute().data or [])
+    if not rows:
+        raise ValueError(f"suggestion_review: no account for {by}")
+    user = rows[0]
+
+    job.progress(20, f"{decision.title()}ing the suggestion")
+    if decision == "approve":
+        res = sug.approve(suggestion_id, user)
+    else:
+        res = sug.reject(suggestion_id, user, note=str(note) if note else None)
+
+    job.progress(100, f"{decision.title()}d")
+    return {
+        "decision": decision,
+        "suggestion_id": suggestion_id,
+        "status": str((res or {}).get("status") or decision),
+        "summary": (f"Suggestion {decision}d."
+                    + (" The shared record has been updated." if decision == "approve"
+                       else " Nothing was changed.")),
+    }
+
+
 KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "ping": _ping,
     "rescore": _rescore,
@@ -734,6 +796,8 @@ KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "scan_screen": _scan_screen,
     "scan_extract": _scan_extract,
     "excel_sync": _excel_sync,
+    # Settings → Suggestions: applying a proposal to a SHARED catalogue.
+    "suggestion_review": _suggestion_review,
 }
 
 

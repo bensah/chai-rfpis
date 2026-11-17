@@ -41,6 +41,7 @@ import { createOrgSetupRoutes } from "./api/routes_org_setup.ts";
 import { createUserRoutes } from "./api/routes_users.ts";
 import { createRecordRoutes } from "./api/routes_records.ts";
 import { systemDiscoveryStats, tenantActivity, userStats } from "./api/analytics.ts";
+import { createPlatformRoutes } from "./api/routes_platform.ts";
 import { createProfileRoutes } from "./api/routes_profile.ts";
 import { createSearchRoutes } from "./api/routes_search.ts";
 import { createSubmitRoutes } from "./api/routes_submit.ts";
@@ -108,6 +109,9 @@ export function createApi(env: Env, deps: Deps) {
   // Settings → Records: one route over several tables, and the TABLE IS NAMED BY THE
   // CLIENT — so it names a spec key, never a table. See api/routes_records.ts.
   const records = createRecordRoutes(db);
+  // Settings → Sources, Learning data and Suggestions: the three surfaces whose
+  // resources belong to every tenant, so none is scoped to the viewer's own.
+  const platform = createPlatformRoutes(db, jobs.enqueue);
   // Profile: self-service only, and every route keyed on the session's own id.
   const profile = createProfileRoutes(db, deps);
 
@@ -232,6 +236,21 @@ export function createApi(env: Env, deps: Deps) {
         systemDiscoveryStats(db), tenantActivity(db), userStats(db),
       ]);
       return json({ discovery, tenants: tenantRows, users });
+    }
+
+    if (path === "/settings/sources" && m === "GET") return platform.sources(req, ctx);
+    if (path === "/settings/sources/blocked" && m === "PUT") return platform.putBlocked(req, ctx);
+    if (path === "/settings/learning" && m === "GET") return platform.learning(req, ctx);
+    if (path === "/settings/suggestions" && m === "GET") return platform.suggestions(req, ctx);
+    {
+      // /settings/suggestions/<id>/(approve|reject) — matched on segments, as the users
+      // routes are, so an id is never confused with the action that follows it.
+      const seg = path.startsWith("/settings/suggestions/")
+        ? path.slice("/settings/suggestions/".length).split("/") : [];
+      if (seg.length === 2 && m === "POST"
+          && (seg[1] === "approve" || seg[1] === "reject")) {
+        return platform.review(req, ctx, decodeURIComponent(seg[0]), seg[1]);
+      }
     }
 
     if (path === "/settings/records" && m === "GET") return records.read(req, ctx);

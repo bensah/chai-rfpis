@@ -16,6 +16,7 @@ import UsersTab from "../settings/UsersTab";
 import RecordsTab from "../settings/RecordsTab";
 import ScanTab from "../settings/ScanTab";
 import AnalyticsTab from "../settings/AnalyticsTab";
+import { LearningTab, SourcesTab, SuggestionsTab } from "../settings/PlatformTabs";
 import { hrefOf } from "../router";
 import {
   Badge, Button, Card, Eyebrow, LinkButton, Notice, PageHeader, Select,
@@ -80,6 +81,12 @@ export default function SettingsPage({ user, classicUrl }: { user: User; classic
           <ScanTab user={user} />
         ) : tab === "Analytics" ? (
           <AnalyticsTab />
+        ) : tab === "Sources" ? (
+          <SourcesTab />
+        ) : tab === "Learning data" ? (
+          <LearningTab />
+        ) : tab === "Suggestions" ? (
+          <SuggestionsTab />
         ) : tab === "Archive" ? (
           <Archive />
         ) : tab !== "Accounts" ? (

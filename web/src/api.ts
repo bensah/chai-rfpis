@@ -1416,6 +1416,52 @@ export type PlatformAnalytics = {
 
 export const fetchAnalytics = () => call<PlatformAnalytics>("/settings/analytics");
 
+// ── Settings → Sources, Learning data, Suggestions ───────────────────────────
+//
+// The three DEVELOPER surfaces. What they have in common is what puts them together:
+// everything on them belongs to every tenant, not to the organisation whose Settings
+// page is open, so each is gated on developer-tenant membership rather than a role.
+
+export type SourcesData = {
+  catalog: Record<string, unknown>[];
+  blocked: { pattern: string; reason: string | null }[];
+  canEditCatalog: boolean;
+  canEditBlocked: boolean;
+  /** Why the catalogue is read-only for this viewer, when it is. */
+  note: string | null;
+};
+
+export type LearningData = {
+  /** Exact over the whole table, NOT derived from `recent` — see the route. */
+  total: number;
+  counts: Record<string, number>;
+  reasons: Record<string, number>;
+  recent: Record<string, unknown>[];
+  windowSize: number;
+  note: string;
+};
+
+export type SuggestionsData = {
+  pending: Record<string, unknown>[];
+  /** False for anybody but a developer-tenant super_user; `pending` is then empty. */
+  canReview: boolean;
+  count: number;
+};
+
+/** A review is QUEUED, never applied in the request — the runner holds the rules. */
+export type ReviewQueued = { job_id: string; dispatched: boolean; detail: string };
+
+export const fetchSources = () => call<SourcesData>("/settings/sources");
+export const saveBlockedTokens = (rows: { pattern: string; reason: string }[]) =>
+  put<{ rows: { pattern: string; reason: string | null }[]; removed: number }>(
+    "/settings/sources/blocked", { rows });
+export const fetchLearning = () => call<LearningData>("/settings/learning");
+export const fetchSuggestions = () => call<SuggestionsData>("/settings/suggestions");
+export const approveSuggestion = (id: string) =>
+  post<ReviewQueued>(`/settings/suggestions/${encodeURIComponent(id)}/approve`);
+export const rejectSuggestion = (id: string, note?: string) =>
+  post<ReviewQueued>(`/settings/suggestions/${encodeURIComponent(id)}/reject`, { note });
+
 export const fetchSetup = () => call<OrgSetup>("/settings/setup");
 export const saveSetupIdentity = (form: Record<string, unknown>) =>
   put<SetupSaved>("/settings/setup/identity", form);
