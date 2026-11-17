@@ -224,6 +224,7 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/settings/setup/identity" && m === "PUT") return orgSetup.putIdentity(req, ctx);
     if (path === "/settings/setup/profile" && m === "PUT") return orgSetup.putProfile(req, ctx);
     if (path === "/settings/setup/team" && m === "PUT") return orgSetup.putTeam(req, ctx);
+    if (path === "/settings/setup/logo" && m === "PUT") return orgSetup.putLogo(req, ctx);
 
     /**
      * Settings → Analytics — the cross-tenant platform rollups.

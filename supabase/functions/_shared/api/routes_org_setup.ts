@@ -35,9 +35,10 @@ import type { Ctx } from "./session.ts";
 import { coerceOverlay, loadOrg } from "./org.ts";
 import { loadNameConfig } from "./report_names.ts";
 import {
-  cleanPortalUrl, cleanTeam, derivedIdentity, identityFields, mergedIdentity, notPersisted,
-  profileFields, renameImplied, renameOutcome, seedPartners, setOrgFields, stripDerived,
-  teamNames, VERIFIED_FIELDS,
+  base64Bytes, cleanPortalUrl, cleanTeam, derivedIdentity, identityFields, logoProblem,
+  LOGO_MAX_BYTES, LOGO_MIME_TYPES, mergedIdentity, notPersisted, profileFields,
+  renameImplied, renameOutcome, seedPartners, setOrgFields, strippedBase64, stripDerived,
+  teamNames, VERIFIED_FIELDS, withLogo,
 } from "./org_setup.ts";
 import {
   AREA_TAXONOMY, BOARD_OPTIONS, CATEGORY_FULL, COFINANCING_LEVELS, DONOR_PORTAL_SEED,
@@ -143,6 +144,7 @@ export function createOrgSetupRoutes(db: Db) {
         portals,
       },
       verifiedFields: [...VERIFIED_FIELDS],
+      logo_limits: { maxBytes: LOGO_MAX_BYTES, types: Object.keys(LOGO_MIME_TYPES) },
     });
   }
 
@@ -299,6 +301,54 @@ export function createOrgSetupRoutes(db: Db) {
     await db.service.upsert("app_settings", { key, value, updated_by: updatedBy }, "key");
   }
 
-  return { read, putIdentity, putProfile, putTeam };
+  /**
+   * `PUT /settings/setup/logo` — set or clear the organisation's mark.
+   *
+   * BASE64 IN JSON, not multipart. The image is STORED as base64 on the identity blob
+   * either way, so a multipart upload would decode bytes only to re-encode them, and the
+   * JSON body is the same shape every other save on this page uses.
+   *
+   * It writes through `withLogo` onto the RAW stored blob, for the reason `mergedIdentity`
+   * exists: the branding and the eligibility flags live in that same column, and writing a
+   * merged-with-defaults identity back would reset them. Clearing writes empty strings
+   * rather than deleting the keys, so an old `org_logo_url` cannot resurrect itself.
+   */
+  async function putLogo(req: Request, ctx: Ctx): Promise<Response> {
+    if (!isAdmin(ctx.user as PermUser)) return BLOCKED();
+    const tid = target(ctx);
+    if (!tid) return json({ error: "No organization is resolved for this session." }, 409);
+
+    const p = (await body(req)) as Row;
+    const clearing = p.clear === true;
+    let b64 = "", mime = "";
+
+    if (!clearing) {
+      b64 = strippedBase64(p.data);
+      mime = str(p.mime).trim().toLowerCase();
+      // Size first, from the string's own length: an oversized upload is refused without
+      // decoding anything, in a function billed by CPU time.
+      const problem = logoProblem(mime, base64Bytes(b64));
+      if (problem) return json({ error: problem }, 400);
+    }
+
+    const ident = withLogo(await storedIdentity(tid), b64, mime);
+    const res = await db.service.update("tenants", `id=eq.${q(tid)}`, { org_identity: ident })
+      .catch(() => null);
+    if (!Array.isArray(res) || !res.length) {
+      return json({
+        error: `tenants.org_identity update for ${tid} affected 0 rows — the logo was not `
+          + "saved (check RLS, and that SUPABASE_KEY is the service-role key).",
+      }, 500);
+    }
+    const after = await loadOrg(db, tid);
+    return json({
+      logo: after.logo,
+      detail: clearing
+        ? "Logo removed. The header falls back to the organisation name."
+        : "Logo saved. It appears in the page header and on exported reports.",
+    });
+  }
+
+  return { read, putIdentity, putProfile, putTeam, putLogo };
 }
 

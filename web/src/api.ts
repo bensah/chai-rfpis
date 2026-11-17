@@ -1285,6 +1285,14 @@ export type OrgSetup = {
   options: SetupOptions;
   /** The fields a save re-reads, and the only ones a failed write is reported for. */
   verifiedFields: string[];
+  /**
+   * What the logo uploader will accept.
+   *
+   * The cap is TIGHTER than Streamlit's, deliberately: the image lives on the
+   * organisation record, which the header reads on every page render, so an oversized
+   * one is paid for by everybody in that organisation on every page.
+   */
+  logo_limits: { maxBytes: number; types: string[] };
 };
 
 export type SetupSaved = {
@@ -1521,6 +1529,11 @@ export const saveSetupProfile = (form: Record<string, unknown>) =>
   put<SetupSaved>("/settings/setup/profile", form);
 export const saveSetupTeam = (names: string[]) =>
   put<SetupSaved>("/settings/setup/team", { names });
+/** Base64 in JSON, because the image is STORED as base64 either way. */
+export const saveSetupLogo = (data: string, mime: string) =>
+  put<{ logo: string | null; detail: string }>("/settings/setup/logo", { data, mime });
+export const clearSetupLogo = () =>
+  put<{ logo: string | null; detail: string }>("/settings/setup/logo", { clear: true });
 
 // ── Profile ──────────────────────────────────────────────────────────────────
 //

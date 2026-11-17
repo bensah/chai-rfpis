@@ -30,17 +30,18 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle, Building2, CheckCircle2, Save, Trash2, Users as UsersIcon,
+  AlertTriangle, Building2, CheckCircle2, Save, Trash2, Upload, Users as UsersIcon,
 } from "lucide-react";
 import {
-  fetchSetup, saveSetupIdentity, saveSetupProfile, saveSetupTeam,
+  clearSetupLogo, fetchSetup, saveSetupIdentity, saveSetupLogo, saveSetupProfile,
+  saveSetupTeam,
   type OrgPartner, type OrgSetup, type SetupOptions, type Warning,
 } from "../api";
 import MultiSelect from "../components/MultiSelect";
 import ScanPrefsTab from "./ScanPrefsTab";
 import { Choice, Lbl, Num, Row, Text } from "../opportunity/controls";
 import {
-  Badge, Button, Card, Eyebrow, Notice, Select, Spinner, fieldClass,
+  Badge, Button, Card, Eyebrow, Notice, Select, Spinner, buttonClass, fieldClass,
 } from "../ui";
 
 type Json = Record<string, unknown>;
@@ -288,24 +289,7 @@ function ProfileTab({ data, onSaved }: {
         </span>
       </label>
 
-      {/* The logo is READ here and changed in the classic app — see the module docstring.
-          Showing it matters: an organisation looking at its own record and not seeing its
-          own mark reads as the wrong record. */}
-      <div className="mt-6 flex items-center gap-4 rounded-lg border border-ink-200 bg-ink-50 p-4">
-        {data.logo
-          ? <img src={data.logo} alt="Current logo" className="h-12 w-auto" />
-          : <div className="flex h-12 w-12 items-center justify-center rounded bg-white text-ink-300">
-              <Building2 className="h-6 w-6" />
-            </div>}
-        <div className="text-sm text-ink-600">
-          <div className="font-medium text-ink-800">
-            {data.logo ? "Logo in use" : "No logo uploaded"}
-          </div>
-          <div className="text-xs">
-            Uploading and removing a logo is still on the classic Settings page.
-          </div>
-        </div>
-      </div>
+      <LogoBox data={data} onChanged={(logo) => onSaved({ ...data, logo })} />
 
       <SaveBar
         label="Save organization profile" state={state}
@@ -823,3 +807,118 @@ function toPayload(f: ReturnType<typeof fromProfile>): Json {
   return { ...f } as unknown as Json;
 }
 
+
+/**
+ * The organisation's mark: shown, replaced, removed.
+ *
+ * SHOWING IT IS NOT DECORATION — an organisation looking at its own record and not seeing
+ * its own mark reads as the wrong record, which is why the read carries it even though
+ * nothing scores on it.
+ *
+ * The file is read in the BROWSER and sent as base64, because that is how it is stored:
+ * a multipart upload would decode bytes the server only re-encodes. The size is checked
+ * here too, before a megabyte crosses the wire, and again on the server — this check is
+ * for the person, that one is the rule.
+ */
+function LogoBox({ data, onChanged }: {
+  data: OrgSetup; onChanged: (logo: string | null) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const limits = data.logo_limits ?? { maxBytes: 2 * 1024 * 1024, types: [] };
+  const maxMb = (limits.maxBytes / 1024 / 1024).toFixed(0);
+
+  const upload = async (file: File) => {
+    setError(null); setNote(null);
+    if (file.size > limits.maxBytes) {
+      setError(`That logo is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is `
+        + `${maxMb} MB, because this image sits on the organisation record and loads on `
+        + "every page for everybody in it. A transparent PNG around 200px tall is "
+        + "usually well under 100 KB.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const b64 = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onerror = () => reject(new Error("That file could not be read."));
+        // readAsDataURL gives "data:<mime>;base64,<payload>"; the server strips the
+        // prefix itself, so what arrives is exactly what the browser produced.
+        r.onload = () => resolve(String(r.result ?? ""));
+        r.readAsDataURL(file);
+      });
+      const res = await saveSetupLogo(b64, file.type || "image/png");
+      onChanged(res.logo);
+      setNote(res.detail);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err.message ?? "The logo could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-6 rounded-lg border border-ink-200 bg-ink-50 p-4">
+      <div className="flex flex-wrap items-center gap-4">
+        {data.logo
+          ? <img src={data.logo} alt="Current logo" className="h-12 w-auto" />
+          : <div className="flex h-12 w-12 items-center justify-center rounded bg-white text-ink-300">
+              <Building2 className="h-6 w-6" />
+            </div>}
+        <div className="min-w-0 flex-1 text-sm text-ink-600">
+          <div className="font-medium text-ink-800">
+            {data.logo ? "Logo in use" : "No logo uploaded"}
+          </div>
+          <div className="text-xs">
+            Shown in the page header and on exported reports. Up to {maxMb} MB
+            {limits.types.length ? `, as ${limits.types.join(", ")}` : ""}.
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <label className={`${buttonClass("secondary")} ${busy ? "pointer-events-none opacity-60" : "cursor-pointer"}`}>
+            <Upload className="h-4 w-4" />
+            {data.logo ? "Replace" : "Upload"}
+            <input
+              type="file" className="sr-only" disabled={busy}
+              accept={limits.types.map((t) => `.${t}`).join(",") || "image/*"}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                // Cleared so choosing the SAME file again still fires a change event —
+                // which is exactly what somebody does after a failed upload.
+                e.target.value = "";
+                if (file) void upload(file);
+              }}
+            />
+          </label>
+          {data.logo && (
+            <Button
+              busy={busy} icon={<Trash2 className="h-4 w-4" />}
+              onClick={async () => {
+                setBusy(true); setError(null); setNote(null);
+                try {
+                  const res = await clearSetupLogo();
+                  onChanged(res.logo);
+                  setNote(res.detail);
+                } catch (e) {
+                  const err = e as { message?: string };
+                  setError(err.message ?? "The logo could not be removed.");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Remove
+            </Button>
+          )}
+        </div>
+      </div>
+      {note && <Notice tone="good" className="mt-3">{note}</Notice>}
+      {error && <Notice tone="bad" className="mt-3">{error}</Notice>}
+      <p className="mt-3 text-xs text-ink-500">
+        The logo saves on its own — it does not wait for the Save button below.
+      </p>
+    </div>
+  );
+}

@@ -455,6 +455,92 @@ export function cleanTeam(names: unknown): string[] {
 /** The partner types a client may store, for the page's Type column. */
 export const PARTNER_TYPE_OPTIONS: string[] = [...PARTNER_TYPES];
 
+// ── The logo ─────────────────────────────────────────────────────────────────
+
+/**
+ * The image types the uploader accepts — the Streamlit list, exactly.
+ *
+ * SVG is on it, and stays on it, because the two apps must accept the same files. It is
+ * safe HERE because the logo is only ever rendered through `<img src="data:…">`, and a
+ * browser does not run script in an SVG loaded that way. Anything that started rendering
+ * it inline, or serving it from the app's own origin, would change that — which is why
+ * the rule lives next to the list rather than in a reviewer's memory.
+ */
+export const LOGO_MIME_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  svg: "image/svg+xml",
+};
+
+/**
+ * The size this will store, in raw bytes before base64.
+ *
+ * A DELIBERATE DIFFERENCE from Streamlit, which warns above 5 MB and stores anyway. This
+ * blob lives on `tenants.org_identity`, which the app HEADER reads on every page render —
+ * `core/settings.py` says as much where it caches the row — so a 5 MB logo is 5 MB on
+ * every page, for every member of that organisation, for ever. The Python's own comment
+ * agrees about where the line is: "if the deploying org ever needs a 5MB
+ * hero-image-as-logo we'd move to Supabase Storage".
+ *
+ * So this refuses rather than warns, and says what to do instead. A refusal an admin can
+ * act on beats an acceptance that makes the product slower for everyone.
+ */
+export const LOGO_MAX_BYTES = 2 * 1024 * 1024;
+
+/** What a logo upload may be, or the reason it may not. */
+export function logoProblem(mime: string, bytes: number): string | null {
+  const known = Object.values(LOGO_MIME_TYPES);
+  if (!known.includes(mime)) {
+    return `That file type is not one of ${Object.keys(LOGO_MIME_TYPES).join(", ")}.`;
+  }
+  if (!bytes) return "That file is empty.";
+  if (bytes > LOGO_MAX_BYTES) {
+    return `That logo is ${(bytes / 1024 / 1024).toFixed(1)} MB. The limit is 2 MB, `
+      + "because this image is stored on the organisation record and loaded on every "
+      + "page for everybody in it. A transparent PNG about 200px tall is usually well "
+      + "under 100 KB.";
+  }
+  return null;
+}
+
+/**
+ * The identity blob with a logo set, or cleared.
+ *
+ * CLEARING WRITES EMPTY STRINGS rather than deleting the keys, which is what the Python
+ * does and is not merely a copy of it: `get_org_logo` falls back to the legacy
+ * `org_logo_url` when the base64 is absent, so deleting the key would resurrect an old
+ * hosted URL that somebody pasted years ago and then removed on purpose.
+ */
+export function withLogo(stored: unknown, b64: string, mime: string): Row {
+  const base: Row = (stored !== null && typeof stored === "object" && !Array.isArray(stored))
+    ? { ...(stored as Row) } : {};
+  return { ...base, org_logo_b64: b64, org_logo_mime: b64 ? (mime || "image/png") : "" };
+}
+
+/** Base64 as the browser sends it, with any `data:` prefix removed. */
+export function strippedBase64(v: unknown): string {
+  const t = s(v).trim();
+  const comma = t.indexOf(",");
+  return t.startsWith("data:") && comma > 0 ? t.slice(comma + 1) : t;
+}
+
+/**
+ * The byte length a base64 string decodes to, without decoding it.
+ *
+ * The size is checked BEFORE the bytes are turned into anything, so an oversized upload
+ * costs one arithmetic operation rather than a megabyte of allocation in an Edge Function
+ * that is billed by CPU time.
+ */
+export function base64Bytes(b64: string): number {
+  const clean = b64.replace(/\s/g, "");
+  if (!clean) return 0;
+  const padding = clean.endsWith("==") ? 2 : clean.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor(clean.length * 3 / 4) - padding);
+}
+
 // ── Donor portals ────────────────────────────────────────────────────────────
 
 /**
