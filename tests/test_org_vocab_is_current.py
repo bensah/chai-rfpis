@@ -98,6 +98,109 @@ class GeneratedTablesMatchThePython(unittest.TestCase):
                 self.assertTrue(words.get(str(n)))
 
 
+class TheEditorsOptionListsMatchTheEditor(unittest.TestCase):
+    """Settings → Setup WRITES the profile every table above describes reading.
+
+    The asymmetry is the point. A stale default shows a reader a wrong number; a stale
+    option list makes a writer STORE one, and a stored value outside the vocabulary does
+    not fail anywhere — `core.auto_scorer` simply stops matching it, and the criterion
+    scores as though the organisation had answered nothing. Nobody is told.
+
+    `views/org_setup.py` builds these lists inside `render_org_setup`, so they are lifted
+    from its syntax tree rather than imported; importing the module runs streamlit.
+    """
+
+    @staticmethod
+    def _lifted(name, last=False):
+        import ast
+        path = os.path.join(_ROOT, "views", "org_setup.py")
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        found = [n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                 for t in n.targets if isinstance(t, ast.Name) and t.id == name]
+        if not found:
+            raise AssertionError(f"{name} is no longer assigned in views/org_setup.py")
+        return ast.literal_eval(found[-1 if last else 0])
+
+    def test_the_co_financing_levels_match(self):
+        self.assertEqual(list(op.COFINANCING_LEVELS), emitted("COFINANCING_LEVELS"))
+
+    def test_the_funding_routes_match_token_and_label(self):
+        """Both halves: the editor shows the label and stores the token, so a drift in
+        either one stores something the MUST-5 route gate cannot match."""
+        from core.criteria_derive import ROUTE_OPTIONS
+        self.assertEqual([list(r) for r in ROUTE_OPTIONS], emitted("ROUTE_OPTIONS"))
+
+    def test_the_hand_written_option_lists_match_the_editor(self):
+        for name, lifted_name, last in (
+            ("LEGAL_TYPES", "_legal_opts", False),
+            ("ENTITY_TYPES", "_entity_opts", True),
+            ("ORG_STAGES", "_stage_opts", False),
+            ("PROPOSAL_LANGUAGES", "_LANGS", False),
+            ("PARTNER_TYPES", "_PARTNER_TYPES", False),
+            ("PARTNER_STATUS", "_STATUS_OPTS", False),
+        ):
+            with self.subTest(table=name):
+                self.assertEqual(self._lifted(lifted_name, last), emitted(name))
+
+    def test_the_board_options_keep_the_editors_order(self):
+        """Order, not just membership. The selectbox falls back to index 0 when the
+        stored value matches nothing, so the FIRST entry is what a damaged value is shown
+        as — and it has to be the one carrying "", which leaves the MUST-4 gate off. If
+        "No — we don't have one" ever came first, an unreadable profile would present as
+        a hard no and disqualify the organisation from every donor requiring a board."""
+        self.assertEqual([list(p) for p in self._lifted("_board_opts").items()],
+                         emitted("BOARD_OPTIONS"))
+        self.assertEqual("", emitted("BOARD_OPTIONS")[0][1])
+
+    def test_every_legal_and_entity_type_offered_has_a_label(self):
+        """The editor renders these through `legal_type_label` / `entity_type_label`. An
+        option with no label falls through to the raw code, so the admin picks
+        "higher_ed" out of a list of sentences."""
+        for code in emitted("LEGAL_TYPES"):
+            with self.subTest(code=code):
+                self.assertIn(code, emitted("LEGAL_TYPE_LABELS"))
+        for code in emitted("ENTITY_TYPES") + ["individual"]:
+            with self.subTest(code=code):
+                self.assertIn(code, emitted("ENTITY_TYPE_LABELS"))
+
+    def test_the_stored_defaults_are_themselves_offered(self):
+        """DEFAULT_PROFILE's own value for each of these must be something the editor
+        offers. A default outside its own vocabulary is the subtlest version of this bug:
+        the form silently re-points it at option 0 the first time anybody saves, so an
+        organisation that never touched the field has its answer changed for it."""
+        defaults = emitted("DEFAULT_PROFILE")
+        for key, table in (("org_legal_type", "LEGAL_TYPES"),
+                           ("org_entity_type", "ENTITY_TYPES"),
+                           ("org_stage", "ORG_STAGES"),
+                           ("org_cofinancing_capacity", "COFINANCING_LEVELS")):
+            with self.subTest(key=key):
+                self.assertIn(defaults[key], emitted(table))
+        for token in defaults["org_funding_routes"]:
+            with self.subTest(route=token):
+                self.assertIn(token, [t for t, _ in emitted("ROUTE_OPTIONS")])
+        for lang in defaults["proposal_languages"]:
+            with self.subTest(lang=lang):
+                self.assertIn(lang, emitted("PROPOSAL_LANGUAGES"))
+
+    def test_the_criterion_labels_cover_the_scorer(self):
+        """Nine labels for nine criteria, keyed by the scorer's own names. A criterion
+        with no label renders as a blank expander on Scan Preferences, and its keyword
+        terms become unreachable."""
+        from core.scorer import CRITERIA
+        self.assertEqual(sorted(CRITERIA), sorted(emitted("CRITERION_LABELS")))
+
+    def test_the_portal_seed_is_cleaned_and_deduplicated(self):
+        """`clean_portal_url` is what makes grants.gov and https://www.grants.gov/search
+        one entry. Emitting the raw list would offer the same portal twice."""
+        from core.partners import DONOR_PORTALS, clean_portal_url
+        self.assertEqual(
+            sorted({p for p in map(clean_portal_url, DONOR_PORTALS) if p and "." in p}),
+            emitted("DONOR_PORTAL_SEED"))
+        seed = emitted("DONOR_PORTAL_SEED")
+        self.assertEqual(len(seed), len(set(seed)))
+
+
 class NoDeploymentDataIsBakedIn(unittest.TestCase):
     """These are repo constants — the same for every tenant. The VALUES they are merged
     with are read live from the tenant's own row, and none of them belongs in source."""
