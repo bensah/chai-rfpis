@@ -19,6 +19,8 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from core import donor_fields as _df
+from core import donor_write as _dw
 from core import geographies as _geo
 from core import permissions, settings
 from core import program_area_classifier as _pa
@@ -75,8 +77,7 @@ st.caption(
 
 # Editable columns of the one-to-many donor_contacts table (focal persons +
 # additional contacts). Order = display/edit order.
-_CONTACT_COLS = ["contact_name", "role_title", "email", "phone",
-                 "linkedin_url", "address", "is_official", "notes"]
+_CONTACT_COLS = _df.CONTACT_COLS
 
 
 @st.cache_data(ttl=60)
@@ -122,201 +123,25 @@ if df.empty:
 # ---------------------------------------------------------------------------
 # Field classification + acronym-aware labels
 # ---------------------------------------------------------------------------
-_ACR = {
-    "lmic": "LMIC", "ngo": "NGO", "hiv": "HIV", "aids": "AIDS", "tb": "TB",
-    "ncd": "NCD", "ncds": "NCDs", "mnch": "MNCH", "srhr": "SRHR", "hss": "HSS",
-    "ai": "AI", "usd": "USD", "uei": "UEI", "sam": "SAM", "mou": "MOU",
-    "cv": "CV", "cvs": "CVs", "irb": "IRB", "ccm": "CCM", "dfi": "DFI",
-    "us": "US", "mande": "M&E", "govt": "Govt",
-}
+# Labels, de-SHOUTING and value coercion now live in core.donor_fields, which
+# imports cleanly — this page cannot be imported (Streamlit at module scope), so
+# anything else that needed these rules had to re-implement them. Aliased rather
+# than renamed throughout: the names below are used ~200 times in this file.
+_ACR = _df.ACR
+_LABEL_OVERRIDES = _df.LABEL_OVERRIDES
+_PARTNER_TYPE_OPTIONS = _df.PARTNER_TYPE_OPTIONS
+_ACRONYMS = _df.ACRONYMS
+_SEG_SPLIT_RE = _df.SEG_SPLIT_RE
+_pretty_choice = _df.pretty_choice
+_label = _df.label
+_cap_first = _df.cap_first
+_smart_token = _df.smart_token
+_deshout = _df.deshout
+_disp = _df.disp
+_md = _df.md
 
 
-_LABEL_OVERRIDES = {
-    "donor_type": "Donor type (descriptive)",
-    "donor_is_dual_role_implementer": "Also an implementer that publishes calls?",
-    "donor_opportunity_listing_urls": "Opportunity listing URL(s)",
-    "donor_local_board_required": "Local board members required",
-    # MUST-5 cofinancing & compliance (migration 052). The portal URL reuses the
-    # existing submission_portal_url (matched against the org's donor_registrations).
-    "donor_govt_mou_required": "Government MOU required",
-    "donor_funding_platform_registration_required": "Funding-platform registration required",
-    # New capture fields (migration 062). State/counterpart co-financing is DISTINCT
-    # from cost-share match. Indirect-cost flag is phrased as the constraint.
-    "donor_cofinancing_required": "Co-financing required",
-    "donor_state_party_cofinancing_required": "Government / counterpart co-financing required",
-    "donor_indirect_cost_disallowed": "Indirect / overhead costs not allowed",
-    "donor_fund_use_conditions": "Conditions on use of funds",
-    # PREFER-8 competitiveness (migration 053)
-    "donor_multi_country_encouraged": "Encourages multi-country proposals",
-    "donor_summary_description": "Summary",
-    "donor_values": "Values",
-    "donor_strategy_url": "Strategy (URL)",
-    "donor_projected_budget_period": "Budget period",
-    # Strategic-intelligence fields (migration 029)
-    "donor_strategic_priorities": "Strategic priorities",
-    "donor_in_scope": "What they fund (in scope)",
-    "donor_out_of_scope": "What they don't fund (out of scope)",
-    "donor_selection_criteria": "Selection / evaluation criteria",
-    "donor_funding_programs": "Funding programs / windows",
-    "donor_eligibility_notes": "Who can apply / lead",
-    "donor_application_deadlines": "Key dates / deadlines",
-    "donor_submission_portal_url": "Submission portal (URL)",
-    "donor_strategic_fit_notes": "Ideal applicant & what this funder rewards",
-    "donor_gaps_risks": "Common pitfalls & disqualifiers",
-    "donor_recommended_approach": "How to position a competitive application",
-    "donor_funders_collaborators": "Funders & Collaborators",
-    "donor_hq_country_required": "Applicant must be HQ'd in",
-    "org_stage_required": "Org stage required",
-    "donor_max_annual_budget": "Max annual budget (eligibility ceiling)",
-    "donor_indirect_cost_max_pct": "Indirect cost policy (% of project cost) allowed",
-    "donor_min_track_record": "Min largest grant managed (floor)",
-    "donor_required_partner_type": "Required partner type",
-    "donor_required_partner_country": "Required partner country",
-    "donor_max_request_pct_of_budget": "Max request (% of project budget)",
-    "donor_min_cofinancing_secured_pct": "Min co-financing secured (%)",
-    "donor_independent_entity_required": "Independent entity required (no INGO affiliates)",
-    "donor_welcome_registration_required": "Pre-registration / senior-leadership approval required",
-    # MUST-1 rework (migration 049)
-    "donor_entity_type_required": "Entity type required",
-    "donor_registration_region": "Registration region/country required",
-    "donor_requires_pi": "Requires an individual / PI",
-    "donor_pi_country_scope": "PI base-country scope",
-    "donor_max_prior_grant": "Max prior grant/award (eligibility ceiling)",
-    "donor_prior_beneficiary_rule": "Prior-beneficiary rule",
-}
-
-# Partner-type vocabulary — shared with the org fit profile so a donor's
-# required_partner_type matches the org's partner records.
-_PARTNER_TYPE_OPTIONS = [
-    "Nonprofit / NGO", "Academic / research institutions", "For-profit / private",
-    "Government", "Multilateral / UN", "Bilateral / development agency",
-    "Philanthropy / foundation",
-]
-
-
-def _pretty_choice(v: str) -> str:
-    """Display a stored enum value nicely without changing what's stored:
-    'reimbursement_only' → 'Reimbursement Only', 'high' → 'High', '' → '—'."""
-    s = str(v or "").strip()
-    return s.replace("_", " ").title() if s else "—"
-
-
-def _label(col: str) -> str:
-    # The DB columns carry a source-role prefix (donor_/call_/org_) for an auditable
-    # schema, but those prefixes must NOT show in the form — "Donor tax exempt status
-    # required" reads as wanting the DONOR's status, when it means "the donor REQUIRES
-    # tax-exempt status from applicants". So strip the prefix for display only (owner
-    # 2026-06-29). Schema is unchanged.
-    if col in _LABEL_OVERRIDES:
-        return _LABEL_OVERRIDES[col]
-    bare = re.sub(r"^(donor_|call_|org_)", "", col)
-    if bare in _LABEL_OVERRIDES:
-        return _LABEL_OVERRIDES[bare]
-    words = bare.replace("_", " ").split()
-    out = []
-    for i, w in enumerate(words):
-        lw = w.lower()
-        if lw in _ACR:
-            out.append(_ACR[lw])
-        elif i == 0:
-            out.append(w.capitalize())
-        else:
-            out.append(lw)
-    return " ".join(out)
-
-
-# Acronyms that are legitimately uppercase and must NOT be sentence-cased when
-# we tidy SHOUTED phrases from the source workbook (e.g. "HEALTH SYSTEMS
-# STRENGTHENING" -> "Health systems strengthening", but keep "HIV", "MNCH").
-_ACRONYMS = {
-    "HIV", "AIDS", "TB", "MNCH", "HSS", "SRHR", "SRH", "NCD", "NCDS", "LMIC",
-    "LMICS", "NGO", "NGOS", "CCM", "DFI", "UHC", "PHC", "WHO", "UN", "US", "EU",
-    "UK", "AI", "HPV", "NTD", "NTDS", "RMNCAH", "RMNCH", "STI", "STIS", "WASH",
-    "UNICEF", "UNAIDS", "UNFPA", "UNHCR", "UNESCO", "USAID", "CEPI", "GAVI",
-    "COVID", "IRB", "MOU", "CSO", "CSOS", "PREP", "FP", "GBV", "R&D", "DR-TB",
-    "GF", "AFD", "AFDB", "EC", "MCF", "BMGF",
-}
-_SEG_SPLIT_RE = re.compile(r"([.;]\s+)")
-
-
-def _cap_first(s: str) -> str:
-    """Capitalize the first alphabetic char only (don't touch the rest)."""
-    for i, ch in enumerate(s):
-        if ch.isalpha():
-            return s[:i] + ch.upper() + s[i + 1:]
-    return s
-
-
-def _smart_token(tok: str) -> str:
-    """Lowercase a SHOUTED all-caps word/compound, but keep real acronyms.
-    A token is 'shouted' if it's all-caps and has an alpha run >=5 letters or
-    is a hyphenated compound (CROSS-CUTTING) — otherwise it's treated as an
-    acronym (HIV, MNCH, AfDB) and left alone."""
-    lead = re.match(r"^[^A-Za-z]*", tok).group(0)
-    rest = tok[len(lead):]
-    trail = re.search(r"[^A-Za-z]*$", rest).group(0)
-    core = rest[:len(rest) - len(trail)] if trail else rest
-    if not core or not core.isupper() or core.upper() in _ACRONYMS:
-        return tok
-    alpha_runs = re.findall(r"[A-Z]+", core)
-    longest = max((len(r) for r in alpha_runs), default=0)
-    if longest >= 5 or ("-" in core and len(alpha_runs) >= 2):
-        return lead + core.lower() + trail
-    return tok
-
-
-def _deshout(text: str) -> str:
-    """Turn SHOUTED phrases from the source workbook into sentence case for
-    display, preserving acronyms. Only segments that actually contained a
-    shouted word get re-capitalised, so already-clean text is untouched."""
-    if not text or not any(c.isupper() for c in text):
-        return text
-    out = []
-    for seg in _SEG_SPLIT_RE.split(text):
-        if not seg or _SEG_SPLIT_RE.fullmatch(seg):
-            out.append(seg)
-            continue
-        seg2 = " ".join(_smart_token(t) for t in seg.split(" "))
-        out.append(_cap_first(seg2) if seg2 != seg else seg)
-    return "".join(out)
-
-
-def _disp(v):
-    """Clean display value: None for NaN / blank / 'nan' / 'none', else str.
-    Also tidies SHOUTED all-caps phrases to sentence case (display only — the
-    source data is untouched, so the edit form still shows the raw value)."""
-    try:
-        if v is None or pd.isna(v):
-            return None
-    except (TypeError, ValueError):
-        pass
-    s = str(v).strip()
-    if s.lower() in ("nan", "none", "nat", ""):
-        return None
-    # Retire the {country} placeholder — it resolved to the org's single Primary
-    # country (misleading). Neutralize to broad language; real per-donor
-    # coverage now lives in the "Funded geographies" field.
-    s = (s.replace("{country}'s ", "").replace("{country}'s", "")
-          .replace("in {country}", "in priority countries")
-          .replace("{country}", "priority countries"))
-    return _deshout(s)
-
-
-def _md(v):
-    """Markdown-safe value — escape '$' so award amounts ($1K, $50M) don't
-    render as LaTeX math."""
-    d = _disp(v)
-    return d.replace("$", r"\$") if d else None
-
-
-def _title_name(row: dict) -> str:
-    """Donor display name, appending the short code only when it isn't already
-    part of the name (avoids 'African Development Bank (AfDB) (AfDB)')."""
-    donor = _disp(row.get("donor")) or "Donor"
-    short = _disp(row.get("donor_short")) or ""
-    if short and short.lower() not in donor.lower():
-        return f"{donor} ({short})"
-    return donor
+_title_name = _df.title_name
 
 
 # Internal / provenance columns — never shown as flags, as editable text, or in
@@ -330,146 +155,23 @@ def _title_name(row: dict) -> str:
 # table. Display-only (DB values untouched); the edit form writes the canonical
 # value going forward. Extend _CATEGORY_CANON as new variants show up.
 # ---------------------------------------------------------------------------
-_CATEGORIES = [
-    "Bilaterals / government development agencies",
-    "Multilaterals & development banks",   # UN agencies, MDBs/DFIs, GH partnerships
-    "International philanthropies & foundations",
-    "U.S. federal agencies",
-    "Private sector / corporate",
-    "Academic / research institutions",
-]
-_CATEGORY_CANON = {
-    "bilaterals": "Bilaterals / government development agencies",
-    "bilateral": "Bilaterals / government development agencies",
-    "bilaterals / government development agencies": "Bilaterals / government development agencies",
-    "government development agencies": "Bilaterals / government development agencies",
-    "multilaterals": "Multilaterals & development banks",
-    "multilateral": "Multilaterals & development banks",
-    "multilaterals / global health partnerships": "Multilaterals & development banks",
-    "multilateral / global health partnerships": "Multilaterals & development banks",
-    "global health partnerships": "Multilaterals & development banks",
-    "multilateral development bank / dfi": "Multilaterals & development banks",
-    "multilateral development banks / dfis": "Multilaterals & development banks",
-    "multilateral development bank": "Multilaterals & development banks",
-    "development finance institution": "Multilaterals & development banks",
-    "dfi": "Multilaterals & development banks",
-    "multilaterals & development banks": "Multilaterals & development banks",
-    "international philanthropies and foundations": "International philanthropies & foundations",
-    "international philanthropies & foundations": "International philanthropies & foundations",
-    "philanthropies and foundations": "International philanthropies & foundations",
-    "philanthropy": "International philanthropies & foundations",
-    "foundation": "International philanthropies & foundations",
-    "foundations": "International philanthropies & foundations",
-    "u.s. federal agencies": "U.S. federal agencies",
-    "u.s. federal / bilateral agencies": "U.S. federal agencies",
-    "us federal agencies": "U.S. federal agencies",
-    "u.s. federal agency": "U.S. federal agencies",
-    "private sector": "Private sector / corporate",
-    "corporate": "Private sector / corporate",
-    "academic": "Academic / research institutions",
-    "research institution": "Academic / research institutions",
-}
+_CATEGORIES = _df.CATEGORIES
+_CATEGORY_CANON = _df.CATEGORY_CANON
+_normalize_category = _df.normalize_category
 
 
-def _normalize_category(raw) -> str:
-    """Map any raw donor_category to a canonical display value."""
-    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
-        return "(uncategorised)"
-    s = re.sub(r"\s+", " ", str(raw).strip())
-    if not s:
-        return "(uncategorised)"
-    key = s.lower().rstrip(".")
-    if key in _CATEGORY_CANON:
-        return _CATEGORY_CANON[key]
-    if key.endswith("s") and key[:-1] in _CATEGORY_CANON:  # plural fold
-        return _CATEGORY_CANON[key[:-1]]
-    return s  # unknown → keep cleaned original (at least case/space-trimmed)
-
-
-_META = {"id", "updated_at", "created_at", "canonical_key", "category_clean",
-         "online_source_check_status", "last_checked", "row_type",
-         "award_size_basis"}
-_SHORT_TEXT = ["donor", "donor_short", "donor_category", "donor_type", "donor_website",
-               "donor_award_low", "donor_award_high",
-               "donor_total_annual_funding_global", "donor_funding_mechanism"]
-_LONG_TEXT = ["donor_aliases", "donor_geographic_scope", "donor_active_route_status",
-              "donor_direct_local_org_eligible", "donor_priority_areas",
-              "donor_verification_caveats", "donor_evidence_summary", "notes",
-              "donor_source_urls", "donor_opportunity_listing_urls"]
-# Institutional / official donor contact (one set per donor — the donor_intel
-# row). The many focal-person contacts live in the donor_contacts table.
-_CONTACT = ["donor_hq_address", "donor_hq_country", "donor_main_phone", "donor_general_email",
-            "donor_linkedin_url", "donor_other_profile_urls",
-            "donor_contact_persons", "donor_contact_emails", "donor_contact_phones",
-            "donor_contact_linkedin_urls"]
-_CHOICE = {
-    "donor_prefinance_required": ["", "none", "partial", "reimbursement_only"],
-    "donor_verification_level": ["", "high", "medium", "low"],
-    "donor_is_dual_role_implementer": ["", "yes", "no"],
-}
-# Qualitative donor-intelligence profile (added to the edit form, migration 025).
-# Listed here so these columns are treated as free text — NOT flags — once they
-# exist in the table, and so the View / Share / PDF summaries include them.
-_PROFILE = ["donor_founded", "donor_summary_description", "donor_mission", "donor_vision", "donor_values",
-            "donor_strategy_url", "donor_total_awards", "donor_total_funding_to_date",
-            "donor_current_awards", "donor_past_awards", "donor_projected_budget",
-            "donor_projected_budget_period", "donor_funding_cycle", "donor_recent_activity",
-            "donor_application_process", "donor_reporting_requirements",
-            "donor_past_projects_json",
-            # Strategic-intelligence fields (migration 029) — narrative + JSON.
-            # Listed here so they're treated as text (not flags) and persist /
-            # surface in the view, share and PDF.
-            "donor_strategic_priorities", "donor_in_scope",
-            "donor_out_of_scope", "donor_selection_criteria", "donor_funding_programs",
-            "donor_funding_tiers_json", "donor_eligibility_notes", "donor_application_deadlines",
-            "donor_submission_portal_url", "donor_strategic_fit_notes", "donor_gaps_risks",
-            "donor_recommended_approach", "donor_priority_ratings", "donor_funders_collaborators",
-            # Hard eligibility conditions (migration 032) — VALUED (not flags).
-            "donor_hq_country_required", "org_stage_required", "donor_max_annual_budget",
-            "donor_min_track_record", "donor_required_partner_type", "donor_required_partner_country",
-            "donor_max_request_pct_of_budget", "donor_min_cofinancing_secured_pct",
-            # MUST-1 rework conditions (migration 049) — VALUED text, not flags.
-            "donor_entity_type_required", "donor_registration_region",
-            "donor_requires_pi", "donor_pi_country_scope", "donor_max_prior_grant",
-            "donor_prior_beneficiary_rule",
-            # MUST-5 indirect-cost cap (migration 090) — a % of project cost, VALUED.
-            "donor_indirect_cost_max_pct",
-            # Conditions on how awarded funds may be used (migration 062) — free text.
-            "donor_fund_use_conditions"]
-# Columns kept for backward-compat but no longer surfaced anywhere (not edited,
-# not shown in View, not in share/PDF). verification_level already captures data
-# confidence, so the free-text "verification caveats" was redundant + confusing.
-# funded_geographies is an unused column (the geo field is donor_geographic_scope).
-_HIDDEN_FIELDS = {"donor_verification_caveats", "donor_funded_geographies"}
-
-_NON_FLAG = (set(_META) | set(_SHORT_TEXT) | set(_LONG_TEXT)
-             | set(_CHOICE) | set(_CONTACT) | set(_PROFILE) | _HIDDEN_FIELDS)
-
-_FLAGS = [c for c in df.columns if c not in _NON_FLAG]
-_ELIG = [
-    "donor_ngo_eligible", "donor_for_profit_eligible", "donor_govt_or_ccm_route_required",
-    "donor_grant_route", "donor_procurement_tender_route", "donor_loan_dev_finance_route",
-    "donor_subrecipient_partner_possible", "donor_open_call_unsolicited",
-    "donor_invitation_solicited", "donor_two_stage_application", "donor_online_portal_submission",
-    "donor_lmic_africa_focus", "donor_global_multi_country_scope",
-]
-_FIT = [c for c in _FLAGS if c.endswith("_fit")]
-_REQ = [c for c in _FLAGS if c not in _ELIG and c not in _FIT]
-# CO-FINANCING and PRE-FINANCING are eligibility requirements, so they belong in the
-# tri-state matrix with every other one (owner 2026-08-10). Co-financing had NO plainly
-# named field at all — it had to be inferred from "Cost sharing match required",
-# "Government / counterpart co-financing required" and a numeric min-secured-%, none of
-# which a researcher would recognise as the question (migration 092 adds the column).
-# Pre-financing was a special-cased selectbox further down the form; both are now asked in
-# the same place, the same way, and scored against their own org capacity.
-for _rq in ("donor_cofinancing_required", "donor_prefinance_required"):
-    if _rq not in _REQ:
-        _REQ.append(_rq)
-_FLAG_GROUPS = {
-    "Legal & registration requirements": [c for c in _ELIG if c in _FLAGS],
-    "Program-area fit": _FIT,
-    "Requirements & compliance": _REQ,
-}
+_META = _df.META
+_SHORT_TEXT = _df.SHORT_TEXT
+_LONG_TEXT = _df.LONG_TEXT
+_CONTACT = _df.CONTACT
+_CHOICE = _df.CHOICE
+_PROFILE = _df.PROFILE
+_HIDDEN_FIELDS = _df.HIDDEN_FIELDS
+_NON_FLAG = _df.NON_FLAG
+_ELIG = _df.ELIG
+# The classification is NEGATIVE and derived from the LIVE columns: a migration
+# that adds a donor_intel column adds a form field, with no code change here.
+_FLAGS, _FIT, _REQ, _FLAG_GROUPS = _df.flag_groups(df.columns)
 
 # Normalized category for the chart / filter / table (display-only).
 df["category_clean"] = (df["donor_category"].map(_normalize_category)
@@ -481,35 +183,13 @@ df["category_clean"] = (df["donor_category"].map(_normalize_category)
 # (Program areas now use the SHARED hierarchical taxonomy via
 # core.program_area_select.program_area_rating_editor — same schema as the org
 # fit profile — so the donor's *_fit flags are deprecated for the picker.)
-FUNDING_MECHANISMS = [
-    "Grants", "Loans / concessional finance", "Procurement / contracts",
-    "Program-related investments (equity/debt)", "Technical assistance",
-    "Co-financing", "Prizes / challenges", "In-kind / commodities",
-]
-ROUTE_STATUSES = ["Active", "Inactive", "On hold / paused", "Closed", "Unknown"]
-LOCAL_ORG_ELIGIBLE = [
-    "Yes — direct", "Yes — via competitive RFP / invited proposal",
-    "Yes — via international partner only", "No", "Unknown",
-]
-# Structured vocabularies for the Intelligence section (each + "Other (specify)").
-FUNDING_CYCLES = [
-    "Rolling / open call (no fixed deadline)", "Annual",
-    "Biannual (twice a year)", "Quarterly", "Multi-year cycle",
-    "Ad hoc / by announcement", "Unknown",
-]
-APPLICATION_PROCESSES = [
-    "Concept note → full proposal (two-stage)", "Full proposal (single-stage)",
-    "Letter of inquiry / EOI first", "Online portal submission",
-    "By invitation only", "Competitive tender / RFP",
-    "Unsolicited proposals accepted", "Unknown",
-]
-REPORTING_REQUIREMENTS = [
-    "Narrative + financial reports", "Quarterly reporting",
-    "Semi-annual reporting", "Annual reporting",
-    "Milestone / deliverable-based", "Final report only",
-    "Independent audit required", "Unknown",
-]
-_OTHER = "Other (specify)"
+FUNDING_MECHANISMS = _df.FUNDING_MECHANISMS
+ROUTE_STATUSES = _df.ROUTE_STATUSES
+LOCAL_ORG_ELIGIBLE = _df.LOCAL_ORG_ELIGIBLE
+FUNDING_CYCLES = _df.FUNDING_CYCLES
+APPLICATION_PROCESSES = _df.APPLICATION_PROCESSES
+REPORTING_REQUIREMENTS = _df.REPORTING_REQUIREMENTS
+_OTHER = _df.OTHER
 
 # Founded-year + HQ-country dropdowns (avoid free-text typos). Years run from the
 # current year back to 1800; "" is the unset option. HQ country reuses the shared
@@ -519,50 +199,13 @@ _YEAR_OPTIONS = [""] + [str(_y) for _y in range(date.today().year, 1799, -1)]
 _HQ_COUNTRY_OPTIONS = [""] + list(_geo.COUNTRIES)
 
 
-def _to_list(v) -> list[str]:
-    """Parse a stored value into a list — JSON list, else split legacy free text."""
-    if v is None:
-        return []
-    s = str(v).strip()
-    if not s or s.lower() in ("nan", "none", "nat"):
-        return []
-    try:
-        j = json.loads(s)
-        if isinstance(j, list):
-            return [str(x).strip() for x in j if str(x).strip()]
-    except (ValueError, TypeError):
-        pass
-    # Split legacy free text on ; and , only — NOT "/", which appears inside
-    # real values ("Procurement / contracts", "(equity/debt)").
-    return [t.strip() for t in re.split(r"[;,]", s) if t.strip()]
-
-
-def _na(v) -> bool:
-    """True if v is pandas NA/NaN/NaT (safe on non-scalars)."""
-    try:
-        return v is not None and bool(pd.isna(v))
-    except (TypeError, ValueError):
-        return False
-
-
-def _cell(v):
-    """Stripped string for a data-editor cell, or None. Safe against pandas
-    NA / NaN (a bare `if cell` on a StringDtype NA raises 'ambiguous')."""
-    try:
-        if v is None or pd.isna(v):
-            return None
-    except (TypeError, ValueError):
-        pass
-    s = str(v).strip()
-    return s or None
+_to_list = _df.to_list
+_na = _df.na
+_cell = _df.cell
 
 
 # Fields stored as JSON lists — rendered as comma lists in share/export.
-_LIST_FIELDS = {"donor_geographic_scope", "donor_priority_areas",
-                "donor_funding_mechanism", "donor_funders_collaborators",
-                # MUST-1 multi-selects (migration 049) — stored as JSON lists.
-                "donor_hq_country_required", "donor_registration_region", "donor_required_partner_type",
-                "donor_required_partner_country"}
+_LIST_FIELDS = _df.LIST_FIELDS
 
 # Unified partner/funder options for the "Funders & collaborators" picker — the
 # shared partner vocabulary merged with the donor catalog (so any catalogued donor
@@ -573,21 +216,8 @@ _PARTNER_OPTIONS = list(dict.fromkeys(
              if "donor" in df.columns else [])))
 
 
-def _disp_field(row: dict, col: str):
-    """Display string for share/export: list-fields joined with commas, else _disp."""
-    if col in _LIST_FIELDS:
-        vals = _to_list(row.get(col))
-        return ", ".join(vals) if vals else None
-    return _disp(row.get(col))
-
-
-def _json_dicts(v) -> list[dict]:
-    """Parse a JSON-array-of-objects column into a list of dicts (else [])."""
-    try:
-        j = json.loads(v or "[]")
-    except (ValueError, TypeError):
-        return []
-    return [d for d in j if isinstance(d, dict)] if isinstance(j, list) else []
+_disp_field = _df.disp_field
+_json_dicts = _df.json_dicts
 
 
 def _past_projects(row: dict) -> list[dict]:
@@ -603,57 +233,13 @@ def _funding_tiers(row: dict) -> list[dict]:
 # Fields that count toward the data-completeness score (every donor-facing field).
 # JSON/list fields count as documented when non-empty; flags count when explicitly
 # yes/no (blank = undocumented). donor_short is excluded (optional acronym).
-_COMPLETENESS_TEXT = [
-    "donor", "donor_category", "donor_website", "donor_founded",
-    "donor_general_email", "donor_main_phone", "donor_hq_country", "donor_hq_address",
-    "donor_linkedin_url", "donor_other_profile_urls", "donor_summary_description", "donor_mission",
-    "donor_vision", "donor_values", "donor_strategic_priorities", "donor_strategy_url",
-    "donor_award_low", "donor_award_high", "donor_total_annual_funding_global",
-    "donor_total_awards", "donor_total_funding_to_date", "donor_current_awards", "donor_past_awards",
-    "donor_projected_budget", "donor_funding_programs", "donor_in_scope", "donor_out_of_scope",
-    "donor_direct_local_org_eligible", "donor_active_route_status", "donor_prefinance_required",
-    "donor_application_process", "donor_funding_cycle", "donor_reporting_requirements",
-    "donor_application_deadlines", "donor_submission_portal_url", "donor_recent_activity",
-    "donor_eligibility_notes", "donor_selection_criteria", "donor_strategic_fit_notes",
-    "donor_gaps_risks", "donor_recommended_approach", "donor_verification_level",
-    "donor_evidence_summary", "notes", "donor_source_urls",
-]
-_COMPLETENESS_JSON = ["donor_funding_tiers_json", "donor_past_projects_json"]
+_COMPLETENESS_TEXT = _df.COMPLETENESS_TEXT
+_COMPLETENESS_JSON = _df.COMPLETENESS_JSON
 
 
 def _completeness(row: dict) -> tuple[int, int, int]:
-    """Data-quality = % of donor fields that are documented (all fields counted).
-    Returns (percent, populated, total)."""
-    have = total = 0
-    for c in _COMPLETENESS_TEXT:
-        total += 1
-        if _disp(row.get(c)):
-            have += 1
-    for c in list(_LIST_FIELDS) + _COMPLETENESS_JSON:
-        total += 1
-        ok = bool(_json_dicts(row.get(c))) if c.endswith("_json") else bool(_to_list(row.get(c)))
-        if ok:
-            have += 1
-    # program_area_ratings is a JSON OBJECT (not a list) — documented if non-empty.
-    total += 1
-    try:
-        _r = json.loads(row.get("donor_priority_ratings") or "{}")
-    except (ValueError, TypeError):
-        _r = {}
-    if isinstance(_r, dict) and _r:
-        have += 1
-    # Flags — but NOT the deprecated *_fit program-area flags (program areas are
-    # now captured in priority_program_areas + program_area_ratings).
-    for c in _FLAGS:
-        if c in _FIT:
-            continue
-        total += 1
-        # Any explicit response counts as answered — Required/Not Required AND an
-        # explicit "Not sure" (the question was engaged). Only blank is missing data.
-        if str(row.get(c) or "").strip().lower() in ("yes", "no", "not_sure"):
-            have += 1
-    pct = round(100 * have / total) if total else 0
-    return pct, have, total
+    """(percent, populated, total) — the denominator comes from the live columns."""
+    return _df.completeness(row, _FLAGS, _FIT)
 
 
 # Dialog styling: breathing room, sticky header, and a clear section/sub-label
@@ -930,22 +516,11 @@ def _yes(v) -> bool:
 # SCORING is unchanged: core.criteria_derive._truthy activates only on "yes"/"required",
 # so "no", "not_sure" AND blank all read as Not Required (current logic/defaults).
 # Eligibility CAPABILITIES (NGO eligible, grant route, …) stay yes/no checkboxes.
-_TRISTATE_GROUPS = {"Requirements & compliance"}
-_TRISTATE_OPTS = ["—", "Required", "Not required", "Not sure"]
-_TRISTATE_TO_VAL = {"—": None, "Required": "yes", "Not required": "no", "Not sure": "not_sure"}
-_VAL_TO_TRISTATE = {"yes": "Required", "no": "Not required", "not_sure": "Not sure"}
-
-
-def _prov_of(row: dict, col: str):
-    """Provenance tag for a donor field (human_verified | from_call | auto_created), or
-    None. field_provenance is jsonb — a dict from Supabase, or a JSON string."""
-    fp = row.get("field_provenance")
-    if isinstance(fp, str) and fp.strip():
-        try:
-            fp = json.loads(fp)
-        except Exception:
-            fp = {}
-    return fp.get(col) if isinstance(fp, dict) else None
+_TRISTATE_GROUPS = _df.TRISTATE_GROUPS
+_TRISTATE_OPTS = _df.TRISTATE_OPTS
+_TRISTATE_TO_VAL = _df.TRISTATE_TO_VAL
+_VAL_TO_TRISTATE = _df.VAL_TO_TRISTATE
+_prov_of = _df.prov_of
 
 
 def _checkbox_matrix(row: dict, *, editable: bool, key_prefix: str,
@@ -1548,116 +1123,45 @@ def _edit_dialog(row: dict, *, suggest_mode: bool = False) -> None:
             key=f"suggest_rat_{ck}", height=80)
     _save_label = "💡 Submit suggestion" if suggest_mode else "💾 Save changes"
     if st.button(_save_label, type="primary", width='stretch'):
-        payload = {k: (v.strip() if isinstance(v, str) else v) or None
-                   for k, v in edited.items()}
         key = row["canonical_key"]
-        payload["canonical_key"] = key
-        # Normalize the category to its canonical form on the way in.
-        if payload.get("donor_category"):
-            payload["donor_category"] = _normalize_category(payload["donor_category"])
-        # Only persist keys that are real columns. Anything the user filled that
-        # has no column yet (e.g. the profile fields before migration 025) would
-        # be DROPPED silently — so we detect those and warn, instead of letting
-        # the save look successful while their input quietly disappears.
-        _cols = set(df.columns) | {"canonical_key"}
-        _dropped = sorted(_label(k) for k, v in payload.items()
-                          if k not in _cols and v not in (None, ""))
-        payload = {k: v for k, v in payload.items() if k in _cols}
 
         # ── SUGGEST MODE: file a proposal instead of writing the shared row ──
         if suggest_mode:
-            from core import suggestions as _sug
-            _diff, _base = _sug.diff_of(payload, row,
-                                        allowed=_cols - {"canonical_key"})
-            if not _diff:
-                st.warning("No changes to suggest — edit a field first.")
-                return
             try:
-                _sug.create_suggestion(
-                    resource_type="donor_intel", target_id=key,
-                    proposed_diff=_diff, base_snapshot=_base,
-                    rationale=_rationale, target_label=row.get("donor"),
-                    user=user)
+                res = _dw.suggest_edit(
+                    canonical_key=key, edited=edited, row=row, columns=df.columns,
+                    rationale=_rationale, target_label=row.get("donor"), user=user)
             except Exception as e:  # noqa: BLE001
                 st.error(f"❌ Could not submit suggestion.\n\n`{e}`")
                 return
+            if not res["ok"]:
+                st.warning("No changes to suggest — edit a field first.")
+                return
             st.session_state["_donor_flash"] = (
                 f"💡 Suggestion submitted for {row.get('donor')} — a developer "
-                f"Super User will review {len(_diff)} proposed change(s).")
+                f"Super User will review {res['count']} proposed change(s).")
             st.rerun()
             return
 
-        # Provenance: a Save means the reviewer reviewed the visible requirements, so mark
-        # every non-blank requirement human-verified (the source of truth — auto-enrichment
-        # never overwrites these, and the 🔵 "suggested" badge clears). Blank stays untagged.
-        if "field_provenance" in _cols:
-            from core.donor_enrich import mark_human_verified
-            _fp = row.get("field_provenance")
-            if isinstance(_fp, str) and _fp.strip():
-                try:
-                    _fp = json.loads(_fp)
-                except Exception:
-                    _fp = {}
-            _fp = _fp if isinstance(_fp, dict) else {}
-            _verified = [c for c in _REQ if str(payload.get(c) or "").strip()]
-            payload["field_provenance"] = json.dumps(mark_human_verified(_fp, _verified))
-
-        # Reconcile contacts: replace this donor's set with the edited rows.
-        recs = []
-        for _, cr in contacts_edited.iterrows():
-            rec: dict = {}
-            for c in _CONTACT_COLS:
-                if c == "is_official":
-                    rec[c] = bool(cr.get(c))
-                    continue
-                v = cr.get(c)
-                try:
-                    blank = v is None or pd.isna(v)
-                except (TypeError, ValueError):
-                    blank = v is None
-                rec[c] = (str(v).strip() or None) if not blank else None
-            if any(rec[c] for c in _CONTACT_COLS if c != "is_official"):
-                rec["canonical_key"] = key
-                recs.append(rec)
-
-        # Persist the donor row. We VERIFY the write landed (PostgREST returns
-        # the upserted row) rather than trusting a silent 200 — an RLS policy or
-        # phantom column can make an upsert a no-op with no exception, which is
-        # exactly the "looks saved but nothing changed" symptom. Contacts are
-        # reconciled separately so a contacts hiccup can't block the donor save.
+        # The rules live in core.donor_write so the background job runner applies the
+        # SAME ones — payload cleaning, the column intersection, the human-verified
+        # provenance tag, the verified upsert and the contacts reconciliation.
         try:
-            resp = (sb.table("donor_intel")
-                    .upsert(payload, on_conflict="canonical_key")
-                    .execute())
+            res = _dw.apply_edit(
+                sb, canonical_key=key, edited=edited, row=row, columns=df.columns,
+                req_cols=_REQ,
+                contacts=[cr.to_dict() for _, cr in contacts_edited.iterrows()])
+        except _dw.WriteRefused as e:
+            st.error(f"❌ {e}")
+            return
         except Exception as e:  # noqa: BLE001 — show the real DB error to the user
             st.error(f"❌ Save failed — donor not updated.\n\n`{e}`")
             return
-        if not getattr(resp, "data", None):
-            st.error("❌ Save returned no row — the write was blocked (likely an "
-                     "RLS policy or a missing column). Nothing was changed.")
-            return
-
-        _contact_warn = None
-        try:
-            sb.table("donor_contacts").delete().eq("canonical_key", key).execute()
-            if recs:
-                sb.table("donor_contacts").insert(recs).execute()
-        except Exception as e:  # noqa: BLE001 — donor saved; contacts didn't
-            _contact_warn = f"Donor saved, but contacts couldn't be updated: {e}"
 
         st.cache_data.clear()
         st.session_state["_donor_flash"] = f"✓ Saved changes to {row.get('donor')}."
-        _warns = []
-        if _dropped:
-            _warns.append(
-                "These fields aren't stored yet because the database is missing "
-                "their columns (the deployed app and the DB are on different "
-                "data-model migrations). Apply the latest `db/migrations/` in Supabase "
-                "AND deploy the matching code, then re-save: " + ", ".join(_dropped))
-        if _contact_warn:
-            _warns.append(_contact_warn)
-        if _warns:
-            st.session_state["_donor_flash_warn"] = "  \n\n".join(_warns)
+        if res["warnings"]:
+            st.session_state["_donor_flash_warn"] = "  \n\n".join(res["warnings"])
         st.toast(f"Saved {row.get('donor')}", icon="✅")
         st.rerun()
 
@@ -1666,7 +1170,7 @@ def _edit_dialog(row: dict, *, suggest_mode: bool = False) -> None:
 def _delete_dialog(row: dict) -> None:
     st.warning(f"Delete **{row.get('donor')}** from the matrix? This can't be undone.")
     if st.button("🗑 Yes, delete", type="primary"):
-        sb.table("donor_intel").delete().eq("canonical_key", row["canonical_key"]).execute()
+        _dw.delete_donors(sb, [row["canonical_key"]])
         st.cache_data.clear()
         st.session_state["_donor_flash"] = f"Deleted {row.get('donor')}."
         st.rerun()
@@ -1716,21 +1220,15 @@ def _add_donor_dialog(*, suggest_mode: bool = False) -> None:
             st.rerun()
             return
 
-        _slug = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_") or "donor"
         _existing = set(df["canonical_key"]) if "canonical_key" in df.columns else set()
-        _key, _i = _slug, 2
-        while _key in _existing:
-            _key, _i = f"{_slug}_{_i}", _i + 1
-        payload = {"canonical_key": _key, **_diff}
+        _key = _dw.slug_key(name, _existing)
         try:
-            resp = sb.table("donor_intel").upsert(
-                payload, on_conflict="canonical_key").execute()
+            _dw.save_donor(sb, {"canonical_key": _key, **_diff})
+        except _dw.WriteRefused as e:
+            st.error(f"❌ Create returned no row — {e}")
+            return
         except Exception as e:  # noqa: BLE001
             st.error(f"❌ Create failed — {e}")
-            return
-        if not getattr(resp, "data", None):
-            st.error("❌ Create returned no row — the write was blocked "
-                     "(RLS / columns). Nothing was added.")
             return
         st.cache_data.clear()
         st.session_state["_donor_flash"] = (
@@ -2290,8 +1788,9 @@ def _weburl(v):
 def _delete_many_dialog(keys: list) -> None:
     st.warning(f"Delete **{len(keys)}** selected donor(s)? This can't be undone.")
     if st.button("🗑 Yes, delete all", type="primary"):
-        for _k in keys:
-            sb.table("donor_intel").delete().eq("canonical_key", _k).execute()
+        # One statement, not a loop of them: the same rule the job runner applies, and
+        # a partial failure no longer leaves half the selection deleted silently.
+        _dw.delete_donors(sb, keys)
         st.cache_data.clear()
         st.session_state["_donor_flash"] = f"Deleted {len(keys)} donor(s)."
         st.rerun()

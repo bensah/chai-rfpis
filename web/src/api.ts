@@ -701,6 +701,39 @@ export const deleteRfp = (uid: string) =>
     `/pipelines/rfp/${encodeURIComponent(uid)}`);
 
 // ── Donors ───────────────────────────────────────────────────────────────────
+/**
+ * Donor writes. Every one QUEUES a job and returns its id — none of them changes a donor
+ * before the caller polls it (`awaitJob`). The rules live in core/donor_write.py so the
+ * runner and the Streamlit page apply the same ones to this shared, cross-tenant table.
+ *
+ * `suggest: true` files a proposal for review instead of writing. Which of the two a
+ * given user is allowed to do is decided in the job, against the users table — not here,
+ * and not by hiding a button.
+ */
+export type DonorJob = { job_id: string; dispatched: boolean; detail: string };
+
+export const createDonor = (
+  name: string, opts: { edited?: Record<string, unknown>; suggest?: boolean; rationale?: string } = {},
+) => call<DonorJob>("/donors", { method: "POST", body: JSON.stringify({ name, ...opts }) });
+
+export const updateDonor = (
+  key: string,
+  opts: {
+    edited: Record<string, unknown>;
+    /** OMIT to leave contacts alone. Sending [] DELETES every contact this donor has. */
+    contacts?: Record<string, unknown>[];
+    suggest?: boolean;
+    rationale?: string;
+  },
+) => call<DonorJob>(`/donors/${encodeURIComponent(key)}`,
+  { method: "PATCH", body: JSON.stringify(opts) });
+
+export const deleteDonor = (key: string) =>
+  call<DonorJob>(`/donors/${encodeURIComponent(key)}`, { method: "DELETE" });
+
+export const deleteDonors = (keys: string[]) =>
+  call<DonorJob>("/donors/delete", { method: "POST", body: JSON.stringify({ keys }) });
+
 export const fetchDonors = () => call<{ donors: Donor[] }>("/donors").then((r) => {
   try {
     localStorage.setItem(DONOR_CACHE_KEY, JSON.stringify(r.donors));

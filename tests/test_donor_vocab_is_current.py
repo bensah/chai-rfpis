@@ -2,14 +2,13 @@
 
 `supabase/functions/_shared/api/donor_vocab.ts` (Edge Function) and
 `web/src/generated/donor_vocab.json` (browser) are both emitted by
-`scripts/gen_donor_vocab.py`, which lifts the constants out of donors.py's AST. Generated
-files go stale in silence, and these go stale in a way that is hard to see from either
-app.
+`scripts/gen_donor_vocab.py` from `core/donor_fields.py`. Generated files go stale in
+silence, and these go stale in a way that is hard to see from either app.
 
 WHY A STALE COPY IS WORSE HERE THAN A MISSING ONE. donors.py does not list the form's
 fields; it classifies them, and the classification is a NEGATIVE one:
 
-    _FLAGS = [c for c in df.columns if c not in _NON_FLAG]          # donors.py:448
+    flags = [c for c in columns if c not in NON_FLAG]       # donor_fields.flag_groups
 
 So a column that falls out of one of these sets does not disappear from the form. It
 becomes a flag: a new checkbox nobody added, a new entry in the completeness denominator,
@@ -22,10 +21,10 @@ somebody looked and could not tell. They score identically (core.criteria_derive
 fires only on yes/required), so a wrong map is invisible to scoring and visible only in
 completeness, which is the number people use to decide whether a record is worth trusting.
 
-This re-runs the generator's own lift and compares, rather than re-deriving the values a
-second way — the lift is the thing under test, and a second implementation of it here
-would just be a third copy to keep in step. It executes nothing from donors.py, so it
-needs no Streamlit, no database and no write access.
+This reads the constants through the generator's own accessor and compares, rather than
+re-deriving them a second way — a second implementation here would just be a third copy
+to keep in step. core/donor_fields.py holds values and pure functions only, so this needs
+no Streamlit, no database and no write access.
 
 Run:  python -m unittest tests.test_donor_vocab_is_current
 """
@@ -78,15 +77,15 @@ class DonorVocabIsCurrent(unittest.TestCase):
     # -- the classification sets, which decide what is a flag -------------------
     def test_classification_sets_match_the_python(self):
         for py_name, ts_name in [
-            ("_META", "META"), ("_SHORT_TEXT", "SHORT_TEXT"), ("_LONG_TEXT", "LONG_TEXT"),
-            ("_CONTACT", "CONTACT"), ("_PROFILE", "PROFILE"),
-            ("_HIDDEN_FIELDS", "HIDDEN_FIELDS"), ("_ELIG", "ELIG"),
+            ("META", "META"), ("SHORT_TEXT", "SHORT_TEXT"), ("LONG_TEXT", "LONG_TEXT"),
+            ("CONTACT", "CONTACT"), ("PROFILE", "PROFILE"),
+            ("HIDDEN_FIELDS", "HIDDEN_FIELDS"), ("ELIG", "ELIG"),
         ]:
             with self.subTest(constant=py_name):
                 self.assertEqual(_emitted_ts(ts_name), self._plain(self.lifted[py_name]))
 
     def test_choice_enums_match_and_keep_the_unset_option_first(self):
-        self.assertEqual(_emitted_ts("CHOICE"), self.lifted["_CHOICE"])
+        self.assertEqual(_emitted_ts("CHOICE"), self.lifted["CHOICE"])
         for col, opts in _emitted_ts("CHOICE").items():
             with self.subTest(column=col):
                 # The leading "" is the UNSET option. If it stops being first, the form's
@@ -97,9 +96,9 @@ class DonorVocabIsCurrent(unittest.TestCase):
     # -- the tri-state map ------------------------------------------------------
     def test_tristate_map_keeps_blank_distinct_from_not_sure(self):
         to_val = _emitted_ts("TRISTATE_TO_VAL")
-        self.assertEqual(to_val, self.lifted["_TRISTATE_TO_VAL"])
+        self.assertEqual(to_val, self.lifted["TRISTATE_TO_VAL"])
         opts = _emitted_ts("TRISTATE_OPTS")
-        self.assertEqual(opts, self.lifted["_TRISTATE_OPTS"])
+        self.assertEqual(opts, self.lifted["TRISTATE_OPTS"])
         # Four states, and the blank one maps to null — not to "not_sure". Blank means
         # nobody answered; "not_sure" means somebody looked and could not tell. They
         # score the same and count differently, so only completeness can see a mix-up.
@@ -108,7 +107,7 @@ class DonorVocabIsCurrent(unittest.TestCase):
         self.assertEqual(sorted(v for v in to_val.values() if v is not None),
                          ["no", "not_sure", "yes"])
         back = _emitted_ts("VAL_TO_TRISTATE")
-        self.assertEqual(back, self.lifted["_VAL_TO_TRISTATE"])
+        self.assertEqual(back, self.lifted["VAL_TO_TRISTATE"])
         # Round-trips for every answered state, so an edit that touches nothing stores
         # what it read.
         for word, stored in to_val.items():
@@ -119,19 +118,19 @@ class DonorVocabIsCurrent(unittest.TestCase):
     # -- the dropdown vocabularies and labels -----------------------------------
     def test_dropdowns_and_labels_match(self):
         for py_name, ts_name in [
-            ("_ACR", "ACR"), ("_LABEL_OVERRIDES", "LABEL_OVERRIDES"),
-            ("_PARTNER_TYPE_OPTIONS", "PARTNER_TYPE_OPTIONS"),
+            ("ACR", "ACR"), ("LABEL_OVERRIDES", "LABEL_OVERRIDES"),
+            ("PARTNER_TYPE_OPTIONS", "PARTNER_TYPE_OPTIONS"),
             ("FUNDING_MECHANISMS", "FUNDING_MECHANISMS"),
             ("ROUTE_STATUSES", "ROUTE_STATUSES"),
             ("LOCAL_ORG_ELIGIBLE", "LOCAL_ORG_ELIGIBLE"),
             ("FUNDING_CYCLES", "FUNDING_CYCLES"),
             ("APPLICATION_PROCESSES", "APPLICATION_PROCESSES"),
             ("REPORTING_REQUIREMENTS", "REPORTING_REQUIREMENTS"),
-            ("_CATEGORIES", "CATEGORIES"), ("_CATEGORY_CANON", "CATEGORY_CANON"),
-            ("_ACRONYMS", "ACRONYMS"), ("_LIST_FIELDS", "LIST_FIELDS"),
-            ("_COMPLETENESS_TEXT", "COMPLETENESS_TEXT"),
-            ("_COMPLETENESS_JSON", "COMPLETENESS_JSON"),
-            ("_CONTACT_COLS", "CONTACT_COLS"),
+            ("CATEGORIES", "CATEGORIES"), ("CATEGORY_CANON", "CATEGORY_CANON"),
+            ("ACRONYMS", "ACRONYMS"), ("LIST_FIELDS", "LIST_FIELDS"),
+            ("COMPLETENESS_TEXT", "COMPLETENESS_TEXT"),
+            ("COMPLETENESS_JSON", "COMPLETENESS_JSON"),
+            ("CONTACT_COLS", "CONTACT_COLS"),
         ]:
             with self.subTest(constant=py_name):
                 self.assertEqual(_emitted_ts(ts_name), self._plain(self.lifted[py_name]))
@@ -140,15 +139,15 @@ class DonorVocabIsCurrent(unittest.TestCase):
     def test_browser_json_carries_the_same_values(self):
         """The two runtimes do not share a bundle, so both emissions must be current."""
         for key, py_name in [
-            ("meta", "_META"), ("shortText", "_SHORT_TEXT"), ("longText", "_LONG_TEXT"),
-            ("contact", "_CONTACT"), ("contactCols", "_CONTACT_COLS"),
-            ("profile", "_PROFILE"), ("hidden", "_HIDDEN_FIELDS"), ("elig", "_ELIG"),
-            ("acr", "_ACR"), ("labelOverrides", "_LABEL_OVERRIDES"),
-            ("listFields", "_LIST_FIELDS"), ("acronyms", "_ACRONYMS"),
-            ("completenessText", "_COMPLETENESS_TEXT"),
-            ("completenessJson", "_COMPLETENESS_JSON"),
-            ("categoryCanon", "_CATEGORY_CANON"), ("choice", "_CHOICE"),
-            ("tristateToVal", "_TRISTATE_TO_VAL"), ("valToTristate", "_VAL_TO_TRISTATE"),
+            ("meta", "META"), ("shortText", "SHORT_TEXT"), ("longText", "LONG_TEXT"),
+            ("contact", "CONTACT"), ("contactCols", "CONTACT_COLS"),
+            ("profile", "PROFILE"), ("hidden", "HIDDEN_FIELDS"), ("elig", "ELIG"),
+            ("acr", "ACR"), ("labelOverrides", "LABEL_OVERRIDES"),
+            ("listFields", "LIST_FIELDS"), ("acronyms", "ACRONYMS"),
+            ("completenessText", "COMPLETENESS_TEXT"),
+            ("completenessJson", "COMPLETENESS_JSON"),
+            ("categoryCanon", "CATEGORY_CANON"), ("choice", "CHOICE"),
+            ("tristateToVal", "TRISTATE_TO_VAL"), ("valToTristate", "VAL_TO_TRISTATE"),
         ]:
             with self.subTest(key=key):
                 self.assertEqual(self.web[key], self._plain(self.lifted[py_name]))

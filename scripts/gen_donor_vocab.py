@@ -1,19 +1,19 @@
 """Emit supabase/functions/_shared/api/donor_vocab.ts from the Python that owns the form.
 
-`app_pages/donors.py` CANNOT BE IMPORTED — it calls Streamlit at module scope and reads
-the live `donor_intel` table into a dataframe before it defines anything. So the constants
-are lifted out of its AST and literal-eval'd, never executed. Same technique as the other
-generators here, for the same reason: the alternative is a hand-copied vocabulary, and a
-hand-copied vocabulary drifts.
+The source is `core/donor_fields.py`, which is an ordinary importable module. It used to be
+`app_pages/donors.py`, which is not — it calls Streamlit at module scope and reads the live
+`donor_intel` table before defining anything — so this generator parsed the page's AST and
+literal-eval'd the constants out of it. Moving them to core removed the need for that, and
+with it the generator's second opinion about what the page meant.
 
 WHY THIS FILE IS GENERATED, AND WHAT IT DELIBERATELY LEAVES OUT.
 
 The donor edit form does not have a field list. It has a field *classification*: every
 column of `donor_intel` that is not named in one of the text/contact/profile/meta sets is
 a FLAG, and flags are then split into legal-registration, program-area-fit and
-requirements. That rule lives at `donors.py:448`:
+requirements. That rule is `donor_fields.flag_groups()`:
 
-    _FLAGS = [c for c in df.columns if c not in _NON_FLAG]
+    flags = [c for c in columns if c not in NON_FLAG]
 
 Read it the other way round and the consequence is clear: **a migration that adds a column
 to donor_intel adds a flag to the form, with no code change anywhere.** That is the design,
@@ -21,10 +21,9 @@ and it is why the classification sets are the thing worth pinning and the flag l
 
 So this file emits the REPO CONSTANTS — the sets that say what is *not* a flag, the
 dropdown vocabularies, the tri-state map, the label overrides — and nothing that depends on
-the live table. `donorFlagGroups()` in donor_edit.ts computes _FLAGS/_FIT/_REQ from the
-columns the route actually read, exactly as the Python computes them from the dataframe it
-actually loaded. Same split as org_vocab.ts and form_vocab.ts: repo constant here,
-per-deployment data there.
+the live table. Each consumer calls its own `flag_groups` over the columns it actually
+read, exactly as the page does over the dataframe it actually loaded. Same split as
+org_vocab.ts and form_vocab.ts: repo constant here, per-deployment data there.
 
 THE TRI-STATE MAP IS THE SHARP EDGE. A requirement has FOUR states and blank is not Not
 Sure: blank means nobody answered, "not_sure" means somebody looked and could not tell.
@@ -36,13 +35,12 @@ answers somebody did.
     python scripts/gen_donor_vocab.py          # rewrites the .ts in place
 
 Re-run it whenever the classification sets, the dropdown vocabularies, the label overrides
-or the tri-state map change in donors.py. `tests/test_donor_vocab_is_current.py`
-re-generates and compares, so a stale table fails a test instead of quietly mis-rendering
-somebody's donor record.
+or the tri-state map change in `core/donor_fields.py`.
+`tests/test_donor_vocab_is_current.py` re-reads them and compares, so a stale table fails
+a test instead of quietly mis-rendering somebody's donor record.
 """
 from __future__ import annotations
 
-import ast
 import json
 import sys
 from pathlib import Path
@@ -50,7 +48,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-SRC = ROOT / "app_pages/donors.py"
+from core import donor_fields as fields          # noqa: E402
+
 OUT = ROOT / "supabase/functions/_shared/api/donor_vocab.ts"
 # The browser does not import the Edge Function's modules — the two runtimes are
 # separate bundles — so the same lifted constants are emitted a second time as JSON,
@@ -58,47 +57,40 @@ OUT = ROOT / "supabase/functions/_shared/api/donor_vocab.ts"
 # two emissions, because the alternative is the hand-copied copy this replaces.
 OUT_WEB = ROOT / "web/src/generated/donor_vocab.json"
 
-# Every name here must be a PURE LITERAL in donors.py. A name whose value is computed —
-# _FLAGS, _FIT, _REQ, _FLAG_GROUPS (the live columns), _YEAR_OPTIONS (today's date),
-# _HQ_COUNTRY_OPTIONS and _PARTNER_OPTIONS (other modules and the live table) — is
-# deliberately absent: those are derived at request time from data this file cannot see.
+# Every name here is a repo CONSTANT. Anything derived is deliberately absent: the flag
+# lists come from donor_fields.flag_groups() over the live columns, and the year and
+# partner dropdowns from today's date and the live donor list. Emitting any of those
+# would freeze one deployment's data into the repo and stop a migration from adding a
+# form field. tests/test_donor_vocab_is_current.py pins that exclusion.
 WANTED = [
-    "_META", "_SHORT_TEXT", "_LONG_TEXT", "_CONTACT", "_CHOICE", "_PROFILE",
-    "_HIDDEN_FIELDS", "_ELIG", "_ACR", "_LABEL_OVERRIDES", "_PARTNER_TYPE_OPTIONS",
+    "META", "SHORT_TEXT", "LONG_TEXT", "CONTACT", "CHOICE", "PROFILE",
+    "HIDDEN_FIELDS", "ELIG", "ACR", "LABEL_OVERRIDES", "PARTNER_TYPE_OPTIONS",
     "FUNDING_MECHANISMS", "ROUTE_STATUSES", "LOCAL_ORG_ELIGIBLE", "FUNDING_CYCLES",
-    "APPLICATION_PROCESSES", "REPORTING_REQUIREMENTS", "_OTHER", "_TRISTATE_GROUPS",
-    "_TRISTATE_OPTS", "_TRISTATE_TO_VAL", "_VAL_TO_TRISTATE", "_LIST_FIELDS",
-    "_COMPLETENESS_TEXT", "_COMPLETENESS_JSON", "_CATEGORIES", "_CATEGORY_CANON",
-    "_ACRONYMS", "_CONTACT_COLS",
+    "APPLICATION_PROCESSES", "REPORTING_REQUIREMENTS", "OTHER", "TRISTATE_GROUPS",
+    "TRISTATE_OPTS", "TRISTATE_TO_VAL", "VAL_TO_TRISTATE", "LIST_FIELDS",
+    "COMPLETENESS_TEXT", "COMPLETENESS_JSON", "CATEGORIES", "CATEGORY_CANON",
+    "ACRONYMS", "CONTACT_COLS",
 ]
 
 
 def lift() -> dict:
-    """Literal-eval the wanted module-level assignments without running the module."""
-    tree = ast.parse(SRC.read_text(encoding="utf-8"), filename=str(SRC))
-    found: dict = {}
-    for node in tree.body:                      # module level only — not ast.walk
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-            continue
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        for t in targets:
-            if not isinstance(t, ast.Name) or t.id not in WANTED:
-                continue
-            if node.value is None:
-                continue
-            try:
-                found[t.id] = ast.literal_eval(node.value)
-            except ValueError:
-                # Computed, not literal. Loud, because silently skipping one would ship a
-                # vocabulary that is missing a field rather than one that is wrong.
-                raise SystemExit(
-                    f"{t.id} is not a literal in {SRC.name} — it is computed at import "
-                    f"time. Either it moved, or it now depends on live data and belongs "
-                    f"in donor_edit.ts instead of here.")
-    missing = [n for n in WANTED if n not in found]
+    """Read the wanted constants off core.donor_fields.
+
+    THIS USED TO PARSE donors.py's AST, because the vocabulary lived inside a Streamlit
+    page that cannot be imported. It now lives in core/donor_fields.py — a plain module
+    with no Streamlit and no database — so the values come from an ordinary import, and
+    the generator no longer has a second opinion about what donors.py means.
+
+    A name that disappears from the module raises here rather than being skipped:
+    silently dropping one would ship a vocabulary that is missing a field, which does not
+    remove a form field but INVENTS one (the classification is negative).
+    """
+    missing = [n for n in WANTED if not hasattr(fields, n)]
     if missing:
-        raise SystemExit(f"not found in {SRC.name}: {', '.join(missing)}")
-    return found
+        raise SystemExit(
+            f"not found in core/donor_fields.py: {', '.join(missing)}. Either they were "
+            f"renamed, or they moved somewhere this generator cannot see.")
+    return {n: getattr(fields, n) for n in WANTED}
 
 
 def js(value) -> str:
@@ -112,9 +104,10 @@ def main() -> None:
     v = lift()
     body = f'''// GENERATED by scripts/gen_donor_vocab.py — do not edit by hand.
 //
-// The donor edit form's vocabulary, lifted from app_pages/donors.py, which cannot be
-// imported (Streamlit at module scope). Re-run the generator after changing any of these
-// in the Python; tests/test_donor_vocab_is_current.py fails if this file is stale.
+// The donor edit form's vocabulary, from core/donor_fields.py — which is also what
+// app_pages/donors.py uses, so this is the same vocabulary Streamlit renders rather than
+// a copy of it. Re-run the generator after changing any of these in the Python;
+// tests/test_donor_vocab_is_current.py fails if this file is stale.
 //
 // WHAT IS NOT HERE: the flag list. donor_intel's columns decide which fields are flags —
 // anything not named in the sets below IS one — so a migration adds a form field with no
@@ -122,45 +115,45 @@ def main() -> None:
 // same way donors.py derives it from the dataframe it loaded.
 
 /** Columns that never reach the form: ids, timestamps, derived display values. */
-export const META: string[] = {js(v["_META"])};
+export const META: string[] = {js(v["META"])};
 
 /** Single-line free text. */
-export const SHORT_TEXT: string[] = {js(v["_SHORT_TEXT"])};
+export const SHORT_TEXT: string[] = {js(v["SHORT_TEXT"])};
 
 /** Multi-line free text. */
-export const LONG_TEXT: string[] = {js(v["_LONG_TEXT"])};
+export const LONG_TEXT: string[] = {js(v["LONG_TEXT"])};
 
 /**
  * The donor's OWN institutional contact details — one set, on the donor_intel row.
  * The many focal persons live in the `donor_contacts` table and are not these.
  */
-export const CONTACT: string[] = {js(v["_CONTACT"])};
+export const CONTACT: string[] = {js(v["CONTACT"])};
 
 /** Columns on the donor_contacts table (focal persons), in form order. */
-export const CONTACT_COLS: string[] = {js(v["_CONTACT_COLS"])};
+export const CONTACT_COLS: string[] = {js(v["CONTACT_COLS"])};
 
 /** Fixed enums. The leading "" is the unset option and must stay first. */
-export const CHOICE: Record<string, string[]> = {js(v["_CHOICE"])};
+export const CHOICE: Record<string, string[]> = {js(v["CHOICE"])};
 
 /** Qualitative profile + hard eligibility conditions: VALUED text, never flags. */
-export const PROFILE: string[] = {js(v["_PROFILE"])};
+export const PROFILE: string[] = {js(v["PROFILE"])};
 
 /**
  * Kept in the schema, surfaced nowhere. Not edited, not viewed, not exported.
  * verification_level already carries data confidence, and funded_geographies is dead
  * (the live geo field is donor_geographic_scope).
  */
-export const HIDDEN_FIELDS: string[] = {js(v["_HIDDEN_FIELDS"])};
+export const HIDDEN_FIELDS: string[] = {js(v["HIDDEN_FIELDS"])};
 
 /**
  * The legal/registration flags, named explicitly because they are a GROUP, not a
  * pattern — unlike *_fit, which is matched by suffix. A flag in neither set is a
  * requirement.
  */
-export const ELIG: string[] = {js(v["_ELIG"])};
+export const ELIG: string[] = {js(v["ELIG"])};
 
 /** Acronyms that must stay uppercase when a column name becomes a label. */
-export const ACR: Record<string, string> = {js(v["_ACR"])};
+export const ACR: Record<string, string> = {js(v["ACR"])};
 
 /**
  * Labels that the column name cannot produce.
@@ -170,10 +163,10 @@ export const ACR: Record<string, string> = {js(v["_ACR"])};
  * status from the applicant. The donor_/call_/org_ prefix is an auditable schema
  * decision and is stripped for display only.
  */
-export const LABEL_OVERRIDES: Record<string, string> = {js(v["_LABEL_OVERRIDES"])};
+export const LABEL_OVERRIDES: Record<string, string> = {js(v["LABEL_OVERRIDES"])};
 
 /** Shared with the org fit profile, so a required partner type matches an org's records. */
-export const PARTNER_TYPE_OPTIONS: string[] = {js(v["_PARTNER_TYPE_OPTIONS"])};
+export const PARTNER_TYPE_OPTIONS: string[] = {js(v["PARTNER_TYPE_OPTIONS"])};
 
 export const FUNDING_MECHANISMS: string[] = {js(v["FUNDING_MECHANISMS"])};
 export const ROUTE_STATUSES: string[] = {js(v["ROUTE_STATUSES"])};
@@ -183,7 +176,7 @@ export const APPLICATION_PROCESSES: string[] = {js(v["APPLICATION_PROCESSES"])};
 export const REPORTING_REQUIREMENTS: string[] = {js(v["REPORTING_REQUIREMENTS"])};
 
 /** The escape hatch on every single-choice dropdown. */
-export const OTHER = {js(v["_OTHER"])};
+export const OTHER = {js(v["OTHER"])};
 
 /**
  * A REQUIREMENT HAS FOUR STATES, AND BLANK IS NOT "NOT SURE".
@@ -200,24 +193,24 @@ export const OTHER = {js(v["_OTHER"])};
  * the distinction survives only here and in completeness, and why getting the map wrong
  * is invisible until somebody asks how complete a record is.
  */
-export const TRISTATE_GROUPS: string[] = {js(v["_TRISTATE_GROUPS"])};
-export const TRISTATE_OPTS: string[] = {js(v["_TRISTATE_OPTS"])};
-export const TRISTATE_TO_VAL: Record<string, string | null> = {js(v["_TRISTATE_TO_VAL"])};
-export const VAL_TO_TRISTATE: Record<string, string> = {js(v["_VAL_TO_TRISTATE"])};
+export const TRISTATE_GROUPS: string[] = {js(v["TRISTATE_GROUPS"])};
+export const TRISTATE_OPTS: string[] = {js(v["TRISTATE_OPTS"])};
+export const TRISTATE_TO_VAL: Record<string, string | null> = {js(v["TRISTATE_TO_VAL"])};
+export const VAL_TO_TRISTATE: Record<string, string> = {js(v["VAL_TO_TRISTATE"])};
 
 /** Stored as JSON lists; rendered as comma lists in share and export. */
-export const LIST_FIELDS: string[] = {js(v["_LIST_FIELDS"])};
+export const LIST_FIELDS: string[] = {js(v["LIST_FIELDS"])};
 
 /** Every donor-facing field that counts toward the completeness score. */
-export const COMPLETENESS_TEXT: string[] = {js(v["_COMPLETENESS_TEXT"])};
-export const COMPLETENESS_JSON: string[] = {js(v["_COMPLETENESS_JSON"])};
+export const COMPLETENESS_TEXT: string[] = {js(v["COMPLETENESS_TEXT"])};
+export const COMPLETENESS_JSON: string[] = {js(v["COMPLETENESS_JSON"])};
 
 /** The category vocabulary, and every spelling seen in the wild that maps into it. */
-export const CATEGORIES: string[] = {js(v["_CATEGORIES"])};
-export const CATEGORY_CANON: Record<string, string> = {js(v["_CATEGORY_CANON"])};
+export const CATEGORIES: string[] = {js(v["CATEGORIES"])};
+export const CATEGORY_CANON: Record<string, string> = {js(v["CATEGORY_CANON"])};
 
 /** Acronyms that must survive de-SHOUTING a workbook phrase. */
-export const ACRONYMS: string[] = {js(v["_ACRONYMS"])};
+export const ACRONYMS: string[] = {js(v["ACRONYMS"])};
 '''
     OUT.write_text(body, encoding="utf-8")
 
@@ -225,39 +218,39 @@ export const ACRONYMS: string[] = {js(v["_ACRONYMS"])};
         return sorted(value) if isinstance(value, (set, frozenset)) else value
 
     web = {
-        "meta": plain(v["_META"]), "shortText": plain(v["_SHORT_TEXT"]),
-        "longText": plain(v["_LONG_TEXT"]), "contact": plain(v["_CONTACT"]),
-        "contactCols": plain(v["_CONTACT_COLS"]), "choice": plain(v["_CHOICE"]),
-        "profile": plain(v["_PROFILE"]), "hidden": plain(v["_HIDDEN_FIELDS"]),
-        "elig": plain(v["_ELIG"]), "acr": plain(v["_ACR"]),
-        "labelOverrides": plain(v["_LABEL_OVERRIDES"]),
-        "partnerTypeOptions": plain(v["_PARTNER_TYPE_OPTIONS"]),
+        "meta": plain(v["META"]), "shortText": plain(v["SHORT_TEXT"]),
+        "longText": plain(v["LONG_TEXT"]), "contact": plain(v["CONTACT"]),
+        "contactCols": plain(v["CONTACT_COLS"]), "choice": plain(v["CHOICE"]),
+        "profile": plain(v["PROFILE"]), "hidden": plain(v["HIDDEN_FIELDS"]),
+        "elig": plain(v["ELIG"]), "acr": plain(v["ACR"]),
+        "labelOverrides": plain(v["LABEL_OVERRIDES"]),
+        "partnerTypeOptions": plain(v["PARTNER_TYPE_OPTIONS"]),
         "fundingMechanisms": plain(v["FUNDING_MECHANISMS"]),
         "routeStatuses": plain(v["ROUTE_STATUSES"]),
         "localOrgEligible": plain(v["LOCAL_ORG_ELIGIBLE"]),
         "fundingCycles": plain(v["FUNDING_CYCLES"]),
         "applicationProcesses": plain(v["APPLICATION_PROCESSES"]),
         "reportingRequirements": plain(v["REPORTING_REQUIREMENTS"]),
-        "other": v["_OTHER"],
-        "tristateGroups": plain(v["_TRISTATE_GROUPS"]),
-        "tristateOpts": plain(v["_TRISTATE_OPTS"]),
-        "tristateToVal": plain(v["_TRISTATE_TO_VAL"]),
-        "valToTristate": plain(v["_VAL_TO_TRISTATE"]),
-        "listFields": plain(v["_LIST_FIELDS"]),
-        "completenessText": plain(v["_COMPLETENESS_TEXT"]),
-        "completenessJson": plain(v["_COMPLETENESS_JSON"]),
-        "categories": plain(v["_CATEGORIES"]),
-        "categoryCanon": plain(v["_CATEGORY_CANON"]),
-        "acronyms": plain(v["_ACRONYMS"]),
+        "other": v["OTHER"],
+        "tristateGroups": plain(v["TRISTATE_GROUPS"]),
+        "tristateOpts": plain(v["TRISTATE_OPTS"]),
+        "tristateToVal": plain(v["TRISTATE_TO_VAL"]),
+        "valToTristate": plain(v["VAL_TO_TRISTATE"]),
+        "listFields": plain(v["LIST_FIELDS"]),
+        "completenessText": plain(v["COMPLETENESS_TEXT"]),
+        "completenessJson": plain(v["COMPLETENESS_JSON"]),
+        "categories": plain(v["CATEGORIES"]),
+        "categoryCanon": plain(v["CATEGORY_CANON"]),
+        "acronyms": plain(v["ACRONYMS"]),
     }
     OUT_WEB.parent.mkdir(parents=True, exist_ok=True)
     OUT_WEB.write_text(json.dumps(web, indent=1, ensure_ascii=False, sort_keys=True) + "\n",
                        encoding="utf-8")
 
     print(f"wrote {OUT.relative_to(ROOT)} and {OUT_WEB.relative_to(ROOT)}: "
-          f"{len(v['_ELIG'])} legal flags, {len(v['_PROFILE'])} profile fields, "
-          f"{len(v['_LABEL_OVERRIDES'])} label overrides, "
-          f"{len(v['_COMPLETENESS_TEXT'])} completeness fields")
+          f"{len(v['ELIG'])} legal flags, {len(v['PROFILE'])} profile fields, "
+          f"{len(v['LABEL_OVERRIDES'])} label overrides, "
+          f"{len(v['COMPLETENESS_TEXT'])} completeness fields")
 
 
 if __name__ == "__main__":
