@@ -44,6 +44,7 @@ import {
   MATCH_RUN_LABEL, systemDiscoveryStats, tenantActivity, userStats,
 } from "./api/analytics.ts";
 import { runSummary, splitHistory } from "./api/scan_history.ts";
+import { createDonorWriteRoutes } from "./api/routes_donors.ts";
 import { createPlatformRoutes } from "./api/routes_platform.ts";
 import { secretRows, verdicts } from "./api/env_diag.ts";
 import { createScanPrefRoutes } from "./api/routes_scan_prefs.ts";
@@ -118,6 +119,7 @@ export function createApi(env: Env, deps: Deps) {
   // Settings → Sources, Learning data and Suggestions: the three surfaces whose
   // resources belong to every tenant, so none is scoped to the viewer's own.
   const platform = createPlatformRoutes(db, jobs.enqueue);
+  const donorWrites = createDonorWriteRoutes(db, jobs.enqueue);
   // Settings → Setup → Scan Preferences. Three stores, because the policy is
   // tenant-scoped and the search terms and currency table are not.
   const scanPrefs = createScanPrefRoutes(db);
@@ -417,6 +419,17 @@ export function createApi(env: Env, deps: Deps) {
       // app_pages/donors.py::_load. ~1.3 MB of JSON for 190 donors; gzip takes it to ~100 KB.
       const rows = await db.as(ctx.scope).get("donor_intel", "select=*&order=donor.asc");
       return gzipped(req, json({ donors: rows }, 200, { "Cache-Control": "private, max-age=30" }));
+    }
+    if (path === "/donors" && m === "POST") return donorWrites.create(req, ctx);
+    if (path === "/donors/delete" && m === "POST") {
+      return donorWrites.remove(req, ctx, null);
+    }
+    const donorKey = path.match(/^\/donors\/([^/]+)$/);
+    if (donorKey && m === "PATCH") {
+      return donorWrites.update(req, ctx, decodeURIComponent(donorKey[1]));
+    }
+    if (donorKey && m === "DELETE") {
+      return donorWrites.remove(req, ctx, decodeURIComponent(donorKey[1]));
     }
     const contacts = path.match(/^\/donors\/([^/]+)\/contacts$/);
     if (contacts && m === "GET") {

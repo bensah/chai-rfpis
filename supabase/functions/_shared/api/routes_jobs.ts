@@ -318,6 +318,42 @@ const KINDS: Record<string, JobKind> = {
     allowed: (u) => isSuperUser(u),
     group: () => "tenant-admin",
   },
+
+  /**
+   * Donor Intelligence: every write to the shared donor catalogue.
+   *
+   * ANY SIGNED-IN USER MAY QUEUE IT, which is deliberate and is NOT a missing check. The
+   * surface has two audiences by design: a developer-tenant Super User edits
+   * `donor_intel` directly, and everyone else — client-tenant admins included — PROPOSES
+   * a change for review. Both arrive as this kind, so gating the queue on
+   * `isDeveloperSuper` here would block the suggestion path, which is the one most
+   * people actually use.
+   *
+   * The split is enforced where it can be enforced properly: `_donor_action` reads the
+   * actor from the users table and refuses `save`/`add`/`delete` for a non-developer —
+   * and refuses `suggest` for a developer-Super, who would otherwise file a proposal
+   * only they could approve. Doing it there rather than here also means the Streamlit
+   * page and the job answer the same question of the same record.
+   *
+   * GROUPED PER DONOR for edits, and as ONE catalogue for add and delete. Two saves of
+   * the same donor must serialise — each reads the row, cleans a payload against the
+   * live columns and writes the whole thing back, so concurrent ones would last-write-
+   * win over each other's fields. `add` needs the stronger group because `slug_key`
+   * reads every existing key to de-duplicate: two concurrent adds would read the same
+   * snapshot and choose the same canonical_key, and the second upsert would land on top
+   * of the first donor instead of creating a second.
+   */
+  donor_action: {
+    allowed: (u) => !!u,
+    group: (_c, _id, params) => {
+      const action = str(params?.action).trim();
+      if (action === "save" || action === "suggest") {
+        const key = str(params?.canonical_key).trim();
+        if (key) return `donor-${key}`;
+      }
+      return "donor-catalogue";
+    },
+  },
 };
 
 /**

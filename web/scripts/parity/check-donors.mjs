@@ -149,6 +149,92 @@ try {
       + "set and the check is decorative.");
   }
 
+  // 7c. The write seam. These routes apply no rules — they queue a donor_action job —
+  //     so what is worth pinning is the SHAPE of what they queue. Each of these has a
+  //     failure that is silent rather than loud.
+  {
+    const R = await server.ssrLoadModule(
+      "/../supabase/functions/_shared/api/routes_donors.ts");
+    const sent = [];
+    const enqueue = (kind, params) => {
+      sent.push({ kind, params });
+      return Promise.resolve({ id: "job-1", dispatched: true });
+    };
+    const routes = R.createDonorWriteRoutes(null, enqueue);
+    const ctx = { user: { email: "someone@example.org" } };
+    const post = (b) => new Request("http://x/donors", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(b),
+    });
+
+    sent.length = 0;
+    await routes.update(post({ edited: { donor: "X" } }), ctx, "gates");
+    ok("an edit queues donor_action, and applies nothing here",
+      sent.length === 1 && sent[0].kind === "donor_action"
+      && sent[0].params.action === "save" && sent[0].params.canonical_key === "gates",
+      "the save rules live in core/donor_write.py so the runner and Streamlit share "
+      + "them; a route that wrote directly would be the second copy.");
+
+    ok("an ABSENT contacts list is not sent as an empty one",
+      !("contacts" in sent[0].params),
+      "the runner REPLACES a donor's contacts with what it is given. Sending [] for "
+      + "'this form did not show contacts' would delete every focal person they have.");
+
+    sent.length = 0;
+    await routes.update(post({ edited: { donor: "X" }, contacts: [] }), ctx, "gates");
+    ok("...but an explicit empty list still is",
+      Array.isArray(sent[0].params.contacts) && sent[0].params.contacts.length === 0,
+      "clearing the last contact has to be expressible.");
+
+    sent.length = 0;
+    const empty = await routes.update(post({ edited: {} }), ctx, "gates");
+    ok("an edit that changes nothing is refused rather than queued",
+      empty.status === 400 && sent.length === 0,
+      "a job with an empty payload still reports 'Saved', and somebody who watched it "
+      + "succeed would believe their change landed.");
+
+    sent.length = 0;
+    await routes.update(post({ edited: { donor: "X" }, suggest: true }), ctx, "gates");
+    ok("the suggest flag picks the proposal action, not the write",
+      sent[0].params.action === "suggest");
+
+    sent.length = 0;
+    await routes.create(post({ name: "  New Funder  " }), ctx);
+    ok("a create trims the name and queues an add",
+      sent[0].params.action === "add" && sent[0].params.name === "New Funder");
+
+    sent.length = 0;
+    const noName = await routes.create(post({ name: "   " }), ctx);
+    ok("a create with no name is refused",
+      noName.status === 400 && sent.length === 0);
+
+    sent.length = 0;
+    await routes.remove(post({}), ctx, "gates");
+    ok("a single delete queues one key",
+      sent[0].params.action === "delete"
+      && JSON.stringify(sent[0].params.keys) === JSON.stringify(["gates"]));
+
+    sent.length = 0;
+    const noKeys = await routes.remove(post({ keys: ["", "  "] }), ctx, null);
+    ok("a bulk delete with no usable keys is refused",
+      noKeys.status === 400 && sent.length === 0,
+      "a delete with no filter would empty the shared catalogue.");
+
+    sent.length = 0;
+    const undispatched = R.createDonorWriteRoutes(
+      null, () => Promise.resolve({ id: "job-2", dispatched: false }));
+    const resp = await undispatched.update(post({ edited: { donor: "X" } }), ctx, "g");
+    const payload = await resp.json();
+    ok("a queued-but-undispatched job says so instead of reporting success",
+      /nothing has been changed/i.test(payload.detail),
+      "this is the worst failure mode this product has: nothing errors, the job just "
+      + "sits at 'queued' for ever.");
+
+    const none = R.createDonorWriteRoutes(null, null);
+    ok("with no runner configured the route refuses rather than pretending",
+      (await none.update(post({ edited: { donor: "X" } }), ctx, "g")).status === 503);
+  }
+
   // 8. Claims worth stating outright, which a value-by-value comparison would not catch
   //    if both sides happened to be empty.
   ok("the live table actually produced rows to compare",

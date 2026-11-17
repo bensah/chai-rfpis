@@ -1054,6 +1054,156 @@ def _suggestion_review(job: JobRow, params: dict, runner: str) -> dict:
     }
 
 
+def _donor_action(job: JobRow, params: dict, runner: str) -> dict:
+    """Donor Intelligence: every write to the shared donor catalogue.
+
+    ONE JOB KIND FOR ALL OF THEM, for the reason `_registry_action` and
+    `_suggestion_review` give about their own tables, and more sharply here.
+    `donor_intel` is cross-tenant data that every tenant's scoring reads, and its write
+    rules are not a thin wrapper over an upsert:
+
+      * a payload-cleaning rule where `or None` collapses False and 0, not just "";
+      * an intersection with the LIVE columns that NAMES what it drops, because a field
+        with no column yet would otherwise vanish after a successful save;
+      * a human-verified provenance tag that stops auto-enrichment overwriting a
+        reviewer's answers;
+      * an upsert that VERIFIES a row came back, because PostgREST answers 200 with an
+        empty list when RLS refuses it — "looks saved, nothing changed".
+
+    `core/donor_write.py` holds them, and app_pages/donors.py calls exactly the same
+    functions. A TypeScript second copy would drift on the first of those four, and the
+    symptom would be a donor record that is quietly wrong rather than an error.
+
+    EVERY ACTION IS NAMED AND UNKNOWN ONES ARE REFUSED, so a typo in a request cannot
+    fall through to some other write on a shared table.
+    """
+    from core import donor_fields as F
+    from core import donor_write as W
+    from core import permissions
+    from db.supabase_client import service_client
+
+    action = str(params.get("action") or "").strip()
+    by = str(params.get("by") or "").strip()
+    key = str(params.get("canonical_key") or "").strip()
+    edited = params.get("edited") if isinstance(params.get("edited"), dict) else {}
+    contacts = params.get("contacts") if isinstance(params.get("contacts"), list) else []
+    if not by:
+        raise ValueError("donor_action needs the acting user's email")
+
+    svc = service_client()
+    # The actor as the permission layer understands them — read from the users table,
+    # never reconstructed from the job params, so the job asks the same question of the
+    # same record the UI did.
+    rows = (svc.table("users")
+            .select("id,email,name,role,is_active,access_overrides,tenant_id")
+            .eq("email", by).limit(1).execute().data or [])
+    if not rows:
+        raise ValueError(f"donor_action: no account for {by}")
+    user = rows[0]
+    can_edit = permissions.is_developer_super(user)
+
+    # The live columns, from the table itself. The classification is NEGATIVE — anything
+    # not named in donor_fields' sets is a flag — so this has to be the real column list
+    # and not a guess, or the provenance pass would tag the wrong set.
+    sample = (svc.table("donor_intel").select("*").limit(1).execute().data or [])
+    columns = list(sample[0].keys()) if sample else []
+    _flags, _fit, req, _groups = F.flag_groups(columns)
+
+    def _row(k: str) -> dict:
+        got = (svc.table("donor_intel").select("*")
+               .eq("canonical_key", k).limit(1).execute().data or [])
+        if not got:
+            raise ValueError(f"donor_action: no donor with key {k!r}")
+        return got[0]
+
+    if action in ("save", "add"):
+        if not can_edit:
+            # Not a generic refusal: this is the one surface where a client-tenant admin
+            # is deliberately read-only, and "suggest instead" is the real answer.
+            raise PermissionError(
+                "Only a developer-tenant Super User may edit the shared donor "
+                "catalogue directly. Propose the change instead and it will be reviewed.")
+
+    if action == "save":
+        if not key:
+            raise ValueError("donor_action save needs a canonical_key")
+        row = _row(key)
+        job.progress(40, f"Saving {row.get('donor') or key}")
+        res = W.apply_edit(svc, canonical_key=key, edited=edited, row=row,
+                           columns=columns, req_cols=req, contacts=contacts)
+        job.progress(100, "Saved")
+        return {
+            "ok": True, "canonical_key": key, "dropped": res["dropped"],
+            "warnings": res["warnings"],
+            "summary": f"Saved {row.get('donor') or key}."
+                       + (f" {len(res['dropped'])} field(s) could not be stored."
+                          if res["dropped"] else ""),
+        }
+
+    if action == "add":
+        name = str(params.get("name") or "").strip()
+        if not name:
+            raise ValueError("donor_action add needs a name")
+        existing = {r.get("canonical_key") for r in
+                    (svc.table("donor_intel").select("canonical_key")
+                     .execute().data or [])}
+        new_key = W.slug_key(name, {e for e in existing if e})
+        payload = W.normalise(W.clean_payload({"donor": name, **edited}), new_key)
+        payload, dropped = W.split_columns(payload, columns)
+        job.progress(50, f"Creating {name}")
+        W.save_donor(svc, payload)
+        job.progress(100, "Created")
+        return {
+            "ok": True, "canonical_key": new_key, "dropped": dropped,
+            "warnings": [w for w in [W.dropped_warning(dropped)] if w],
+            "summary": f"Added {name}. Open it and edit to complete the profile.",
+        }
+
+    if action in ("suggest", "suggest_add"):
+        # The MIRROR of the gate above: a developer-Super edits directly and never files
+        # a suggestion, so letting one through here would put a proposal in the queue
+        # that its own author is the only person able to approve.
+        if can_edit:
+            raise PermissionError(
+                "A developer-tenant Super User edits the record directly rather than "
+                "proposing a change.")
+        target = key or None
+        row = _row(key) if key else {}
+        label = row.get("donor") or str(params.get("name") or "").strip() or None
+        payload = dict(edited)
+        if action == "suggest_add":
+            name = str(params.get("name") or "").strip()
+            if not name:
+                raise ValueError("donor_action suggest_add needs a name")
+            payload = {"donor": name, **payload}
+            target, label = None, name
+        job.progress(50, "Filing the proposal")
+        res = W.suggest_edit(canonical_key=target, edited=payload, row=row,
+                             columns=columns, rationale=params.get("rationale"),
+                             target_label=label, user=user)
+        job.progress(100, "Filed" if res["ok"] else "Nothing to propose")
+        return {"ok": res["ok"], "count": res["count"],
+                "summary": (f"Proposal filed — {res['detail']}" if res["ok"]
+                            else "No changes to suggest.")}
+
+    if action == "delete":
+        if not can_edit:
+            raise PermissionError(
+                "Only a developer-tenant Super User may delete from the shared donor "
+                "catalogue.")
+        keys = [str(k).strip() for k in (params.get("keys") or [key])
+                if k is not None and str(k).strip()]
+        if not keys:
+            raise ValueError("donor_action delete needs at least one canonical_key")
+        job.progress(40, f"Deleting {len(keys)} donor(s)")
+        n = W.delete_donors(svc, keys)
+        job.progress(100, "Deleted")
+        return {"ok": n > 0, "done": n, "total": len(keys),
+                "summary": f"Deleted {n} donor(s)."}
+
+    raise ValueError(f"donor_action: unknown action {action!r}")
+
+
 KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "ping": _ping,
     "rescore": _rescore,
@@ -1075,6 +1225,8 @@ KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "registry_action": _registry_action,
     # Settings → Accounts → Tenants: the platform organisation list.
     "tenant_action": _tenant_action,
+    # Donor Intelligence: every write to the shared donor catalogue.
+    "donor_action": _donor_action,
 }
 
 
