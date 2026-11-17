@@ -86,12 +86,30 @@ class DonorVocabIsCurrent(unittest.TestCase):
 
     def test_choice_enums_match_and_keep_the_unset_option_first(self):
         self.assertEqual(_emitted_ts("CHOICE"), self.lifted["CHOICE"])
-        for col, opts in _emitted_ts("CHOICE").items():
+        self.assertEqual(_emitted_ts("CONDITION_CHOICE"), self.lifted["CONDITION_CHOICE"])
+        both = {**_emitted_ts("CHOICE"), **_emitted_ts("CONDITION_CHOICE")}
+        for col, opts in both.items():
             with self.subTest(column=col):
                 # The leading "" is the UNSET option. If it stops being first, the form's
                 # index arithmetic silently preselects a real value for a blank field —
                 # which writes an answer nobody gave.
                 self.assertEqual(opts[0], "", f"{col} lost its unset option")
+
+    def test_condition_enums_store_keys_not_labels(self):
+        """core.criteria_derive matches these strings exactly.
+
+        A form that stored "Grassroot local" instead of "grassroot_local" would satisfy
+        no eligibility rule and fail none either, which reads as a donor with no
+        conditions at all rather than as a bug.
+        """
+        cc = _emitted_ts("CONDITION_CHOICE")
+        for col, opts in cc.items():
+            for opt in opts:
+                if not opt:
+                    continue
+                with self.subTest(column=col, option=opt):
+                    self.assertEqual(opt, opt.lower())
+                    self.assertNotIn(" ", opt)
 
     # -- the tri-state map ------------------------------------------------------
     def test_tristate_map_keeps_blank_distinct_from_not_sure(self):
@@ -147,6 +165,7 @@ class DonorVocabIsCurrent(unittest.TestCase):
             ("completenessText", "COMPLETENESS_TEXT"),
             ("completenessJson", "COMPLETENESS_JSON"),
             ("categoryCanon", "CATEGORY_CANON"), ("choice", "CHOICE"),
+            ("conditionChoice", "CONDITION_CHOICE"),
             ("tristateToVal", "TRISTATE_TO_VAL"), ("valToTristate", "VAL_TO_TRISTATE"),
         ]:
             with self.subTest(key=key):

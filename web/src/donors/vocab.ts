@@ -6,6 +6,14 @@ const PA_KEYS = vocab.programAreas.keys as unknown as Record<string, [string, st
 
 export const PA_CATEGORIES: string[] = vocab.programAreas.categories;
 export const GEO_OPTIONS: string[] = vocab.geo.options;
+// GEO_OPTIONS is broad regions THEN countries, and the edit form needs them apart: HQ
+// country offers countries only, registration region offers both. Where the boundary
+// falls is the Python's business, so it ships the split rather than the browser guessing.
+export const COUNTRIES: string[] = vocab.geo.countries;
+export const BROAD_GEOGRAPHIES: string[] = vocab.geo.broad;
+
+/** Every program-area key, for the donor's priority-areas picker. */
+export const PA_ALL_KEYS: string[] = Object.keys(PA_KEYS);
 
 const KEYS_BY_CATEGORY = new Map<string, string[]>();
 const KEYS_BY_SUBLABEL = new Map<string, string[]>();

@@ -13,6 +13,14 @@ export const CATEGORIES: string[] = V.categories;
 /** The fixed enums, each with "" first as the unset option. */
 export const CHOICE: Record<string, string[]> = V.choice;
 
+/**
+ * The hard-eligibility enums. THE STORED VALUE IS THE KEY, never a label:
+ * core.criteria_derive matches "grassroot_local" and "ineligible_current" exactly, so a
+ * form that saved a prettified label would satisfy no eligibility rule and fail none
+ * either — a donor that reads as having no conditions at all.
+ */
+export const CONDITION_CHOICE: Record<string, string[]> = V.conditionChoice;
+
 /** A requirement's four states. Blank is "unanswered", NOT "not sure". */
 export const TRISTATE_OPTS: string[] = V.tristateOpts;
 export const TRISTATE_TO_VAL: Record<string, string | null> = V.tristateToVal;

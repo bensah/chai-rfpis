@@ -149,6 +149,54 @@ try {
       + "set and the check is decorative.");
   }
 
+  // 7bis. THE FORM'S FIELD COVERAGE, against the Streamlit dialog's own AST.
+  //
+  // This is the check this file exists for now. A field missing from a form does not
+  // look like a bug — it looks like a donor nobody has filled in, and the completeness
+  // percentage agrees with that reading. So the React spec is compared against every
+  // `edited[...]` column `_edit_dialog` writes, and a field added on one side fails here
+  // rather than going quietly missing on the other.
+  {
+    const S = await server.ssrLoadModule("/src/donors/formSpec.ts");
+    const spec = new Set(S.SPEC_COLUMNS);
+    const python = new Set(want.editedColumns);
+
+    // Columns the React form deliberately does not edit. Each one is listed here so that
+    // "not in the form" is a decision with a reason, not an omission nobody noticed.
+    const DELIBERATE = new Map([
+      ["donor_priority_ratings",
+        "React has no per-area rating matrix. The column is OMITTED from the payload so "
+        + "the upsert leaves it alone — sending an empty object would wipe the ratings."],
+    ]);
+
+    const missing = [...python].filter((c) => !spec.has(c) && !DELIBERATE.has(c));
+    ok("the React form covers every field the Streamlit dialog edits",
+      missing.length === 0,
+      missing.length ? `absent from formSpec.ts: ${missing.join(", ")}` : "");
+
+    const extra = [...spec].filter((c) => !python.has(c));
+    ok("...and invents none that the Streamlit dialog does not",
+      extra.length === 0,
+      extra.length
+        ? `in formSpec.ts but not written by _edit_dialog: ${extra.join(", ")}`
+        : "a column the Python form does not write is one the save would send and the "
+          + "column intersection would then silently drop.");
+
+    for (const [col, why] of DELIBERATE) {
+      ok(`${col} is still deliberately out of the form`,
+        python.has(col) && !spec.has(col),
+        why + " If the Python stopped writing it, this exception should go too.");
+    }
+
+    ok("no spec field is listed twice",
+      new Set(S.SPEC_COLUMNS).size === S.SPEC_COLUMNS.length,
+      "a duplicated column renders two controls that overwrite each other.");
+
+    ok("the spec is not trivially empty",
+      S.SPEC_COLUMNS.length > 50,
+      "an empty spec would make the coverage comparison pass by matching nothing.");
+  }
+
   // 7c. The write seam. These routes apply no rules — they queue a donor_action job —
   //     so what is worth pinning is the SHAPE of what they queue. Each of these has a
   //     failure that is silent rather than loud.

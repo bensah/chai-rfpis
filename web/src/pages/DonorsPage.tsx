@@ -1,27 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, Globe, Info,
-  Lock, Plus, RefreshCw, Search, Share2, SlidersHorizontal, Trash2,
+  Lightbulb, Pencil, Plus, RefreshCw, Search, Share2, SlidersHorizontal, Trash2,
 } from "lucide-react";
-import { cachedDonors, currentSession, fetchDonors } from "../api";
+import { cachedDonors, currentSession, fetchContacts, fetchDonors } from "../api";
 import { AddDonorDialog, DeleteDonorsDialog } from "../donors/DonorWriteDialogs";
+import DonorEditDialog from "../donors/DonorEditDialog";
 import { isDeveloperSuper } from "../../../supabase/functions/_shared/api/permissions";
 import CategoryChart from "../components/CategoryChart";
 import DonorDialog from "../components/DonorDialog";
 import MultiSelect from "../components/MultiSelect";
 import {
   APPLICANT_FLAG, applyFilters, buildSchema, download, EMPTY_FILTERS, normalizeCategory, summaryLines, titleName,
+  type Contact,
   toCsv, UNCATEGORISED, webUrl, type Donor, type Filters,
 } from "../donors/model";
 import { GEO_OPTIONS, PA_CATEGORIES } from "../donors/vocab";
 import { Badge, Button, Card, EmptyState, IconButton, Notice, PageHeader, Spinner, fieldClass } from "../ui";
 
 const PER_PAGE = 10;
-// The full eight-tab profile editor is still Streamlit's. Add, propose and delete are
-// not — they queue a donor_action job that applies core/donor_write.py's rules, the same
-// ones the classic page calls.
-const EDIT_LOCK =
-  "Editing the full donor profile still happens in the main RFPIS app. Add and delete work here.";
 
 export default function DonorsPage() {
   const [donors, setDonors] = useState<Donor[] | null>(() => cachedDonors());
@@ -36,6 +33,8 @@ export default function DonorsPage() {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<Donor[] | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ row: Donor; contacts: Contact[] } | null>(null);
+  const [opening, setOpening] = useState(false);
   // Which WORD goes on the button, from the same rule the Edge Function and Streamlit
   // use. The job enforces it regardless; this only avoids offering somebody an action
   // the server would refuse.
@@ -53,6 +52,24 @@ export default function DonorsPage() {
       .finally(() => setLoading(false));
   };
   useEffect(load, []);
+
+  /**
+   * Contacts are fetched BEFORE the dialog opens, not inside it.
+   *
+   * The editor only sends a contacts list when the user has touched the grid, and the
+   * runner REPLACES a donor's contacts with what it is sent. A dialog that opened empty
+   * and filled in afterwards would let somebody edit a contact during that gap and save
+   * a list built from nothing.
+   */
+  async function openEditor(d: Donor) {
+    setOpening(true);
+    try {
+      const cs = await fetchContacts(d.canonical_key).catch(() => [] as Contact[]);
+      setEditing({ row: d, contacts: cs });
+    } finally {
+      setOpening(false);
+    }
+  }
 
   const rows = useMemo(() => donors ?? [], [donors]);
   const schema = useMemo(() => buildSchema(rows), [rows]);
@@ -261,8 +278,13 @@ export default function DonorsPage() {
                   </Button>
                 )}
                 {selectedRows.length === 1 && (
-                  <Button size="sm" disabled title={EDIT_LOCK}
-                    icon={<Lock className="h-4 w-4" />}>Edit profile</Button>
+                  <Button
+                    size="sm" variant="primary" busy={opening}
+                    onClick={() => openEditor(selectedRows[0])}
+                    icon={canEdit ? <Pencil className="h-4 w-4" /> : <Lightbulb className="h-4 w-4" />}
+                  >
+                    {canEdit ? "Edit profile" : "Propose edits"}
+                  </Button>
                 )}
               </div>
             </div>
@@ -359,6 +381,14 @@ export default function DonorsPage() {
           suggest={!canEdit}
           onClose={() => setAdding(false)}
           onDone={(msg) => { setAdding(false); setFlash(msg); load(); }}
+        />
+      )}
+      {editing && (
+        <DonorEditDialog
+          row={editing.row} schema={schema} contacts={editing.contacts}
+          suggest={!canEdit}
+          onClose={() => setEditing(null)}
+          onDone={(msg) => { setEditing(null); setFlash(msg); load(); }}
         />
       )}
       {deleting && (

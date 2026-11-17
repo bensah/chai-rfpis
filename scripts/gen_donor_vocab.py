@@ -63,7 +63,7 @@ OUT_WEB = ROOT / "web/src/generated/donor_vocab.json"
 # would freeze one deployment's data into the repo and stop a migration from adding a
 # form field. tests/test_donor_vocab_is_current.py pins that exclusion.
 WANTED = [
-    "META", "SHORT_TEXT", "LONG_TEXT", "CONTACT", "CHOICE", "PROFILE",
+    "META", "SHORT_TEXT", "LONG_TEXT", "CONTACT", "CHOICE", "CONDITION_CHOICE", "PROFILE",
     "HIDDEN_FIELDS", "ELIG", "ACR", "LABEL_OVERRIDES", "PARTNER_TYPE_OPTIONS",
     "FUNDING_MECHANISMS", "ROUTE_STATUSES", "LOCAL_ORG_ELIGIBLE", "FUNDING_CYCLES",
     "APPLICATION_PROCESSES", "REPORTING_REQUIREMENTS", "OTHER", "TRISTATE_GROUPS",
@@ -134,6 +134,14 @@ export const CONTACT_COLS: string[] = {js(v["CONTACT_COLS"])};
 
 /** Fixed enums. The leading "" is the unset option and must stay first. */
 export const CHOICE: Record<string, string[]> = {js(v["CHOICE"])};
+
+/**
+ * The hard-eligibility enums. THE STORED VALUE IS THE KEY, not a label:
+ * core.criteria_derive matches "grassroot_local" and "ineligible_current" exactly, so a
+ * form that stored a prettified label would satisfy no rule and fail no rule — which
+ * reads as a donor with no eligibility conditions at all.
+ */
+export const CONDITION_CHOICE: Record<string, string[]> = {js(v["CONDITION_CHOICE"])};
 
 /** Qualitative profile + hard eligibility conditions: VALUED text, never flags. */
 export const PROFILE: string[] = {js(v["PROFILE"])};
@@ -221,6 +229,7 @@ export const ACRONYMS: string[] = {js(v["ACRONYMS"])};
         "meta": plain(v["META"]), "shortText": plain(v["SHORT_TEXT"]),
         "longText": plain(v["LONG_TEXT"]), "contact": plain(v["CONTACT"]),
         "contactCols": plain(v["CONTACT_COLS"]), "choice": plain(v["CHOICE"]),
+        "conditionChoice": plain(v["CONDITION_CHOICE"]),
         "profile": plain(v["PROFILE"]), "hidden": plain(v["HIDDEN_FIELDS"]),
         "elig": plain(v["ELIG"]), "acr": plain(v["ACR"]),
         "labelOverrides": plain(v["LABEL_OVERRIDES"]),
