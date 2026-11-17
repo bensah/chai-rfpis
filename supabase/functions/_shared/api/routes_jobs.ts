@@ -11,7 +11,7 @@
 import { q, type Db } from "./db.ts";
 import { body, HttpError, json, str } from "./http.ts";
 import type { Json } from "./jwt.ts";
-import { isAdmin, isSuperUser, type PermUser } from "./permissions.ts";
+import { isAdmin, isDeveloperAdmin, isSuperUser, type PermUser } from "./permissions.ts";
 import type { Ctx } from "./session.ts";
 
 export type Dispatch = (jobId: string, group: string) => Promise<void>;
@@ -198,6 +198,51 @@ const KINDS: Record<string, JobKind> = {
   search_action: {
     allowed: () => true,
     group: (_c, id) => `search-action-${id}`,
+  },
+
+  /**
+   * Settings → Manual Scan → Eligibility Scan. Screens the shared extracted store
+   * against THIS organisation's eligibility — fast, no crawl.
+   *
+   * A job not because it is slow but because it is PYTHON: `core/scan_pipeline` is the
+   * geography gate, the nine MUST/PREFER criteria and the donor-intel joins, which is
+   * the engine this whole port exists not to re-implement.
+   *
+   * GROUPED PER TENANT, so a second press while one is running joins the run in flight
+   * instead of starting another. Two concurrent screens of the same store into the same
+   * pipeline race on the rows they insert.
+   */
+  scan_screen: {
+    allowed: (u) => isAdmin(u),
+    group: (ctx) => `scan-screen-${tenantOf(ctx)}`,
+  },
+
+  /**
+   * Settings → Manual Scan → Extraction. Crawls every catalogued source into the SHARED
+   * global store: 25-40 minutes with LLM enrichment, and the slowest thing the product
+   * does.
+   *
+   * DEVELOPER-TENANT ADMINS ONLY, which is the Streamlit page's own gate and not a
+   * tightening: the store it writes belongs to every tenant, so one organisation's admin
+   * triggering a platform-wide crawl is the thing being prevented.
+   *
+   * ONE GROUP FOR EVERYBODY — not per tenant — because there is one store and one crawl.
+   * A per-tenant group would let two tenants start two simultaneous full crawls of the
+   * same sources, which is how a polite scraper becomes a rude one.
+   */
+  scan_extract: {
+    allowed: async (u, ctx) => isDeveloperAdmin(u, await ctx.homeIsDeveloper()),
+    group: () => "scan-extract",
+  },
+
+  /**
+   * Settings → Manual Scan → Excel Sync. Imports the master workbook into THIS tenant's
+   * pipeline, stamping every row with the tenant — without which they land with a null
+   * tenant and appear in nobody's pipeline.
+   */
+  excel_sync: {
+    allowed: (u) => isAdmin(u),
+    group: (ctx) => `excel-sync-${tenantOf(ctx)}`,
   },
 };
 

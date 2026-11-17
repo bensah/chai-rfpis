@@ -579,6 +579,148 @@ def _search_action(job: JobRow, params: dict, runner: str) -> dict:
             reset_tenant_override(token)
 
 
+def _scan_screen(job: JobRow, params: dict, runner: str) -> dict:
+    """Settings → Manual Scan → Eligibility Scan: screen the curated store for one tenant.
+
+    WHY A JOB FOR SOMETHING THAT TAKES SECONDS. Not duration — LANGUAGE. `run_screening`
+    walks the global extracted store and puts every row through `core/scan_pipeline`:
+    the geography gate, the nine MUST/PREFER criteria, the donor-intel joins and the
+    org-fit profile. That is thousands of lines of Python that the whole port exists to
+    avoid re-implementing, and an Edge Function cannot call it. The alternative is not a
+    faster screen, it is a second scoring engine.
+
+    IT RUNS AS ONE TENANT and must: screening reads that tenant's eligibility policies
+    and org profile and writes into its pipeline, so an unpinned run would screen the
+    shared store against whichever tenant the service client happened to resolve.
+
+    THE TENANT IS PASSED, NOT WRAPPED. `run_screening` takes `tenant_id` for exactly this
+    case — its own docstring calls it "runs the screen HEADLESSLY as that tenant (no
+    Streamlit session)" — and it sets and resets the override itself, around a resolution
+    path that also handles a super_user's view-as. Wrapping the call in another override
+    would pin the tenant one layer out and leave that path dead, which is a second answer
+    to a question the function already answers.
+
+    `views/admin.py` calls the SAME function; only the host changes, which is the bargain
+    `_rescore` struck.
+    """
+    tenant_id = str(params.get("tenant_id")
+                    or (job.get() or {}).get("tenant_id") or "").strip()
+    if not tenant_id:
+        raise ValueError("scan_screen needs a tenant_id")
+    by = str(params.get("by") or "web").strip() or "web"
+
+    job.progress(10, "Screening the curated store against your eligibility")
+    from core import scan_pipeline
+    # The audit prefix the Streamlit page uses, so a run started here is
+    # indistinguishable in scan_logs from one started there EXCEPT for who did it.
+    res = scan_pipeline.run_screening(triggered_by=f"match:{by}", tenant_id=tenant_id)
+
+    considered = int(res.get("considered") or 0)
+    eligible = int(res.get("eligible") or 0)
+    added = int(res.get("added") or 0)
+    job.progress(100, f"{eligible} eligible of {considered} considered")
+    return {
+        "considered": considered, "eligible": eligible, "added": added,
+        "already_tracked": int(res.get("already_tracked") or 0),
+        "rejected": int(res.get("rejected") or 0),
+        # The sentence the page shows, composed here so both apps say the same thing
+        # about the same run rather than each phrasing the numbers its own way.
+        "summary": (f"Screened {considered} curated solicitations → {eligible} eligible "
+                    f"({added} newly added, {int(res.get('already_tracked') or 0)} already "
+                    f"in your pipeline) · {int(res.get('rejected') or 0)} not a fit."),
+    }
+
+
+def _scan_extract(job: JobRow, params: dict, runner: str) -> dict:
+    """Settings → Manual Scan → Extraction: crawl every catalogued source.
+
+    THE SLOW ONE — 25-40 minutes with LLM enrichment — and the reason the job seam exists
+    at all. It runs `scripts/run_scan.py --extract-only` as a subprocess, which is exactly
+    what `core/scan_runner.run_scan_now` does; that function is not reused because it is
+    Streamlit-coupled all the way through (st.spinner, st.session_state, st.cache_data),
+    and the parts that are not are the two lines below.
+
+    IT IS CROSS-TENANT ON PURPOSE and takes no tenant override. Extraction writes the
+    SHARED global store that every tenant then screens against — pinning it to one tenant
+    would be wrong, not safer. The permission gate is on the route, where a developer
+    tenant is required, and not here.
+
+    A TIMEOUT IS NOT A FAILURE. Records extracted before the cutoff are already saved, so
+    it returns a result saying so rather than raising — a job marked failed invites a
+    re-run of work that largely succeeded.
+    """
+    import subprocess
+
+    by = str(params.get("by") or "web").strip() or "web"
+    try:
+        timeout_sec = int(os.environ.get("RFPIS_EXTRACT_TIMEOUT_SEC", "2700") or 2700)
+    except ValueError:
+        timeout_sec = 2700
+
+    job.progress(5, "Crawling the catalogued funding sources (this takes 25-40 minutes)")
+    cmd = [sys.executable, "-u", str(REPO_ROOT / "scripts" / "run_scan.py"),
+           "--triggered-by", f"extraction:{by}", "--extract-only"]
+    timed_out = False
+    try:
+        proc = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=timeout_sec)
+        out, code = proc.stdout or "", proc.returncode
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        out = (exc.stdout or b"").decode("utf-8", "replace") if isinstance(
+            exc.stdout, bytes) else (exc.stdout or "")
+        code = -1
+
+    tail = "\n".join((out or "").strip().splitlines()[-40:])
+    if timed_out:
+        job.progress(100, "Hit the time limit; what was extracted is saved")
+        return {"ok": False, "timed_out": True, "minutes": timeout_sec // 60, "tail": tail,
+                "summary": (f"Extraction hit the {timeout_sec // 60}-minute limit. Records "
+                            "extracted before the cutoff were saved — re-run to continue, "
+                            "or raise RFPIS_EXTRACT_TIMEOUT_SEC.")}
+    if code != 0:
+        # Raised, not returned: a crawl that exited non-zero wrote an unknown amount and
+        # the operator needs the job to say so in red.
+        raise RuntimeError(f"run_scan.py exited {code}\n{tail[-1500:]}")
+    job.progress(100, "Extraction finished")
+    return {"ok": True, "timed_out": False, "tail": tail,
+            "summary": "Extraction finished. The shared store is refreshed — run an "
+                       "Eligibility Scan to screen it against this organisation."}
+
+
+def _excel_sync(job: JobRow, params: dict, runner: str) -> dict:
+    """Settings → Manual Scan → Excel Sync: import the master workbook into one tenant.
+
+    TENANT-PINNED, and that is the whole point of the parameter: `excel_sync.sync` stamps
+    every imported row with the tenant it is given, and without one the rows land with a
+    NULL tenant where nobody's pipeline shows them. The Streamlit page passes the current
+    tenant for the same reason.
+
+    It returns `{"ok": False, "error": …}` rather than raising when there is no workbook
+    configured, so that case is reported as a result the page can explain rather than as
+    a crash.
+    """
+    tenant_id = str(params.get("tenant_id")
+                    or (job.get() or {}).get("tenant_id") or "").strip()
+    if not tenant_id:
+        raise ValueError("excel_sync needs a tenant_id")
+    by = str(params.get("by") or "").strip() or None
+
+    job.progress(20, "Importing the workbook into this organisation's pipeline")
+    from core import excel_sync
+    res = excel_sync.sync(updated_by=by, tenant_id=tenant_id)
+    ok = bool(res.get("ok"))
+    job.progress(100, "Imported" if ok else "Import failed")
+    return {
+        "ok": ok,
+        "path": str(res.get("path") or ""),
+        "error": str(res.get("error") or ""),
+        "summary": (f"Excel synced from {res.get('path')} into this organisation."
+                    if ok else
+                    f"Excel sync failed: {res.get('error') or 'see the job output'}"),
+    }
+
+
 KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "ping": _ping,
     "rescore": _rescore,
@@ -588,6 +730,10 @@ KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "submit_followup": _submit_followup,
     "web_search": _web_search,
     "search_action": _search_action,
+    # Settings → Manual Scan. Heavy or Python-only work, which is the same thing here.
+    "scan_screen": _scan_screen,
+    "scan_extract": _scan_extract,
+    "excel_sync": _excel_sync,
 }
 
 
