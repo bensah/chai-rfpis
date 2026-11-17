@@ -267,6 +267,13 @@ export function createShellRoutes(db: Db, adminContactEmail?: string) {
       org, nextMeeting: meeting, feed, seen: seenTs, unread,
       classicUrl: String(urlRows[0]?.value ?? "").trim() || null,
       adminContactEmail: (adminContactEmail ?? "").trim() || ADMIN_CONTACT_FALLBACK,
+      // WHETHER IT IS A REAL ADDRESS, said rather than left to be inferred. The
+      // placeholder is deliberately obvious to a developer reading a config file and
+      // completely opaque to a user reading a Help page — who would email it, and hear
+      // nothing. A page that knows the difference can write "your administrator"
+      // instead of printing a dead address, and the Deployment panel can say it needs
+      // setting. Both apps keep the SAME fallback value; only the wording differs.
+      adminContactConfigured: !!(adminContactEmail ?? "").trim(),
       unavailable,
     });
   }

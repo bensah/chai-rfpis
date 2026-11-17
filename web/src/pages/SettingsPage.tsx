@@ -6,9 +6,13 @@
  */
 import { useEffect, useState } from "react";
 import {
-  Archive as Archive0, CheckCircle2, ExternalLink, PlayCircle, Settings as SettingsIcon,
+  AlertTriangle, Archive as Archive0, CheckCircle2, ExternalLink, PlayCircle,
+  Settings as SettingsIcon,
 } from "lucide-react";
-import { fetchHome, startJob, switchTenant, type HomeKpis, type Job, type User } from "../api";
+import {
+  fetchHome, startJob, switchTenant,
+  type HomeKpis, type Job, type Shell, type User,
+} from "../api";
 import { JOB_STATUS_LABEL, useJob } from "../jobs";
 import ClassicPage from "./ClassicPage";
 import SetupTab from "../settings/SetupTab";
@@ -54,7 +58,9 @@ function Tabs({ tabs, active, onPick, variant = "solid" }: {
   );
 }
 
-export default function SettingsPage({ user, classicUrl }: { user: User; classicUrl: string | null }) {
+export default function SettingsPage({ user, classicUrl, shell }: {
+  user: User; classicUrl: string | null; shell?: Shell | null;
+}) {
   const dev = !!user.homeIsDeveloper;
   const devSuper = isSuper(user) && dev;
   // admin.py's tab list and order.
@@ -102,6 +108,7 @@ export default function SettingsPage({ user, classicUrl }: { user: User; classic
             <div className="mt-5 space-y-6">
               {acct === "Active tenant" && <ActiveTenant user={user} />}
               {acct === "Users" && <UsersTab />}
+              {acct === "Deployment" && <ContactCheck shell={shell} />}
               {acct === "Deployment" && <JobTest />}
               {/* Tenants and Blacklisted are still the classic page's; Users and Active
                   tenant are not, so neither should get a classic frame under it. */}
@@ -283,6 +290,46 @@ function Archive() {
           Expired unreviewed
         </LinkButton>
       </div>
+    </Card>
+  );
+}
+
+/**
+ * Is there a real address for somebody to contact?
+ *
+ * `ADMIN_CONTACT_EMAIL` is what every "ask an administrator" message points at — on the
+ * Help page, on a suspended organisation, on an access refusal. Unset, both apps fall
+ * back to the same obviously-fake placeholder, which is the right behaviour for a
+ * developer reading a config file and useless to a user reading a Help page: they would
+ * email it and hear nothing.
+ *
+ * So the Help page says "your administrator" instead of printing it, and this panel —
+ * where an administrator would actually look — says it needs setting, and where.
+ */
+function ContactCheck({ shell }: { shell?: Shell | null }) {
+  if (!shell) return null;
+  const configured = shell.adminContactConfigured !== false;
+  return (
+    <Card className="max-w-2xl p-6">
+      <Eyebrow>Contact address</Eyebrow>
+      {configured ? (
+        <p className="mt-1 text-sm leading-relaxed text-ink-600">
+          Messages that tell somebody to contact an administrator point at{" "}
+          <strong className="text-brand-700">{shell.adminContactEmail}</strong>.
+        </p>
+      ) : (
+        <>
+          <Notice tone="warn" className="mt-2" icon={<AlertTriangle className="h-4 w-4" />}>
+            No contact address is configured, so nobody can be told who to ask.
+          </Notice>
+          <p className="mt-3 text-sm leading-relaxed text-ink-600">
+            Set <code>ADMIN_CONTACT_EMAIL</code> in this deployment's environment — the
+            <code> .env</code> beside the app, and the Edge Function's secrets. Until
+            then the Help page says “your administrator” rather than printing the
+            placeholder <code>{shell.adminContactEmail}</code>, which nobody reads.
+          </p>
+        </>
+      )}
     </Card>
   );
 }

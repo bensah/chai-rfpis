@@ -457,6 +457,8 @@ export type Shell = {
   /** The app owner to contact for account and data requests. Falls back to a visibly
    *  unconfigured placeholder when ADMIN_CONTACT_EMAIL is not set, in both apps. */
   adminContactEmail: string;
+  /** False when it is the unset placeholder — do not print it at somebody. */
+  adminContactConfigured?: boolean;
   /** The parts of the chrome that could not be READ, as opposed to being empty: any of
    *  "feed", "seen", "meeting", "org", "classicUrl". The shell renders either way — it is
    *  on every page — so this is how a panel says "unavailable" instead of drawing an empty
