@@ -1,22 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, Globe, Info, Lock, RefreshCw,
-  Search, Share2, SlidersHorizontal,
+  CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, Globe, Info,
+  Lock, Plus, RefreshCw, Search, Share2, SlidersHorizontal, Trash2,
 } from "lucide-react";
-import { cachedDonors, fetchDonors } from "../api";
+import { cachedDonors, currentSession, fetchDonors } from "../api";
+import { AddDonorDialog, DeleteDonorsDialog } from "../donors/DonorWriteDialogs";
+import { isDeveloperSuper } from "../../../supabase/functions/_shared/api/permissions";
 import CategoryChart from "../components/CategoryChart";
 import DonorDialog from "../components/DonorDialog";
 import MultiSelect from "../components/MultiSelect";
 import {
-  APPLICANT_FLAG, applyFilters, buildSchema, download, EMPTY_FILTERS, normalizeCategory, summaryLines,
+  APPLICANT_FLAG, applyFilters, buildSchema, download, EMPTY_FILTERS, normalizeCategory, summaryLines, titleName,
   toCsv, UNCATEGORISED, webUrl, type Donor, type Filters,
 } from "../donors/model";
 import { GEO_OPTIONS, PA_CATEGORIES } from "../donors/vocab";
 import { Badge, Button, Card, EmptyState, IconButton, Notice, PageHeader, Spinner, fieldClass } from "../ui";
 
 const PER_PAGE = 10;
+// The full eight-tab profile editor is still Streamlit's. Add, propose and delete are
+// not — they queue a donor_action job that applies core/donor_write.py's rules, the same
+// ones the classic page calls.
 const EDIT_LOCK =
-  "This React preview is read-only. Add, edit, suggest and delete still happen in the main RFPIS app.";
+  "Editing the full donor profile still happens in the main RFPIS app. Add and delete work here.";
 
 export default function DonorsPage() {
   const [donors, setDonors] = useState<Donor[] | null>(() => cachedDonors());
@@ -28,6 +33,15 @@ export default function DonorsPage() {
   const [showGuide, setShowGuide] = useState(false);
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [adding, setAdding] = useState(false);
+  const [deleting, setDeleting] = useState<Donor[] | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+  // Which WORD goes on the button, from the same rule the Edge Function and Streamlit
+  // use. The job enforces it regardless; this only avoids offering somebody an action
+  // the server would refuse.
+  const session = currentSession();
+  const canEdit = !!session
+    && isDeveloperSuper(session.user as never, session.user.homeIsDeveloper === true);
   const [viewing, setViewing] = useState<Donor | null>(null);
 
   const load = () => {
@@ -100,6 +114,20 @@ export default function DonorsPage() {
         actions={<Button onClick={load} busy={loading} icon={<RefreshCw className="h-4 w-4" />}>Refresh</Button>}
       />
 
+      {/* What the job actually reported, not a generic "Saved". It carries the runner's
+          own summary and any warning — a field that could not be stored, say — because
+          those are the part worth reading. */}
+      {flash && (
+        <Notice tone="good" className="mb-5" icon={<CheckCircle2 className="h-4 w-4" />}>
+          <span className="flex items-start justify-between gap-4">
+            <span>{flash}</span>
+            <button onClick={() => setFlash(null)} className="shrink-0 text-xs underline">
+              Dismiss
+            </button>
+          </span>
+        </Notice>
+      )}
+
       <button
         onClick={() => setShowGuide((o) => !o)} aria-expanded={showGuide}
         className="mb-5 flex items-center gap-2 text-sm font-medium text-accent-700 hover:underline"
@@ -151,7 +179,12 @@ export default function DonorsPage() {
           <section className="mt-8">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-lg font-bold text-brand-700">All donors</h2>
-              <Button disabled title={EDIT_LOCK} icon={<Lock className="h-4 w-4" />}>Add donor</Button>
+              <Button
+                variant="primary" onClick={() => setAdding(true)}
+                icon={<Plus className="h-4 w-4" />}
+              >
+                {canEdit ? "Add donor" : "Propose a donor"}
+              </Button>
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5">
@@ -219,8 +252,17 @@ export default function DonorsPage() {
                     Share{selectedRows.length > 1 ? ` ${selectedRows.length}` : ""} (.md)
                   </Button>
                 )}
-                {selectedRows.length > 0 && (
-                  <Button size="sm" disabled title={EDIT_LOCK} icon={<Lock className="h-4 w-4" />}>Edit / Delete</Button>
+                {selectedRows.length > 0 && canEdit && (
+                  <Button
+                    size="sm" variant="danger" onClick={() => setDeleting(selectedRows)}
+                    icon={<Trash2 className="h-4 w-4" />}
+                  >
+                    Delete{selectedRows.length > 1 ? ` ${selectedRows.length}` : ""}
+                  </Button>
+                )}
+                {selectedRows.length === 1 && (
+                  <Button size="sm" disabled title={EDIT_LOCK}
+                    icon={<Lock className="h-4 w-4" />}>Edit profile</Button>
                 )}
               </div>
             </div>
@@ -312,6 +354,28 @@ export default function DonorsPage() {
       )}
 
       {viewing && <DonorDialog row={viewing} schema={schema} onClose={() => setViewing(null)} onShare={() => share([viewing])} />}
+      {adding && (
+        <AddDonorDialog
+          suggest={!canEdit}
+          onClose={() => setAdding(false)}
+          onDone={(msg) => { setAdding(false); setFlash(msg); load(); }}
+        />
+      )}
+      {deleting && (
+        <DeleteDonorsDialog
+          keys={deleting.map((d) => d.canonical_key)}
+          names={deleting.map((d) => titleName(d))}
+          onClose={() => setDeleting(null)}
+          onDone={(msg) => {
+            setDeleting(null);
+            setFlash(msg);
+            // The deleted keys must leave the selection too, or the toolbar keeps
+            // offering to delete rows that are already gone.
+            setSelected(new Set());
+            load();
+          }}
+        />
+      )}
     </>
   );
 }
