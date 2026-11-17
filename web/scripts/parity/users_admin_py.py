@@ -131,6 +131,26 @@ def main() -> None:
                      for a, s_, c, cur in OVERRIDE_CASES],
         "new_user": [{"email": e, "name": n, "want": _new_user_problems(e, n)}
                      for e, n in NEW_USER_CASES],
+        # Every capability the matrix can hold, plus one it cannot — the fallback is the
+        # interesting case, because the wrong fallback describes a grant as its opposite.
+        "capability_labels": {
+            cap: permissions.capability_label(cap)
+            for cap in ["edit", "view", "view+add", "trigger", "self", "all", "hidden",
+                        "telepathy"]},
+        # The option list the editor offers, per actor role and surface, with an existing
+        # grant that may sit above the actor's own ceiling.
+        "override_options_by": [
+            {"actor": {"role": r, "email": "a@x.org"}, "surface": sf, "current": cur,
+             "want": list(permissions.assignable_override_options(
+                 {"role": r, "email": "a@x.org"}, sf, cur))}
+            for r in ("collaborator", "reviewer", "admin", "super_user")
+            for sf in list(permissions.ACCESS_MATRIX)[:6]
+            for cur in (None, "edit", "hidden", "Use role default")],
+        # What each role group gets by default on each surface — the "default: …" caption
+        # beside every override row.
+        "role_defaults": {
+            sf: {g: caps.get(g, "hidden") for g in ("admin", "user")}
+            for sf, caps in permissions.ACCESS_MATRIX.items()},
     }, ensure_ascii=False, default=str))
 
 

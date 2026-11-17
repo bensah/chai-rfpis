@@ -1299,6 +1299,65 @@ export type SetupSaved = {
 const put = <T>(path: string, data: unknown = {}) =>
   call<T>(path, { method: "PUT", body: JSON.stringify(data) });
 
+// ── Settings → Accounts → Users ──────────────────────────────────────────────
+
+export type UserRights = {
+  profile: boolean; role: boolean; overrides: boolean; reset: boolean; remove: boolean;
+};
+
+export type AdminUser = {
+  id: string; email: string; name: string | null; role: string;
+  is_active: boolean; must_change_password: boolean;
+  department: string | null; program: string | null; job_title: string | null;
+  phone: string | null;
+  last_login_at: string | null; password_changed_at: string | null; created_at: string | null;
+  access_overrides: Record<string, string>;
+  /** The tenants this account belongs to, "(pending)" marked. */
+  tenant: string | null;
+  /** core/user_lifecycle's label, resolved server-side — emoji included. */
+  status: string;
+  /**
+   * What THIS actor may do to THIS account, decided by the server.
+   *
+   * The page could work it out from the role, and then a permission rule would have two
+   * implementations, one of them in a browser where it decides only what is drawn. These
+   * are the same answers the write routes enforce.
+   */
+  rights: UserRights;
+  /**
+   * One row per access surface: what the target's ROLE already grants there, the options
+   * THIS actor may assign, and what is currently stored. Resolved server-side for the
+   * same reason as `rights` — the ceiling and the role matrix are permission logic.
+   */
+  overrides: {
+    surface: string; roleDefault: string; roleDefaultLabel: string;
+    options: string[]; current: string;
+  }[];
+  /** The roles this actor may put on this account, the current one always included. */
+  roles: string[];
+};
+
+export type AdminUsers = {
+  users: AdminUser[];
+  /** False while invitations are still the classic page's job — `addNote` says why. */
+  canAdd: boolean;
+  addNote: string;
+};
+
+export type ResetResult = {
+  sent: boolean;
+  /** The short code, handed back ONLY when no email went. Never the token. */
+  code: string | null;
+  detail: string;
+};
+
+export const fetchUsers = () => call<AdminUsers>("/settings/users");
+export const saveUser = (id: string, form: Record<string, unknown>) =>
+  patch<{ saved: boolean; warnings?: Warning[] }>(
+    `/settings/users/${encodeURIComponent(id)}`, form);
+export const resetUserPassword = (id: string) =>
+  post<ResetResult>(`/settings/users/${encodeURIComponent(id)}/reset`);
+
 export const fetchSetup = () => call<OrgSetup>("/settings/setup");
 export const saveSetupIdentity = (form: Record<string, unknown>) =>
   put<SetupSaved>("/settings/setup/identity", form);

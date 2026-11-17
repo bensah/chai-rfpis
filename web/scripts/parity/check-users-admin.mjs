@@ -106,12 +106,40 @@ for (const [i, c] of want.new_user.entries()) {
     U.newUserProblems(c.email, c.name), c.want);
 }
 
-// 7. The surfaces and the option list, which the override editor renders one row per.
+// 7. The capability labels, and the option list / role default behind every override row.
+for (const [cap, label] of Object.entries(want.capability_labels)) {
+  same(`capabilityLabel(${cap})`, P.capabilityLabel(cap), label);
+}
+let optDiffs = 0;
+for (const c of want.override_options_by) {
+  checks++;
+  const got = P.assignableOverrideOptions(c.actor, c.surface, c.current);
+  if (J(got) === J(c.want)) continue;
+  diffs++; optDiffs++;
+  if (optDiffs <= 6) {
+    console.log(`DIFF assignableOverrideOptions ${c.actor.role} ${c.surface} `
+      + `(current ${J(c.current)})\n   ts: ${J(got)}\n   py: ${J(c.want)}`);
+  }
+}
+{
+  // The "default: …" caption beside each row comes from the matrix, per role GROUP.
+  const rowsFor = (role) => Object.fromEntries(
+    U.overrideRows({ role: "super_user", email: "s@x.org" }, { role, email: "t@x.org" })
+      .map((r) => [r.surface, r.roleDefault]));
+  same("the role defaults each override row shows (admin)",
+    rowsFor("admin"),
+    Object.fromEntries(Object.entries(want.role_defaults).map(([sf, g]) => [sf, g.admin])));
+  same("the role defaults each override row shows (collaborator)",
+    rowsFor("collaborator"),
+    Object.fromEntries(Object.entries(want.role_defaults).map(([sf, g]) => [sf, g.user])));
+}
+
+// 8. The surfaces and the option list, which the override editor renders one row per.
 same("the access surfaces", Object.keys(P.ACCESS_MATRIX), want.surfaces);
 same("the override options", [...P.OVERRIDE_OPTIONS], want.override_options);
 same("the use-default sentinel", P.USE_DEFAULT, want.use_default);
 
-// 8. The claims worth naming — the ones no case list states on its own.
+// 9. The claims worth naming — the ones no case list states on its own.
 {
   const superUser = { role: "super_user", email: "me@x.org" };
   const admin = { role: "admin", email: "me@x.org" };
@@ -213,6 +241,46 @@ same("the use-default sentinel", P.USE_DEFAULT, want.use_default);
   ok("a non-super sees only the tenant on screen",
     U.visibleUsers([{ id: "1" }, { id: "2" }], admin, new Set(["2"]))
       .map((u) => u.id).join() === "2");
+
+  ok("an actor with no identity is nobody's self",
+    (() => {
+      const r = U.editRights(null, { role: "admin", email: "" });
+      return !r.profile && !r.role && !r.overrides && !r.reset && !r.remove;
+    })(),
+    "`PermUser` admits null. Two MISSING emails must not compare equal — that would hand "
+    + "self-edit rights to a session with no identity at all, on an account that also "
+    + "has none.");
+
+  ok("every capability code has a label, and an unknown one falls back to itself",
+    P.capabilityLabel("hidden").includes("No access")
+    && P.capabilityLabel("edit").includes("View & edit")
+    && P.capabilityLabel("telepathy") === "telepathy",
+    "the Python's `.get(cap, cap)`. Falling back to \"No access\" would be legible and "
+    + "WRONG — it would describe a grant as its opposite.");
+
+  ok("an unreadable stored override presents as the role default",
+    (() => {
+      const rows = U.overrideRows(superUser,
+        { role: "collaborator", email: "t@x.org", access_overrides: { Home: "sudo" } });
+      const home = rows.find((r) => r.surface === "Home");
+      return home?.current === P.USE_DEFAULT;
+    })(),
+    "the Python's `if current_choice not in OVERRIDE_OPTIONS` branch. Presenting it as a "
+    + "real override would invite somebody to \"keep\" a setting that has never applied.");
+
+  ok("an existing grant above the actor's ceiling is offered so it can be KEPT",
+    (() => {
+      const actor = { role: "admin", email: "a@x.org" };
+      const surface = Object.keys(P.ACCESS_MATRIX).find(
+        (sf) => !P.assignableOverrideOptions(actor, sf, null).includes("edit"));
+      if (!surface) return true;      // nothing is above an admin here; nothing to prove
+      const rows = U.overrideRows(actor, {
+        role: "collaborator", email: "t@x.org", access_overrides: { [surface]: "edit" },
+      });
+      const row = rows.find((r) => r.surface === surface);
+      return !!row && row.options.includes("edit") && row.current === "edit";
+    })(),
+    "keep or lower, never raise — so the row has to show what is already there.");
 
   ok("a pending membership is labelled as pending",
     U.tenantLabels([

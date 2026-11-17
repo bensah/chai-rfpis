@@ -29,8 +29,9 @@
  * delete are locked").
  */
 import {
-  ACCESS_MATRIX, assignableRoles, canAssignOverride, canManageUser, isSuperUser,
-  OVERRIDE_OPTIONS, USE_DEFAULT, type PermUser,
+  ACCESS_MATRIX, assignableOverrideOptions, assignableRoles, canAssignOverride,
+  canManageUser, capabilityLabel, isSuperUser, OVERRIDE_OPTIONS, roleGroup, USE_DEFAULT,
+  type PermUser,
 } from "./permissions.ts";
 
 type Row = Record<string, unknown>;
@@ -88,8 +89,11 @@ export const PROFILE_COLUMNS = [
 export function editRights(actor: PermUser, target: PermUser): {
   profile: boolean; role: boolean; overrides: boolean; reset: boolean; remove: boolean;
 } {
-  const self = !!actor.email && trimmed(actor.email).toLowerCase()
-    === trimmed(target.email).toLowerCase();
+  // `PermUser` admits null — an unauthenticated or unresolved actor. A missing email is
+  // never "the same person": treating two absences as a match would hand self-edit rights
+  // to a session that has no identity at all.
+  const actorEmail = trimmed(actor?.email).toLowerCase();
+  const self = !!actorEmail && actorEmail === trimmed(target?.email).toLowerCase();
   const manage = canManageUser(actor, target);
   return {
     profile: manage || self,
@@ -265,6 +269,43 @@ export function visibleUsers(rows: Row[], actor: PermUser, memberIds: Set<string
   const live = rows.filter((u) => !u.is_blacklisted);
   if (isSuperUser(actor) || !memberIds) return live;
   return live.filter((u) => memberIds.has(s(u.id)));
+}
+
+/**
+ * The override editor's rows for one target, decided HERE rather than in the browser.
+ *
+ * Each row carries the surface, what the target's ROLE already grants there, and the
+ * options this ACTOR may assign — the ceiling, with an existing higher grant preserved so
+ * it can be kept or lowered but never raised. Resolving it server-side is not an
+ * optimisation: `access()`, the ceiling and the role matrix are permission logic, and a
+ * second copy of permission logic in a browser is a copy that decides what is drawn while
+ * the real one decides what is allowed. The two then disagree silently, and the page
+ * shows a grant that the save refuses.
+ */
+export function overrideRows(actor: PermUser, target: PermUser): {
+  surface: string; roleDefault: string; roleDefaultLabel: string;
+  options: string[]; current: string;
+}[] {
+  const raw = target?.access_overrides;
+  const stored = (raw && typeof raw === "object" && !Array.isArray(raw))
+    ? raw as Record<string, unknown> : {};
+  const group = roleGroup(target);
+  return Object.entries(ACCESS_MATRIX).map(([surface, caps]) => {
+    const roleDefault = caps[group] ?? "hidden";
+    // A stored value outside the option list reads as "Use role default", exactly as the
+    // Python's `if current_choice not in OVERRIDE_OPTIONS` branch does: an unreadable
+    // override is not an override, and presenting it as one would invite somebody to
+    // "keep" a setting that has never applied.
+    let current = s(stored[surface]).trim();
+    if (!OVERRIDE_OPTIONS.includes(current)) current = USE_DEFAULT;
+    return {
+      surface,
+      roleDefault,
+      roleDefaultLabel: capabilityLabel(roleDefault),
+      options: assignableOverrideOptions(actor, surface, current),
+      current,
+    };
+  });
 }
 
 /** The tenant label a user's memberships add up to — "(pending)" marked, as the page does. */

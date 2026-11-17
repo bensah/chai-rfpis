@@ -31,12 +31,12 @@
  */
 import { q, type Db } from "./db.ts";
 import { body, json, str } from "./http.ts";
-import { isAdmin, type PermUser } from "./permissions.ts";
+import { assignableRoles, isAdmin, type PermUser } from "./permissions.ts";
 import type { Ctx } from "./session.ts";
 import type { Mailer } from "./email.ts";
 import {
-  accountStatus, editPatch, editProblems, editRights, overridesFor, roleAllowed,
-  tenantLabels, visibleUsers,
+  accountStatus, editPatch, editProblems, editRights, overrideRows, overridesFor,
+  roleAllowed, tenantLabels, visibleUsers,
 } from "./users_admin.ts";
 
 type Row = Record<string, unknown>;
@@ -111,6 +111,14 @@ export function createUserRoutes(
         // routes enforce, which is the point.
         status: accountStatus(u.is_active, u.must_change_password, u.last_login_at),
         rights: editRights(actor, u as PermUser),
+        // The override editor's rows, resolved here for the same reason `rights` is: the
+        // ceiling and the role matrix are permission logic, and a browser copy would
+        // decide what is DRAWN while the real one decides what is ALLOWED.
+        overrides: overrideRows(actor, u as PermUser),
+        // The roles this actor may put on THIS account — the current one always included,
+        // so an admin editing a super_user's department is not offered a demotion as the
+        // only choice.
+        roles: [...new Set([...assignableRoles(actor), str(u.role)])].filter(Boolean),
       })),
       // What the actor may assign, so the page offers nothing the route would refuse.
       canAdd: false,
@@ -227,7 +235,7 @@ export function createUserRoutes(
     if (!editRights(actor, target as PermUser).reset) {
       return json({
         error: "You can't reset that account's password"
-          + (str(target.email).toLowerCase() === str(actor.email).toLowerCase()
+          + (str(target.email).toLowerCase() === str(actor?.email).toLowerCase()
             ? " — use Profile → Change password for your own." : "."),
       }, 403);
     }
@@ -235,10 +243,10 @@ export function createUserRoutes(
     await db.service.update("users", `id=eq.${q(id)}`, { must_change_password: true });
     await db.service.update("password_reset_requests",
       `email=eq.${q(str(target.email))}&status=eq.pending`,
-      { status: "handled", handled_by: str(actor.email), handled_at: new Date().toISOString() })
+      { status: "handled", handled_by: str(actor?.email), handled_at: new Date().toISOString() })
       .catch(() => undefined);
 
-    const { token, code } = await issueToken(id, "reset", str(actor.email));
+    const { token, code } = await issueToken(id, "reset", str(actor?.email));
     let sent = false;
     if (mailer?.configured()) {
       sent = await mailer.sendPasswordReset({

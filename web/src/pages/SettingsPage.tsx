@@ -12,6 +12,7 @@ import { fetchHome, startJob, switchTenant, type HomeKpis, type Job, type User }
 import { JOB_STATUS_LABEL, useJob } from "../jobs";
 import ClassicPage from "./ClassicPage";
 import SetupTab from "../settings/SetupTab";
+import UsersTab from "../settings/UsersTab";
 import { hrefOf } from "../router";
 import {
   Badge, Button, Card, Eyebrow, LinkButton, Notice, PageHeader, Select,
@@ -80,8 +81,12 @@ export default function SettingsPage({ user, classicUrl }: { user: User; classic
             {/* Deployment shows the job test and, under it, the classic link for env_diag. */}
             <div className="mt-5 space-y-6">
               {acct === "Active tenant" && <ActiveTenant user={user} />}
+              {acct === "Users" && <UsersTab />}
               {acct === "Deployment" && <JobTest />}
-              {acct !== "Active tenant" && <ClassicPage page="settings" classicUrl={classicUrl} />}
+              {/* Tenants and Blacklisted are still the classic page's; Users and Active
+                  tenant are not, so neither should get a classic frame under it. */}
+              {!["Active tenant", "Users"].includes(acct)
+                && <ClassicPage page="settings" classicUrl={classicUrl} />}
             </div>
           </>
         )}
