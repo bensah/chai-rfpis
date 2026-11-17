@@ -134,6 +134,83 @@ export function newUserProblems(email: unknown, name: unknown): string[] {
 }
 
 /**
+ * `_bulk_rows` — the filled-in rows of the bulk table, numbered as the admin sees them.
+ *
+ * A ROW WITH NOTHING IN IT IS SPARE CAPACITY, NOT A MISTAKE. The table always offers
+ * more rows than anybody uses, so reporting "email required" for the empty ones would
+ * bury the real typos under noise the admin cannot act on. A row counts as used when ANY
+ * of its fields has something in it — including the department or the programme areas,
+ * because somebody who typed a department and forgot the email has made an error worth
+ * showing.
+ *
+ * Numbering starts at 1 and counts EVERY row including the skipped ones, so "row 4" in a
+ * problem message is the fourth row on screen.
+ */
+export function bulkRows(rows: unknown): {
+  n: number; email: string; name: string; role: string; dept: string; areas: string[];
+}[] {
+  const out: { n: number; email: string; name: string; role: string; dept: string; areas: string[] }[] = [];
+  const src = Array.isArray(rows) ? rows : [];
+  for (let i = 0; i < src.length; i++) {
+    const r = (src[i] && typeof src[i] === "object" ? src[i] : {}) as Json;
+    // A COMMA STRING IS ACCEPTED, because that is what a paste produces: somebody copies
+    // a spreadsheet column of "Malaria, Health Financing" and the cell arrives as one
+    // string. The Python splits it for the same reason, and without this the whole list
+    // would be stored as a single programme area that matches nothing.
+    const raw = r.areas ?? r["Program areas"];
+    const areas = (typeof raw === "string"
+      ? raw.split(",")
+      : (Array.isArray(raw) ? raw : []))
+      .map((a) => s(a).trim()).filter(Boolean);
+    const row = {
+      n: i + 1,
+      email: trimmed(r.email),
+      name: trimmed(r.name),
+      role: trimmed(r.role),
+      dept: trimmed(r.department ?? r.dept),
+      areas,
+    };
+    if (row.email || row.name || row.dept || areas.length) out.push(row);
+  }
+  return out;
+}
+
+/**
+ * `_bulk_problems` — every reason the batch cannot go ahead, one line per row problem.
+ *
+ * THE BATCH IS ALL OR NOTHING, and the Python says why: "a half-created team, with the
+ * admin left to work out which rows went through, is harder to fix than a list of typos."
+ * So this returns EVERY problem rather than stopping at the first — a list you can fix in
+ * one pass beats four round trips.
+ *
+ * `existing` is compared lower-cased because addresses are stored as typed; a batch that
+ * differed from a live account only in case would pass validation and then fail on the
+ * unique index, which is the half-created team this exists to prevent.
+ */
+export function bulkProblems(
+  rows: ReturnType<typeof bulkRows>, roles: string[], existing: Iterable<string>,
+): string[] {
+  const taken = new Set([...existing].map((e) => trimmed(e).toLowerCase()));
+  const seen = new Map<string, number>();
+  const out: string[] = [];
+  for (const r of rows) {
+    const probs = newUserProblems(r.email, r.name);
+    const key = r.email.toLowerCase();
+    if (key && seen.has(key)) probs.push(`same email as row ${seen.get(key)}`);
+    else if (key) seen.set(key, r.n);
+    if (key && taken.has(key)) probs.push("a user with this email already exists");
+    if (r.role && !roles.includes(r.role)) {
+      probs.push(`role “${r.role}” is not one you can assign`);
+    }
+    if (probs.length) {
+      const label = r.email || r.name || "(blank)";
+      out.push(`Row ${r.n} (${label}): ${probs.join("; ")}`);
+    }
+  }
+  return out;
+}
+
+/**
  * The single-user form, cleaned the way `_bulk_rows` cleans a table cell.
  *
  * This is where the whitespace-name hole above is closed, and closing it here rather than

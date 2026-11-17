@@ -40,23 +40,31 @@ from core.user_lifecycle import (                                     # noqa: E4
 SECTIONS = REPO_ROOT / "views" / "account_sections.py"
 
 
-def _lift(name: str):
-    """One module-level function out of views/account_sections.py, executed alone.
+def _lift(*names: str) -> dict:
+    """Module-level functions out of views/account_sections.py, executed together.
 
     The module imports streamlit and builds dialogs at import time, so it cannot be
-    imported for `_new_user_problems`. Lifting the single function is the same trick the
-    other harnesses use on view files.
+    imported for these. Lifting them is the same trick the other harnesses use on view
+    files — and they go in ONE namespace because `_bulk_problems` calls
+    `_new_user_problems`: lifted separately, it would find no such name.
     """
+    import pandas as pd
+
     tree = ast.parse(SECTIONS.read_text(encoding="utf-8"))
-    defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
-    if not defs:
-        raise SystemExit(f"views/account_sections.py no longer defines {name}")
-    ns: dict = {}
+    defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    missing = set(names) - {d.name for d in defs}
+    if missing:
+        raise SystemExit(f"views/account_sections.py no longer defines {sorted(missing)}")
+    # `_bulk_rows` takes a DataFrame and calls `.to_dict("records")` on it.
+    ns: dict = {"pd": pd}
     exec(compile(ast.Module(body=defs, type_ignores=[]), str(SECTIONS), "exec"), ns)
-    return ns[name]
+    return ns
 
 
-_new_user_problems = _lift("_new_user_problems")
+_NS = _lift("_new_user_problems", "_bulk_rows", "_bulk_problems")
+_new_user_problems = _NS["_new_user_problems"]
+_bulk_rows = _NS["_bulk_rows"]
+_bulk_problems = _NS["_bulk_problems"]
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -112,6 +120,66 @@ NEW_USER_CASES: list[tuple] = [
 ]
 
 
+# The bulk table. `_bulk_rows` takes a DataFrame, so each case is the list of row dicts a
+# DataFrame is built from — the shape the data editor hands back.
+#
+# THE CASES ARE ABOUT WHAT COUNTS AS A ROW. The table always offers more rows than anybody
+# uses, so an empty one is spare capacity rather than a mistake; reporting "email
+# required" for it would bury the real typos. But a row with only a DEPARTMENT typed is
+# somebody who forgot the email, and that must be reported.
+BULK_CASES: list[list[dict]] = [
+    # Two good rows and three untouched ones.
+    [{"Email": "a@x.org", "Full name": "A", "Role": "collaborator", "Department": "BD",
+      "Program areas": []},
+     {"Email": "b@x.org", "Full name": "B", "Role": "reviewer", "Department": "",
+      "Program areas": []},
+     {"Email": "", "Full name": "", "Role": "collaborator", "Department": "",
+      "Program areas": []},
+     {"Email": "", "Full name": "", "Role": "collaborator", "Department": "",
+      "Program areas": []},
+     {"Email": "", "Full name": "", "Role": "collaborator", "Department": "",
+      "Program areas": []}],
+    # A row with only a department: used, and missing its email and name.
+    [{"Email": "", "Full name": "", "Role": "", "Department": "Finance",
+      "Program areas": []}],
+    # A row with only program areas: also used.
+    [{"Email": "", "Full name": "", "Role": "", "Department": "",
+      "Program areas": ["IDs - Malaria & NTDs"]}],
+    # Whitespace everywhere, which the cell cleaner strips.
+    [{"Email": "  c@x.org  ", "Full name": "  C  ", "Role": " admin ",
+      "Department": "  Ops  ", "Program areas": []}],
+    # Duplicate addresses differing in case.
+    [{"Email": "d@x.org", "Full name": "D", "Role": "", "Department": "",
+      "Program areas": []},
+     {"Email": "D@X.ORG", "Full name": "D again", "Role": "", "Department": "",
+      "Program areas": []}],
+    # An unassignable role.
+    [{"Email": "e@x.org", "Full name": "E", "Role": "super_user", "Department": "",
+      "Program areas": []}],
+    # Program areas as a COMMA STRING, which is what a paste produces.
+    [{"Email": "f@x.org", "Full name": "F", "Role": "", "Department": "",
+      "Program areas": "IDs - Malaria & NTDs, HSS - Health Financing"}],
+    [],
+]
+
+# Roles an ADMIN may assign, and one address already taken — the two things
+# `_bulk_problems` is given besides the rows.
+BULK_ROLES = ["collaborator", "reviewer", "admin"]
+BULK_EXISTING = {"taken@x.org"}
+
+
+def _bulk_case(rows: list[dict]) -> dict:
+    import pandas as pd
+    df = pd.DataFrame(rows) if rows else pd.DataFrame(
+        columns=["Email", "Full name", "Role", "Department", "Program areas"])
+    parsed = _bulk_rows(df)
+    return {
+        "rows": rows,
+        "parsed": parsed,
+        "problems": _bulk_problems(parsed, BULK_ROLES, BULK_EXISTING),
+    }
+
+
 def main() -> None:
     sys.stdin.read()
     print(json.dumps({
@@ -131,6 +199,9 @@ def main() -> None:
                      for a, s_, c, cur in OVERRIDE_CASES],
         "new_user": [{"email": e, "name": n, "want": _new_user_problems(e, n)}
                      for e, n in NEW_USER_CASES],
+        "bulk_roles": BULK_ROLES,
+        "bulk_existing": sorted(BULK_EXISTING),
+        "bulk": [_bulk_case(c) for c in BULK_CASES],
         # Every capability the matrix can hold, plus one it cannot — the fallback is the
         # interesting case, because the wrong fallback describes a grant as its opposite.
         "capability_labels": {

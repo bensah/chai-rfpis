@@ -300,6 +300,7 @@ export function createApi(env: Env, deps: Deps) {
     // on every write — two different questions, both asked. See api/routes_users.ts.
     if (path === "/settings/users" && m === "GET") return users.list(req, ctx);
     if (path === "/settings/users" && m === "POST") return users.create(req, ctx);
+    if (path === "/settings/users/bulk" && m === "POST") return users.createBulk(req, ctx);
     {
       // Matched on the SEGMENTS rather than a prefix: `/settings/users/<id>` is the
       // account and `/settings/users/<id>/reset` is an action on it, and a prefix test

@@ -106,6 +106,23 @@ for (const [i, c] of want.new_user.entries()) {
     U.newUserProblems(c.email, c.name), c.want);
 }
 
+// 6b. The bulk table: which rows count, how cells are cleaned, and every problem found.
+//
+// The Python reads the data editor's DISPLAY columns ("Email", "Full name", …) and the
+// client sends its own field names, so the rows are mapped before comparing. What is
+// being compared is the RULE — which rows are used and how their cells are read — not
+// the spelling of a column header.
+for (const [i, c] of want.bulk.entries()) {
+  const mapped = c.rows.map((r) => ({
+    email: r["Email"], name: r["Full name"], role: r["Role"],
+    department: r["Department"], areas: r["Program areas"],
+  }));
+  const parsed = U.bulkRows(mapped);
+  same(`bulk #${i} — which rows are used, and their cells`, parsed, c.parsed);
+  same(`bulk #${i} — every problem, in order`,
+    U.bulkProblems(parsed, want.bulk_roles, want.bulk_existing), c.problems);
+}
+
 // 7. The capability labels, and the option list / role default behind every override row.
 for (const [cap, label] of Object.entries(want.capability_labels)) {
   same(`capabilityLabel(${cap})`, P.capabilityLabel(cap), label);
@@ -241,6 +258,49 @@ same("the use-default sentinel", P.USE_DEFAULT, want.use_default);
   ok("a non-super sees only the tenant on screen",
     U.visibleUsers([{ id: "1" }, { id: "2" }], admin, new Set(["2"]))
       .map((u) => u.id).join() === "2");
+
+  ok("an untouched bulk row is spare capacity, not a mistake",
+    U.bulkRows([{ email: "a@x.org", name: "A" }, {}, {}, {}]).length === 1,
+    "the table always offers more rows than anybody uses. Reporting \"email required\" "
+    + "for the empty ones buries the real typos under noise nobody can act on.");
+
+  ok("...but a row with ONLY a department is somebody who forgot the email",
+    (() => {
+      const rows = U.bulkRows([{ department: "Finance" }]);
+      return rows.length === 1
+        && U.bulkProblems(rows, ["collaborator"], []).length === 1;
+    })(),
+    "that is an error worth showing, and the difference between it and an empty row is "
+    + "the whole reason `_bulk_rows` tests every field rather than just the email.");
+
+  ok("the batch reports EVERY problem, not the first",
+    U.bulkProblems(U.bulkRows([
+      { email: "bad", name: "A" }, { email: "b@x.org", name: "" },
+      { email: "c@x.org", name: "C", role: "super_user" },
+    ]), ["collaborator"], []).length === 3,
+    "the batch is all or nothing — \"a half-created team, with the admin left to work "
+    + "out which rows went through, is harder to fix than a list of typos\" — so a list "
+    + "you can fix in one pass beats four round trips.");
+
+  ok("a duplicate inside the batch names the row it clashes with",
+    U.bulkProblems(U.bulkRows([
+      { email: "d@x.org", name: "D" }, { email: "D@X.ORG", name: "D2" },
+    ]), ["collaborator"], [])[0].includes("same email as row 1"),
+    "matched case-insensitively, because addresses are stored as typed: a batch that "
+    + "differed only in case would pass validation and then fail on the unique index — "
+    + "which IS the half-created team.");
+
+  ok("an address already live is caught before anything is queued",
+    U.bulkProblems(U.bulkRows([{ email: "Taken@X.org", name: "T" }]),
+      ["collaborator"], ["taken@x.org"])[0].includes("already exists"));
+
+  ok("a pasted comma string becomes several programme areas",
+    (() => {
+      const r = U.bulkRows([{ email: "a@x.org", name: "A", areas: "Malaria, Nutrition" }]);
+      return r[0].areas.length === 2;
+    })(),
+    "copying a spreadsheet column gives one string. Without the split it is stored as a "
+    + "single programme area that matches nothing.");
 
   ok("an actor with no identity is nobody's self",
     (() => {

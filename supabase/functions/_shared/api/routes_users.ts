@@ -35,8 +35,9 @@ import { assignableRoles, isAdmin, isSuperUser, type PermUser } from "./permissi
 import type { Ctx } from "./session.ts";
 import type { Mailer } from "./email.ts";
 import {
-  accountStatus, cleanNewUser, editPatch, editProblems, editRights, newUserProblems,
-  overrideRows, overridesFor, roleAllowed, tenantLabels, visibleUsers,
+  accountStatus, bulkProblems, bulkRows, cleanNewUser, editPatch, editProblems,
+  editRights, newUserProblems, overrideRows, overridesFor, roleAllowed, tenantLabels,
+  visibleUsers,
 } from "./users_admin.ts";
 
 type Row = Record<string, unknown>;
@@ -362,5 +363,82 @@ export function createUserRoutes(
     });
   }
 
-  return { list, patch, resetPassword, create };
+  /**
+   * `POST /settings/users/bulk` — invite a whole team.
+   *
+   * VALIDATED AS A BATCH, QUEUED AS ROWS. Every problem across every row is found before
+   * ANY job is queued, which is the Python's own bargain and its reason: "a half-created
+   * team, with the admin left to work out which rows went through, is harder to fix than
+   * a list of typos." So a batch with one bad row creates nobody and comes back with a
+   * list you can fix in one pass.
+   *
+   * It is not a transaction after that point, and the Streamlit loop is not one either:
+   * once the rows are known good, each becomes exactly the job the single-user form would
+   * have queued. A row that then fails at runtime fails on its own job row, where it can
+   * be read, rather than taking the other nine with it.
+   *
+   * THE ROLE AND THE TENANT ARE DECIDED HERE, per row and once respectively, by the same
+   * rules the single-user route applies — an admin's batch lands in the admin's own
+   * tenant whatever the request says.
+   */
+  async function createBulk(req: Request, ctx: Ctx): Promise<Response> {
+    const actor = ctx.user as PermUser;
+    if (!isAdmin(actor)) return BLOCKED();
+    if (!enqueue) return json({ error: "Background jobs are not configured." }, 503);
+
+    const p = (await body(req)) as Row;
+    const rows = bulkRows(p.rows);
+    if (!rows.length) {
+      return json({ error: "Nothing to add — every row is empty." }, 400);
+    }
+
+    const roles = assignableRoles(actor);
+    // Compared against every address the ACTOR can see, which is the roster the page
+    // shows. One outside their scope is caught by the unique index on the job instead.
+    const { rows: visible } = await roster(ctx);
+    const problems = bulkProblems(rows, roles, visible.map((u) => str(u.email)));
+    if (problems.length) {
+      return json({
+        error: `Nothing was created. Fix ${problems.length} `
+          + `problem${problems.length === 1 ? "" : "s"} and try again:`,
+        problems,
+      }, 400);
+    }
+
+    const superUser = isSuperUser(actor);
+    const tid = viewedTid(ctx);
+    const tenant = superUser
+      ? {
+        mode: ["own", "existing", "new"].includes(str(p.tenantMode))
+          ? str(p.tenantMode) : "own",
+        tenant_id: str(p.tenantId) || tid,
+        new_name: str(p.newTenantName).trim(),
+        kind: str(p.tenantKind) === "individual" ? "individual" : "organization",
+      }
+      : { mode: "own", tenant_id: tid, new_name: "", kind: "organization" };
+
+    const queued: { email: string; job_id: string | null; dispatched: boolean }[] = [];
+    for (const r of rows) {
+      const job = await enqueue("create_user", {
+        email: r.email, name: r.name,
+        role: r.role || roles[0] || "collaborator",
+        department: r.dept || null,
+        program: r.areas.join(", ") || null,
+        tenant, by: str(actor?.email),
+      }, ctx);
+      queued.push({
+        email: r.email, job_id: job?.id ?? null, dispatched: !!job?.dispatched,
+      });
+    }
+
+    const sent = queued.filter((q) => q.job_id).length;
+    return json({
+      queued,
+      detail: `${sent} of ${rows.length} invitation${rows.length === 1 ? "" : "s"} queued. `
+        + "Each person gets their own activation link; the results appear below as they "
+        + "finish.",
+    });
+  }
+
+  return { list, patch, resetPassword, create, createBulk };
 }

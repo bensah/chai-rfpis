@@ -1373,6 +1373,23 @@ export const saveUser = (id: string, form: Record<string, unknown>) =>
     `/settings/users/${encodeURIComponent(id)}`, form);
 export const inviteUser = (form: Record<string, unknown>) =>
   post<InviteQueued>("/settings/users", form);
+
+export type BulkRow = {
+  email: string; name: string; role: string; department: string; areas: string[];
+};
+export type BulkQueued = {
+  queued: { email: string; job_id: string | null; dispatched: boolean }[];
+  detail: string;
+};
+/**
+ * Validated as a batch, queued as rows.
+ *
+ * Every problem across every row comes back BEFORE anything is created — a batch with
+ * one bad row creates nobody. After that each row is its own job, so one that fails at
+ * runtime fails alone.
+ */
+export const inviteUsers = (rows: BulkRow[], form: Record<string, unknown> = {}) =>
+  post<BulkQueued>("/settings/users/bulk", { ...form, rows });
 export const resetUserPassword = (id: string) =>
   post<ResetResult>(`/settings/users/${encodeURIComponent(id)}/reset`);
 

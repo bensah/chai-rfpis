@@ -21,6 +21,7 @@ import {
 import { JOB_STATUS_LABEL, useJob } from "../jobs";
 import { Badge, Button, Notice, Select } from "../ui";
 import { Dialog, Field } from "./dialog";
+import BulkInvite from "./BulkInvite";
 
 const s = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 const FINAL = new Set(["done", "failed", "cancelled"]);
@@ -28,6 +29,10 @@ const FINAL = new Set(["done", "failed", "cancelled"]);
 export default function InviteDialog({ data, onClose, onDone }: {
   data: AdminUsers; onClose: () => void; onDone: () => void;
 }) {
+  // One person, or a table of them — the Streamlit dialog's own choice, in its own
+  // words. Both go through the SAME creation path, so a bulk-added account is
+  // indistinguishable from one added alone: same invite link, same email, same tenant.
+  const [several, setSeveral] = useState(false);
   const roles = data.assignableRoles?.length ? data.assignableRoles : ["collaborator"];
   const [f, setF] = useState({
     email: "", name: "", role: roles[0], department: "", program: "",
@@ -63,10 +68,31 @@ export default function InviteDialog({ data, onClose, onDone }: {
     }
   };
 
+  if (several) {
+    return (
+      <BulkInvite data={data} roles={roles} onClose={onClose} onDone={onDone}
+        onBack={() => setSeveral(false)} />
+    );
+  }
+
   return (
     <Dialog title="Add a user" onClose={onClose}>
       {!queued ? (
         <>
+          <div className="mb-4 flex flex-wrap gap-1">
+            <button
+              type="button" aria-pressed="true"
+              className="rounded-lg bg-brand-50 px-3.5 py-1.5 text-sm font-semibold text-brand-700"
+            >
+              One user
+            </button>
+            <button
+              type="button" aria-pressed="false" onClick={() => setSeveral(true)}
+              className="rounded-lg px-3.5 py-1.5 text-sm text-ink-600 transition-colors hover:bg-ink-100 hover:text-ink-900"
+            >
+              Several users
+            </button>
+          </div>
           <Notice tone="brand" className="mb-4">
             This creates the account and emails a one-time activation link.{" "}
             <strong>No password is generated or sent.</strong> The account cannot be used
