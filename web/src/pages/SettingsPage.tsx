@@ -15,6 +15,7 @@ import SetupTab from "../settings/SetupTab";
 import UsersTab from "../settings/UsersTab";
 import RecordsTab from "../settings/RecordsTab";
 import ScanTab from "../settings/ScanTab";
+import AnalyticsTab from "../settings/AnalyticsTab";
 import { hrefOf } from "../router";
 import {
   Badge, Button, Card, Eyebrow, LinkButton, Notice, PageHeader, Select,
@@ -77,6 +78,8 @@ export default function SettingsPage({ user, classicUrl }: { user: User; classic
           <RecordsTab />
         ) : tab === "Manual Scan" ? (
           <ScanTab user={user} />
+        ) : tab === "Analytics" ? (
+          <AnalyticsTab />
         ) : tab === "Archive" ? (
           <Archive />
         ) : tab !== "Accounts" ? (

@@ -25,6 +25,7 @@ import { createDb, q } from "./api/db.ts";
 import { createMailer } from "./api/email.ts";
 import { createFormOptions } from "./api/form_options.ts";
 import { corsHeaders, gzipped, HttpError, json, withCors } from "./api/http.ts";
+import { isSuperUser, type PermUser } from "./api/permissions.ts";
 import { createAuthRoutes, type AuthDeps } from "./api/routes_auth.ts";
 import { createJobRoutes, type Dispatch } from "./api/routes_jobs.ts";
 import { createPhase1Routes } from "./api/routes_phase1.ts";
@@ -39,6 +40,7 @@ import { createOrgRoutes } from "./api/routes_org.ts";
 import { createOrgSetupRoutes } from "./api/routes_org_setup.ts";
 import { createUserRoutes } from "./api/routes_users.ts";
 import { createRecordRoutes } from "./api/routes_records.ts";
+import { systemDiscoveryStats, tenantActivity, userStats } from "./api/analytics.ts";
 import { createProfileRoutes } from "./api/routes_profile.ts";
 import { createSearchRoutes } from "./api/routes_search.ts";
 import { createSubmitRoutes } from "./api/routes_submit.ts";
@@ -213,6 +215,24 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/settings/setup/identity" && m === "PUT") return orgSetup.putIdentity(req, ctx);
     if (path === "/settings/setup/profile" && m === "PUT") return orgSetup.putProfile(req, ctx);
     if (path === "/settings/setup/team" && m === "PUT") return orgSetup.putTeam(req, ctx);
+
+    /**
+     * Settings → Analytics — the cross-tenant platform rollups.
+     *
+     * SUPER_USER ONLY, and the gate is the whole of the access control: every figure
+     * crosses tenant boundaries and every query runs on the service role. Inline rather
+     * than in a routes module because it is three reads and no rules — api/analytics.ts
+     * holds what little arithmetic there is, pinned by check-analytics.
+     */
+    if (path === "/settings/analytics" && m === "GET") {
+      if (!isSuperUser(ctx.user as PermUser)) {
+        return json({ error: "App analytics are visible to the Super User only." }, 403);
+      }
+      const [discovery, tenantRows, users] = await Promise.all([
+        systemDiscoveryStats(db), tenantActivity(db), userStats(db),
+      ]);
+      return json({ discovery, tenants: tenantRows, users });
+    }
 
     if (path === "/settings/records" && m === "GET") return records.read(req, ctx);
     if (path === "/settings/records" && m === "PATCH") return records.update(req, ctx);

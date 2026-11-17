@@ -1399,6 +1399,23 @@ export const deleteRecord = (table: string, id: string) =>
   del<{ deleted: string }>(
     `/settings/records?table=${encodeURIComponent(table)}&id=${encodeURIComponent(id)}`);
 
+// ── Settings → Analytics ─────────────────────────────────────────────────────
+
+export type PlatformAnalytics = {
+  /** Deployment-wide discovery. A "system run" excludes every tenant's own screening. */
+  discovery: {
+    runs: number; found: number; rejected: number; catalog: number; last_run: string | null;
+  };
+  tenants: {
+    id: string; name: string | null; status: string; is_platform: boolean;
+    members: number; pending: number; rfps: number;
+    last_screen: string | null; created: string;
+  }[];
+  users: { total: number; active: number; inactive: number; by_role: Record<string, number> };
+};
+
+export const fetchAnalytics = () => call<PlatformAnalytics>("/settings/analytics");
+
 export const fetchSetup = () => call<OrgSetup>("/settings/setup");
 export const saveSetupIdentity = (form: Record<string, unknown>) =>
   put<SetupSaved>("/settings/setup/identity", form);
