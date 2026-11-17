@@ -190,6 +190,31 @@ class TheEditorsOptionListsMatchTheEditor(unittest.TestCase):
         from core.scorer import CRITERIA
         self.assertEqual(sorted(CRITERIA), sorted(emitted("CRITERION_LABELS")))
 
+    def test_the_area_taxonomy_carries_canonical_keys(self):
+        """Every emitted key must be one `key_for` produced, not one composed from the
+        category name. A stored area is "IDs - Malaria & NTDs", and that exact string is
+        what program_area_classifier.expand matches an organisation's areas against a
+        call's and a donor's. A key rebuilt in the browser would look right and match
+        nothing, costing MUST-2 and competitiveness at once."""
+        from core.program_area_classifier import PROGRAM_AREA_KEYWORDS, key_for
+        from core.program_area_select import CATEGORIES, TAXONOMY
+        want = [[cat, [k for sub in TAXONOMY.get(cat, []) if (k := key_for(cat, sub))]]
+                for cat in CATEGORIES]
+        self.assertEqual([c for c in want if c[1]], emitted("AREA_TAXONOMY"))
+        for _cat, keys in emitted("AREA_TAXONOMY"):
+            for k in keys:
+                with self.subTest(key=k):
+                    self.assertIn(k, PROGRAM_AREA_KEYWORDS)
+
+    def test_every_taxonomy_key_prefix_has_a_category_label(self):
+        """The page prints the sub-area and the category beside it in grey. An unknown
+        prefix falls back to itself, so "IDs" would be shown where the full name belongs."""
+        full = emitted("CATEGORY_FULL")
+        for _cat, keys in emitted("AREA_TAXONOMY"):
+            for k in keys:
+                with self.subTest(key=k):
+                    self.assertIn(k.split(" - ", 1)[0], full)
+
     def test_the_portal_seed_is_cleaned_and_deduplicated(self):
         """`clean_portal_url` is what makes grants.gov and https://www.grants.gov/search
         one entry. Emitting the raw list would offer the same portal twice."""

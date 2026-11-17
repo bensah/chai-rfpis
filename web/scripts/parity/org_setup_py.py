@@ -36,6 +36,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from core import org_profile as op                                   # noqa: E402
 from core import settings as st                                      # noqa: E402
+from core.partners import clean_portal_url                           # noqa: E402
 
 EDITOR = REPO_ROOT / "views" / "org_setup.py"
 _TREE = ast.parse(EDITOR.read_text(encoding="utf-8"))
@@ -132,6 +133,23 @@ def _persisted_identity(fields: dict) -> dict:
     return seen
 
 
+def _persisted_team(names: list) -> list:
+    """What `settings.set_team_members` actually stores.
+
+    It has its own cleaning on top of the textarea split — a case-insensitive de-dupe and
+    the removal of "Other"/"All" — and that half is invisible from the view, so running
+    the real function is the only way to answer for it.
+    """
+    seen: list = []
+    real_set = st.set_setting
+    st.set_setting = lambda key, value, updated_by=None, **kw: seen.append(value)
+    try:
+        st.set_team_members(list(names))
+    finally:
+        st.set_setting = real_set
+    return json.loads(seen[-1]) if seen else []
+
+
 def _persisted_profile(profile: dict) -> dict:
     """What `org_profile.set_profile` actually writes — the whole blob, derived key gone."""
     seen: list = []
@@ -206,6 +224,35 @@ TEAM_CASES: list[str] = [
     "Solo",
 ]
 
+# The writer's own cleaning, which the textarea split never sees. "Other" and "All" are
+# APPENDED to the roster by core/dropdowns.py, so storing one offers it twice.
+ROSTER_CASES: list[list] = [
+    ["Jane Doe", "John Smith"],
+    ["Jane Doe", "jane doe", "JANE DOE"],
+    ["Jane Doe", "Other", "All", "  other  "],
+    ["  ", "", "Amina Bello"],
+    ["Zeta", "Alpha"],
+    [],
+]
+
+# Donor portals. The editor unions a GENERATED seed with the hosts on the live
+# donor_intel rows, so both sides clean with the same rule or the same portal is offered
+# twice — and ticking the wrong one records a registration against a host no donor
+# matches. The "(label)" case is real: the catalogue carries
+# "ec.europa.eu (EU Funding & Tenders portal)".
+PORTAL_CASES: list = [
+    "https://www.wellcome.org/funding/schemes",
+    "HTTP://Grants.GOV/",
+    "ec.europa.eu (EU Funding & Tenders portal)",
+    "sam.gov",
+    "https://grants.nih.gov/grants/guide/index.html?x=1#top",
+    "www.cdc.gov.",
+    "  afd.fr  ",
+    "",
+    None,
+    "no-scheme/path/only",
+]
+
 RENAME_CASES: list[str] = [
     'duplicate key value violates unique constraint "tenants_name_key"',
     "23505",
@@ -234,6 +281,8 @@ def main() -> None:
         "team": [{"text": t,
                   "want": [ln.strip() for ln in t.splitlines() if ln.strip()]}
                  for t in TEAM_CASES],
+        "roster": [{"names": n, "want": _persisted_team(n)} for n in ROSTER_CASES],
+        "portal": [{"url": u, "want": clean_portal_url(u)} for u in PORTAL_CASES],
         "rename": [{"error": e, "want": bool(st._is_duplicate_name(Exception(e)))}
                    for e in RENAME_CASES],
     }, ensure_ascii=False, default=str))

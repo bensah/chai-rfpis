@@ -84,9 +84,20 @@ export function DateBox({ label, value, onChange, hint }: {
  * politeness — a row carrying a value an older vocabulary allowed would otherwise be
  * silently rewritten to something else the moment anyone opened the editor on it.
  */
-export function Choice({ label, value, onChange, options, hint, tip, blank = "—", required }: {
+export function Choice({
+  label, value, onChange, options, hint, tip, blank = "—", required, format,
+}: {
   label: string; value: string; onChange: (v: string) => void;
   options: string[]; hint?: string; tip?: string; blank?: string; required?: boolean;
+  /**
+   * What to SHOW for a stored value — Streamlit's `format_func`.
+   *
+   * Some vocabularies store a code and show a sentence: `org_legal_type` holds
+   * "higher_ed" and the editor reads "Higher Education". Without this an admin picks
+   * identifiers out of a list, which is both uglier and harder to get right — "tribal"
+   * and "for_profit" are not self-explaining. The VALUE is unaffected; only the text is.
+   */
+  format?: (v: string) => string;
 }) {
   const opts = useMemo(() => {
     const list = [...new Set(options)];
@@ -97,7 +108,7 @@ export function Choice({ label, value, onChange, options, hint, tip, blank = "�
       <Lbl hint={tip ?? hint}>{label}{required && <span className="text-bad-600"> *</span>}</Lbl>
       <Select value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">{blank}</option>
-        {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+        {opts.map((o) => <option key={o} value={o}>{format ? format(o) : o}</option>)}
       </Select>
       {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
     </div>

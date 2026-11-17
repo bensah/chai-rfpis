@@ -128,6 +128,12 @@ for (const [i, c] of want.cell.entries()) {
 for (const [i, c] of want.team.entries()) {
   same(`team #${i} ${J(c.text)}`, S.teamNames(c.text), c.want);
 }
+for (const [i, c] of want.roster.entries()) {
+  same(`roster #${i} ${J(c.names)}`, S.cleanTeam(c.names), c.want);
+}
+for (const [i, c] of want.portal.entries()) {
+  same(`portal #${i} ${J(c.url)}`, S.cleanPortalUrl(c.url), c.want);
+}
 
 // ── 6. The rename failure split ──────────────────────────────────────────────
 
@@ -223,11 +229,31 @@ for (const [i, c] of want.rename.entries()) {
     S.renameImplied({ org_name: "   " }) === null
     && S.renameImplied({ org_short: "A" }) === null);
 
+  ok('"Other" is never stored as a team member',
+    !S.cleanTeam(["Jane", "Other"]).includes("Other"),
+    "core/dropdowns.py APPENDS Other to the roster when it builds the Proposal lead / "
+    + "Contributors / Reviewers lists, so a roster that stores it offers it twice — and "
+    + "picking the stored one files the work under a person who does not exist.");
+
+  ok("the generated portal seed is already clean by this rule",
+    V.DONOR_PORTAL_SEED.every((p) => S.cleanPortalUrl(p) === p),
+    "the editor UNIONS the seed with the live donor_intel hosts. If the TypeScript "
+    + "cleaner disagreed with the Python one that produced the seed, the same portal "
+    + "would appear twice — and ticking the wrong one records a registration against a "
+    + "host no donor matches.");
+
   ok("a partial identity save keeps the stored keys it did not touch",
     S.mergedIdentity({ org_name: "Acme", org_short: "A" }, { org_country: "Kenya" })
       .org_short === "A",
     "set_org is a partial upsert onto the stored blob — the FIT tab writes three "
     + "competitiveness keys through it and must not blank the branding.");
+
+  ok("...including the logo, which lives in the same blob",
+    S.mergedIdentity({ org_logo_b64: "iVBORw0KGgo=", org_logo_mime: "image/png" },
+      { org_name: "Acme" }).org_logo_b64 === "iVBORw0KGgo=",
+    "org_logo_b64 is a key on org_identity, not a column. Writing the merged-with-"
+    + "defaults identity back would make Save the only control on the page that deletes "
+    + "a logo, and nothing would say it had.");
 }
 
 console.log(`\n${checks} comparisons, ${diffs} differing`);

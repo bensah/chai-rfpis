@@ -55,6 +55,24 @@ def js(value) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
+def area_taxonomy() -> list[list]:
+    """[category, [canonical key, …]] for every category the matrix editor offers.
+
+    `key_for` is the only thing that knows a canonical key, so a pair it declines is left
+    out rather than guessed at. The editor does exactly this — `[k for cat in cats for sub
+    in TAXONOMY.get(cat, []) if (k := key_for(cat, sub))]` — so a dropped pair is a pair
+    the Streamlit editor does not offer either.
+    """
+    from core.program_area_classifier import key_for
+    from core.program_area_select import CATEGORIES, TAXONOMY
+    out = []
+    for cat in CATEGORIES:
+        keys = [k for sub in TAXONOMY.get(cat, []) if (k := key_for(cat, sub))]
+        if keys:
+            out.append([cat, keys])
+    return out
+
+
 def portal_seed() -> list[str]:
     """DONOR_PORTALS reduced to bare hosts, exactly as the editor does it.
 
@@ -233,6 +251,20 @@ export const CRITERION_LABELS: Record<string, string> = {js(lifted("_crit_labels
  * that half is per-deployment data, the same split the rest of this file keeps.
  */
 export const DONOR_PORTAL_SEED: string[] = {js(portal_seed())};
+
+/**
+ * The program-area taxonomy as the matrix editor walks it: [category, canonical keys].
+ *
+ * THE KEYS ARE NOT COMPOSED HERE AND MUST NOT BE COMPOSED IN THE BROWSER. A stored area
+ * looks like "IDs - Malaria & NTDs" — a short category code, a spaced hyphen and a
+ * sub-area — and that string is what `core.program_area_classifier.expand` matches an
+ * organisation's areas against a call's and a donor's. Rebuilding it from the category
+ * NAME ("Infectious Diseases") or from CATEGORY_FULL's mapping would produce a key that
+ * looks right and matches nothing, costing MUST-2 and competitiveness at once. So every
+ * key comes from the Python's own `key_for`, and a pair it declines is dropped rather
+ * than guessed.
+ */
+export const AREA_TAXONOMY: [string, string[]][] = {js(area_taxonomy())};
 '''
     OUT.write_text(body, encoding="utf-8")
     print(f"wrote {OUT.relative_to(ROOT)}: {len(op.DEFAULT_PROFILE)} profile defaults, "

@@ -11,6 +11,7 @@ import {
 import { fetchHome, startJob, switchTenant, type HomeKpis, type Job, type User } from "../api";
 import { JOB_STATUS_LABEL, useJob } from "../jobs";
 import ClassicPage from "./ClassicPage";
+import SetupTab from "../settings/SetupTab";
 import { hrefOf } from "../router";
 import {
   Badge, Button, Card, Eyebrow, LinkButton, Notice, PageHeader, Select,
@@ -67,7 +68,9 @@ export default function SettingsPage({ user, classicUrl }: { user: User; classic
       />
       <Tabs tabs={tabs} active={tab} onPick={setTab} />
       <div className="mt-6">
-        {tab === "Archive" ? (
+        {tab === "Setup" ? (
+          <SetupTab />
+        ) : tab === "Archive" ? (
           <Archive />
         ) : tab !== "Accounts" ? (
           <ClassicPage page="settings" classicUrl={classicUrl} />

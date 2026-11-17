@@ -36,6 +36,7 @@ import { createActionRoutes } from "./api/routes_actions.ts";
 import { loadOrgIdentity } from "./api/report_section2.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
 import { createOrgRoutes } from "./api/routes_org.ts";
+import { createOrgSetupRoutes } from "./api/routes_org_setup.ts";
 import { createProfileRoutes } from "./api/routes_profile.ts";
 import { createSearchRoutes } from "./api/routes_search.ts";
 import { createSubmitRoutes } from "./api/routes_submit.ts";
@@ -93,6 +94,9 @@ export function createApi(env: Env, deps: Deps) {
   const siteSearch = createSearchRoutes(db, jobs.enqueue);
   // My Organization: one read, no writes — the editor is Settings, not this page.
   const organization = createOrgRoutes(db);
+  // Settings → Setup: that editor. Admin-gated per route, since an Edge Function has no
+  // nav to omit the page from.
+  const orgSetup = createOrgSetupRoutes(db);
   // Profile: self-service only, and every route keyed on the session's own id.
   const profile = createProfileRoutes(db, deps);
 
@@ -192,6 +196,14 @@ export function createApi(env: Env, deps: Deps) {
     // What the matching engine believes about this tenant, and how much of it is still
     // missing. Read-only by the page's own design — see api/routes_org.ts.
     if (path === "/organization" && m === "GET") return organization.read(req, ctx);
+
+    // Settings → Setup. Three saves, not one: the Streamlit page has three buttons
+    // writing three places, and a single PUT would let a half-filled Bid Fitness tab
+    // overwrite a complete identity. See api/routes_org_setup.ts.
+    if (path === "/settings/setup" && m === "GET") return orgSetup.read(req, ctx);
+    if (path === "/settings/setup/identity" && m === "PUT") return orgSetup.putIdentity(req, ctx);
+    if (path === "/settings/setup/profile" && m === "PUT") return orgSetup.putProfile(req, ctx);
+    if (path === "/settings/setup/team" && m === "PUT") return orgSetup.putTeam(req, ctx);
 
     // Nothing here takes a user id from the request — see api/routes_profile.ts.
     if (path === "/profile" && m === "GET") return profile.read(req, ctx);

@@ -138,3 +138,17 @@ export const CRITERION_LABELS: Record<string, string> = {"bid_effort": "PREFER 9
  * that half is per-deployment data, the same split the rest of this file keeps.
  */
 export const DONOR_PORTAL_SEED: string[] = ["afd.fr", "afdb.org", "cdc.gov", "ec.europa.eu", "fcdo.gov.uk", "gatesfoundation.org", "gavi.org", "gcgh.grandchallenges.org", "grants.gov", "grants.nih.gov", "sam.gov", "theglobalfund.org", "ungm.org", "unitaid.org", "wellcome.org", "workwithusaid.gov"];
+
+/**
+ * The program-area taxonomy as the matrix editor walks it: [category, canonical keys].
+ *
+ * THE KEYS ARE NOT COMPOSED HERE AND MUST NOT BE COMPOSED IN THE BROWSER. A stored area
+ * looks like "IDs - Malaria & NTDs" — a short category code, a spaced hyphen and a
+ * sub-area — and that string is what `core.program_area_classifier.expand` matches an
+ * organisation's areas against a call's and a donor's. Rebuilding it from the category
+ * NAME ("Infectious Diseases") or from CATEGORY_FULL's mapping would produce a key that
+ * looks right and matches nothing, costing MUST-2 and competitiveness at once. So every
+ * key comes from the Python's own `key_for`, and a pair it declines is dropped rather
+ * than guessed.
+ */
+export const AREA_TAXONOMY: [string, string[]][] = [["Women & Children's Health", ["WCH - Vaccines", "WCH - SRH", "WCH - Nutrition", "WCH - MNCH"]], ["Non-Communicable Diseases", ["NCDs - Mental Health", "NCDs - Diabetes", "NCDs - Cardiovascular Diseases", "NCDs - Cancer"]], ["Infectious Diseases", ["IDs - Tuberculosis", "IDs - Pandemic Response", "IDs - Malaria & NTDs", "IDs - HIV/AIDS", "IDs - Hepatitis", "IDs - Antimicrobial Resistance (AMR)"]], ["Health System Strengthening", ["HSS - Health Workforce", "HSS - Health Financing"]], ["Cross-cutting (Health)", ["Cross-cutting - Market Shaping", "Cross-cutting - Digital Health (+AI)", "Cross-cutting - Diagnostics", "Cross-cutting - Climate & Health", "Cross-cutting - Assistive Technology", "Cross-cutting - Research"]], ["Education & Learning", ["EDU - Early Childhood Development", "EDU - Basic Education", "EDU - Higher Education & TVET", "EDU - Literacy & Numeracy", "EDU - Education Technology"]], ["Economic Development & Livelihoods", ["ECON - Financial Inclusion", "ECON - MSME & Entrepreneurship", "ECON - Jobs & Skills", "ECON - Social Protection", "ECON - Trade & Markets"]], ["Agriculture & Food Systems", ["AGRI - Smallholder Productivity", "AGRI - Food Security & Resilience", "AGRI - Climate-Smart Agriculture", "AGRI - Livestock & Fisheries"]], ["Water, Sanitation & Hygiene (WASH)", ["WASH - Safe Water", "WASH - Sanitation", "WASH - Hygiene"]], ["Climate, Energy & Environment", ["ENV - Climate Adaptation & Resilience", "ENV - Clean & Renewable Energy", "ENV - Biodiversity & Conservation", "ENV - Pollution & Waste"]], ["Governance, Peace & Rights", ["GOV - Democracy & Civic Participation", "GOV - Anti-corruption & Accountability", "GOV - Human Rights & Justice", "GOV - Peace & Conflict"]], ["Gender, Equity & Inclusion", ["GES - Gender Equality & GBV", "GES - Disability Inclusion", "GES - Youth Empowerment", "GES - Migration & Displacement"]], ["Humanitarian & Resilience", ["HUM - Emergency Response", "HUM - Food Assistance", "HUM - Shelter & Settlements"]]];

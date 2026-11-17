@@ -120,13 +120,20 @@ export function setOrgFields(fields: Json): Record<string, string> {
   return out;
 }
 
-/** The identity blob after a partial save — the stored one with the new keys merged in. */
-export function mergedIdentity(stored: unknown, fields: Json): Record<string, string> {
-  const base = (stored !== null && typeof stored === "object" && !Array.isArray(stored))
+/**
+ * The identity blob after a partial save — the RAW stored blob with the accepted keys
+ * replaced, which is `ident = dict(ident)` followed by `ident[key] = value` in the Python.
+ *
+ * TWO THINGS DEPEND ON IT BEING THE RAW BLOB. The logo lives in this same column under
+ * `org_logo_b64`, so writing the merged-with-defaults identity back would be the only
+ * save on the page that deletes a logo. And untouched keys are passed through UNCHANGED
+ * rather than stringified: every key the editor writes happens to be a string today, and
+ * coercing the rest would quietly rewrite anything that is not.
+ */
+export function mergedIdentity(stored: unknown, fields: Json): Row {
+  const base: Row = (stored !== null && typeof stored === "object" && !Array.isArray(stored))
     ? { ...(stored as Row) } : {};
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(base)) out[k] = s(v);
-  return { ...out, ...setOrgFields(fields) };
+  return { ...base, ...setOrgFields(fields) };
 }
 
 /** The tenant rename "Organization name" implies, or null when the field was left blank. */
@@ -419,5 +426,56 @@ export function teamNames(text: unknown): string[] {
   return s(text).split(PY_LINE_BREAKS).map((l) => l.trim()).filter(Boolean);
 }
 
+/**
+ * `settings.set_team_members`' OWN cleaning, which the textarea split does not do.
+ *
+ * Two rules the view never applies, because they are the writer's: de-duplicate
+ * case-insensitively keeping the first spelling and the original order, and drop the
+ * tokens "Other" and "All". Those two are not names — `core/dropdowns.py` APPENDS them to
+ * the roster when it builds the Proposal lead / Contributors / Reviewers lists, so a
+ * roster that stores one ends up offering it twice, and picking the stored one files the
+ * work under a person who does not exist.
+ *
+ * Ported because the React save calls the same store directly: skip it and the
+ * Streamlit app would keep cleaning while React quietly stopped.
+ */
+export function cleanTeam(names: unknown): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of (Array.isArray(names) ? names : [])) {
+    const name = s(m).trim();
+    const low = name.toLowerCase();
+    if (!name || low === "other" || low === "all" || seen.has(low)) continue;
+    seen.add(low);
+    out.push(name);
+  }
+  return out;
+}
+
 /** The partner types a client may store, for the page's Type column. */
 export const PARTNER_TYPE_OPTIONS: string[] = [...PARTNER_TYPES];
+
+// ── Donor portals ────────────────────────────────────────────────────────────
+
+/**
+ * `core/partners.clean_portal_url` — a website reduced to a bare host.
+ *
+ * "https://www.wellcome.org/funding/schemes" and "wellcome.org" are the same portal, and
+ * the editor unions a GENERATED seed (cleaned by the Python itself) with the hosts on the
+ * live donor_intel rows. That union is the whole reason this is ported rather than
+ * approximated: a second normalisation that disagreed anywhere would list the same portal
+ * twice, and an admin ticking the wrong one would record a registration against a host no
+ * donor matches.
+ *
+ * Step for step, in the Python's order — the "(label)" drop comes FIRST, because an entry
+ * reads "ec.europa.eu (EU Funding & Tenders portal)" and the parenthesis would otherwise
+ * survive into the stored value.
+ */
+export function cleanPortalUrl(url: unknown): string {
+  let v = s(url).trim().toLowerCase();
+  v = v.replace(/\s*\(.*$/s, "");          // drop "(EU Funding & Tenders…)" labels
+  v = v.replace(/^[a-z]+:\/\//, "");       // drop the scheme
+  v = v.replace(/^www\./, "");             // drop a leading www.
+  v = v.split(/[/?#]/)[0];                 // host only — no subpages
+  return v.trim().replace(/^\.+|\.+$/g, "");
+}

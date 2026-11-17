@@ -1234,6 +1234,79 @@ export type Organization = {
 
 export const fetchOrganization = () => call<Organization>("/organization");
 
+// ── Settings → Setup ─────────────────────────────────────────────────────────
+//
+// The EDITOR for the two blobs `/organization` displays. Three saves, not one, because
+// the Streamlit page has three buttons writing three places — see
+// supabase/functions/_shared/api/routes_org_setup.ts. Folding them together would let a
+// half-filled Bid Fitness tab overwrite a complete identity.
+
+export type OrgPartner = { name: string; type: string; status: string[]; country: string };
+
+export type SetupOptions = {
+  legalTypes: string[];
+  entityTypes: string[];
+  stages: string[];
+  cofinancing: string[];
+  /** [label on screen, stored value]. Order matters — the first leaves MUST-4 off. */
+  boards: [string, string][];
+  /** [stored token, label on screen]. The editor shows the label and stores the token. */
+  routes: [string, string][];
+  languages: string[];
+  partnerTypes: string[];
+  partnerStatus: string[];
+  countries: string[];
+  /**
+   * [category, canonical area keys] for the two rating matrices.
+   *
+   * The KEYS travel whole and are never composed in the browser: a stored area is
+   * "IDs - Malaria & NTDs", and that exact string is what the classifier matches an
+   * organisation's areas against a call's and a donor's.
+   */
+  areaTaxonomy: [string, string[]][];
+  /** Key prefix → the category's full name, for display only. */
+  categoryNames: Record<string, string>;
+  /** Stored code → the sentence the editor shows. Display only; the value is the code. */
+  legalTypeLabels: Record<string, string>;
+  entityTypeLabels: Record<string, string>;
+  /** The live donor_intel catalogue, for both relationship pickers. */
+  donors: string[];
+  /** The generated seed unioned with the catalogue's own hosts, cleaned the same way. */
+  portals: string[];
+};
+
+export type OrgSetup = {
+  identity: Record<string, string>;
+  profile: Record<string, unknown>;
+  logo: string | null;
+  /** Structured partners PLUS the legacy flat lists, which the save writes FROM. */
+  partners: OrgPartner[];
+  team: string[];
+  options: SetupOptions;
+  /** The fields a save re-reads, and the only ones a failed write is reported for. */
+  verifiedFields: string[];
+};
+
+export type SetupSaved = {
+  identity?: Record<string, string>;
+  profile?: Record<string, unknown>;
+  partners?: OrgPartner[];
+  team?: string[];
+  /** A rename that did not go through. The other fields ARE saved — see the route. */
+  warnings?: Warning[];
+};
+
+const put = <T>(path: string, data: unknown = {}) =>
+  call<T>(path, { method: "PUT", body: JSON.stringify(data) });
+
+export const fetchSetup = () => call<OrgSetup>("/settings/setup");
+export const saveSetupIdentity = (form: Record<string, unknown>) =>
+  put<SetupSaved>("/settings/setup/identity", form);
+export const saveSetupProfile = (form: Record<string, unknown>) =>
+  put<SetupSaved>("/settings/setup/profile", form);
+export const saveSetupTeam = (names: string[]) =>
+  put<SetupSaved>("/settings/setup/team", { names });
+
 // ── Profile ──────────────────────────────────────────────────────────────────
 //
 // Self-service only. Every route is keyed on the session's own id — none of them takes a
