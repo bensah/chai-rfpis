@@ -1,9 +1,10 @@
 """The Python half of the Donors parity check — app_pages/donors.py.
 
-`app_pages/donors.py` CANNOT BE IMPORTED: it calls Streamlit at module scope and loads the
-live donor table into a dataframe before it defines anything. So the display helpers are
-LIFTED OUT OF ITS AST and executed in a namespace holding only what they actually close
-over. Nothing else in the module runs; no Streamlit, no page, no writes.
+The rules come from `core/donor_fields.py`, which is what app_pages/donors.py itself now
+calls — the page aliases every name below to that module, so comparing against it compares
+against what Streamlit actually renders. It used to lift them out of the page's AST,
+because the page cannot be imported (Streamlit at module scope, and it loads the live
+table before defining anything).
 
 THE SHARED-FIXTURE RULE APPLIES HERE. This file owns both the rows and the answers: it
 reads real donor_intel rows, runs donors.py's own helpers over them, and emits
@@ -34,7 +35,6 @@ READ ONLY. It selects from donor_intel and writes nothing.
 """
 from __future__ import annotations
 
-import ast
 import json
 import re
 import sys
@@ -52,69 +52,22 @@ import pandas as pd                                          # noqa: E402
 
 from db.supabase_client import service_client                # noqa: E402
 
-SRC = REPO_ROOT / "app_pages" / "donors.py"
-_TREE = ast.parse(SRC.read_text(encoding="utf-8"), filename=str(SRC))
-
-# Module-level literals the lifted functions close over.
-_WANTED_CONSTS = [
-    "_ACR", "_LABEL_OVERRIDES", "_ACRONYMS", "_CATEGORY_CANON", "_CATEGORIES",
-    "_LIST_FIELDS", "_COMPLETENESS_TEXT", "_COMPLETENESS_JSON", "_META", "_SHORT_TEXT",
-    "_LONG_TEXT", "_CONTACT", "_CHOICE", "_PROFILE", "_HIDDEN_FIELDS", "_ELIG",
-]
-# Pure helpers, in dependency order. _completeness is the point of the exercise; the rest
-# are either its inputs or compared directly.
-_WANTED_FUNCS = [
-    "_cap_first", "_smart_token", "_deshout", "_disp", "_md", "_label", "_pretty_choice",
-    "_normalize_category", "_to_list", "_na", "_json_dicts", "_title_name",
-    "_completeness", "_disp_field",
-]
-
-
-def _consts() -> dict:
-    out = {}
-    for node in _TREE.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        for t in node.targets:
-            if isinstance(t, ast.Name) and t.id in _WANTED_CONSTS:
-                out[t.id] = ast.literal_eval(node.value)
-    missing = [n for n in _WANTED_CONSTS if n not in out]
-    if missing:
-        raise SystemExit(f"constants missing from donors.py: {missing}")
-    return out
+from core import donor_fields as F                           # noqa: E402
 
 
 def _namespace(columns: list[str]) -> dict:
-    """Execute the lifted functions with the globals they close over, and nothing else.
+    """The helpers, plus the DERIVED half computed over the columns actually read.
 
-    _FLAGS / _FIT are the derived half: donors.py computes them from the dataframe it
-    loaded, so here they come from the columns actually present on the rows we read. That
-    is the same rule, applied to the same data, which is the only way the completeness
-    denominators can be expected to match.
+    donor_fields.flag_groups() is the same classification the page applies to the
+    dataframe it loaded. The completeness denominator comes out of it, so both sides have
+    to agree about which live columns are flags before any percentage can agree.
     """
-    ns: dict = {"re": re, "json": json, "pd": pd}
-    ns.update(_consts())
-    ns["_SEG_SPLIT_RE"] = re.compile(r"([.;]\s+)")
-    non_flag = (set(ns["_META"]) | set(ns["_SHORT_TEXT"]) | set(ns["_LONG_TEXT"])
-                | set(ns["_CHOICE"]) | set(ns["_CONTACT"]) | set(ns["_PROFILE"])
-                | set(ns["_HIDDEN_FIELDS"]))
-    flags = [c for c in columns if c not in non_flag]
-    ns["_FLAGS"] = flags
-    ns["_FIT"] = [c for c in flags if c.endswith("_fit")]
-
-    defs = [n for n in _TREE.body
-            if isinstance(n, ast.FunctionDef) and n.name in _WANTED_FUNCS]
-    found = {d.name for d in defs}
-    missing = [n for n in _WANTED_FUNCS if n not in found]
-    if missing:
-        raise SystemExit(f"helpers missing from donors.py: {missing}")
-    # Strip decorators: none of these carry one today, and a @st.cache_data that appeared
-    # later would try to import Streamlit at exec time and fail here rather than in the
-    # comparison, which is a confusing place to learn about it.
-    for d in defs:
-        d.decorator_list = []
-    exec(compile(ast.Module(body=defs, type_ignores=[]), str(SRC), "exec"), ns)
-    return ns
+    flags, fit, _req, _groups = F.flag_groups(columns)
+    return {"_FLAGS": flags, "_FIT": fit,
+            "_label": F.label, "_normalize_category": F.normalize_category,
+            "_to_list": F.to_list, "_disp": F.disp, "_pretty_choice": F.pretty_choice,
+            "_title_name": F.title_name,
+            "_completeness": lambda row: F.completeness(row, flags, fit)}
 
 
 # Column names invented to exercise _label's rules without depending on what the live
