@@ -20,6 +20,7 @@ import pandas as pd
 import streamlit as st
 
 from core import donor_fields as _df
+from core import donor_write as _dw
 from core import geographies as _geo
 from core import permissions, settings
 from core import program_area_classifier as _pa
@@ -1122,116 +1123,45 @@ def _edit_dialog(row: dict, *, suggest_mode: bool = False) -> None:
             key=f"suggest_rat_{ck}", height=80)
     _save_label = "💡 Submit suggestion" if suggest_mode else "💾 Save changes"
     if st.button(_save_label, type="primary", width='stretch'):
-        payload = {k: (v.strip() if isinstance(v, str) else v) or None
-                   for k, v in edited.items()}
         key = row["canonical_key"]
-        payload["canonical_key"] = key
-        # Normalize the category to its canonical form on the way in.
-        if payload.get("donor_category"):
-            payload["donor_category"] = _normalize_category(payload["donor_category"])
-        # Only persist keys that are real columns. Anything the user filled that
-        # has no column yet (e.g. the profile fields before migration 025) would
-        # be DROPPED silently — so we detect those and warn, instead of letting
-        # the save look successful while their input quietly disappears.
-        _cols = set(df.columns) | {"canonical_key"}
-        _dropped = sorted(_label(k) for k, v in payload.items()
-                          if k not in _cols and v not in (None, ""))
-        payload = {k: v for k, v in payload.items() if k in _cols}
 
         # ── SUGGEST MODE: file a proposal instead of writing the shared row ──
         if suggest_mode:
-            from core import suggestions as _sug
-            _diff, _base = _sug.diff_of(payload, row,
-                                        allowed=_cols - {"canonical_key"})
-            if not _diff:
-                st.warning("No changes to suggest — edit a field first.")
-                return
             try:
-                _sug.create_suggestion(
-                    resource_type="donor_intel", target_id=key,
-                    proposed_diff=_diff, base_snapshot=_base,
-                    rationale=_rationale, target_label=row.get("donor"),
-                    user=user)
+                res = _dw.suggest_edit(
+                    canonical_key=key, edited=edited, row=row, columns=df.columns,
+                    rationale=_rationale, target_label=row.get("donor"), user=user)
             except Exception as e:  # noqa: BLE001
                 st.error(f"❌ Could not submit suggestion.\n\n`{e}`")
                 return
+            if not res["ok"]:
+                st.warning("No changes to suggest — edit a field first.")
+                return
             st.session_state["_donor_flash"] = (
                 f"💡 Suggestion submitted for {row.get('donor')} — a developer "
-                f"Super User will review {len(_diff)} proposed change(s).")
+                f"Super User will review {res['count']} proposed change(s).")
             st.rerun()
             return
 
-        # Provenance: a Save means the reviewer reviewed the visible requirements, so mark
-        # every non-blank requirement human-verified (the source of truth — auto-enrichment
-        # never overwrites these, and the 🔵 "suggested" badge clears). Blank stays untagged.
-        if "field_provenance" in _cols:
-            from core.donor_enrich import mark_human_verified
-            _fp = row.get("field_provenance")
-            if isinstance(_fp, str) and _fp.strip():
-                try:
-                    _fp = json.loads(_fp)
-                except Exception:
-                    _fp = {}
-            _fp = _fp if isinstance(_fp, dict) else {}
-            _verified = [c for c in _REQ if str(payload.get(c) or "").strip()]
-            payload["field_provenance"] = json.dumps(mark_human_verified(_fp, _verified))
-
-        # Reconcile contacts: replace this donor's set with the edited rows.
-        recs = []
-        for _, cr in contacts_edited.iterrows():
-            rec: dict = {}
-            for c in _CONTACT_COLS:
-                if c == "is_official":
-                    rec[c] = bool(cr.get(c))
-                    continue
-                v = cr.get(c)
-                try:
-                    blank = v is None or pd.isna(v)
-                except (TypeError, ValueError):
-                    blank = v is None
-                rec[c] = (str(v).strip() or None) if not blank else None
-            if any(rec[c] for c in _CONTACT_COLS if c != "is_official"):
-                rec["canonical_key"] = key
-                recs.append(rec)
-
-        # Persist the donor row. We VERIFY the write landed (PostgREST returns
-        # the upserted row) rather than trusting a silent 200 — an RLS policy or
-        # phantom column can make an upsert a no-op with no exception, which is
-        # exactly the "looks saved but nothing changed" symptom. Contacts are
-        # reconciled separately so a contacts hiccup can't block the donor save.
+        # The rules live in core.donor_write so the background job runner applies the
+        # SAME ones — payload cleaning, the column intersection, the human-verified
+        # provenance tag, the verified upsert and the contacts reconciliation.
         try:
-            resp = (sb.table("donor_intel")
-                    .upsert(payload, on_conflict="canonical_key")
-                    .execute())
+            res = _dw.apply_edit(
+                sb, canonical_key=key, edited=edited, row=row, columns=df.columns,
+                req_cols=_REQ,
+                contacts=[cr.to_dict() for _, cr in contacts_edited.iterrows()])
+        except _dw.WriteRefused as e:
+            st.error(f"❌ {e}")
+            return
         except Exception as e:  # noqa: BLE001 — show the real DB error to the user
             st.error(f"❌ Save failed — donor not updated.\n\n`{e}`")
             return
-        if not getattr(resp, "data", None):
-            st.error("❌ Save returned no row — the write was blocked (likely an "
-                     "RLS policy or a missing column). Nothing was changed.")
-            return
-
-        _contact_warn = None
-        try:
-            sb.table("donor_contacts").delete().eq("canonical_key", key).execute()
-            if recs:
-                sb.table("donor_contacts").insert(recs).execute()
-        except Exception as e:  # noqa: BLE001 — donor saved; contacts didn't
-            _contact_warn = f"Donor saved, but contacts couldn't be updated: {e}"
 
         st.cache_data.clear()
         st.session_state["_donor_flash"] = f"✓ Saved changes to {row.get('donor')}."
-        _warns = []
-        if _dropped:
-            _warns.append(
-                "These fields aren't stored yet because the database is missing "
-                "their columns (the deployed app and the DB are on different "
-                "data-model migrations). Apply the latest `db/migrations/` in Supabase "
-                "AND deploy the matching code, then re-save: " + ", ".join(_dropped))
-        if _contact_warn:
-            _warns.append(_contact_warn)
-        if _warns:
-            st.session_state["_donor_flash_warn"] = "  \n\n".join(_warns)
+        if res["warnings"]:
+            st.session_state["_donor_flash_warn"] = "  \n\n".join(res["warnings"])
         st.toast(f"Saved {row.get('donor')}", icon="✅")
         st.rerun()
 
@@ -1240,7 +1170,7 @@ def _edit_dialog(row: dict, *, suggest_mode: bool = False) -> None:
 def _delete_dialog(row: dict) -> None:
     st.warning(f"Delete **{row.get('donor')}** from the matrix? This can't be undone.")
     if st.button("🗑 Yes, delete", type="primary"):
-        sb.table("donor_intel").delete().eq("canonical_key", row["canonical_key"]).execute()
+        _dw.delete_donors(sb, [row["canonical_key"]])
         st.cache_data.clear()
         st.session_state["_donor_flash"] = f"Deleted {row.get('donor')}."
         st.rerun()
@@ -1290,21 +1220,15 @@ def _add_donor_dialog(*, suggest_mode: bool = False) -> None:
             st.rerun()
             return
 
-        _slug = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_") or "donor"
         _existing = set(df["canonical_key"]) if "canonical_key" in df.columns else set()
-        _key, _i = _slug, 2
-        while _key in _existing:
-            _key, _i = f"{_slug}_{_i}", _i + 1
-        payload = {"canonical_key": _key, **_diff}
+        _key = _dw.slug_key(name, _existing)
         try:
-            resp = sb.table("donor_intel").upsert(
-                payload, on_conflict="canonical_key").execute()
+            _dw.save_donor(sb, {"canonical_key": _key, **_diff})
+        except _dw.WriteRefused as e:
+            st.error(f"❌ Create returned no row — {e}")
+            return
         except Exception as e:  # noqa: BLE001
             st.error(f"❌ Create failed — {e}")
-            return
-        if not getattr(resp, "data", None):
-            st.error("❌ Create returned no row — the write was blocked "
-                     "(RLS / columns). Nothing was added.")
             return
         st.cache_data.clear()
         st.session_state["_donor_flash"] = (
@@ -1864,8 +1788,9 @@ def _weburl(v):
 def _delete_many_dialog(keys: list) -> None:
     st.warning(f"Delete **{len(keys)}** selected donor(s)? This can't be undone.")
     if st.button("🗑 Yes, delete all", type="primary"):
-        for _k in keys:
-            sb.table("donor_intel").delete().eq("canonical_key", _k).execute()
+        # One statement, not a loop of them: the same rule the job runner applies, and
+        # a partial failure no longer leaves half the selection deleted silently.
+        _dw.delete_donors(sb, keys)
         st.cache_data.clear()
         st.session_state["_donor_flash"] = f"Deleted {len(keys)} donor(s)."
         st.rerun()
