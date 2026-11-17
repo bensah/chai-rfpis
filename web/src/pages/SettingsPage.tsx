@@ -101,6 +101,10 @@ export default function SettingsPage({ user, classicUrl, shell }: {
         ) : tab === "Archive" ? (
           <Archive />
         ) : tab !== "Accounts" ? (
+          // UNREACHABLE TODAY: every tab above is handled. It stays as the fallback for
+          // a tab added to the list before its panel exists — showing the classic page
+          // is the right failure there, because the work is still reachable rather than
+          // the tab being blank.
           <ClassicPage page="settings" classicUrl={classicUrl} />
         ) : (
           <>

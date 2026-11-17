@@ -15,14 +15,18 @@
  *   list · edit profile · edit role and active · edit per-surface overrides · reset a
  *   password (email a one-time link)                                        — here
  *
- *   ADD a user, BULK add, DELETE                                            — not here
+ *   ADD a user, BULK add                     here, but QUEUED — see `create`
+ *   DELETE an account                        not here, deliberately
  *
- * Adding is not a smaller version of editing. `_create_user_account` writes the users
- * row, creates or joins a tenant, mints an invite token and sends a welcome email — and
- * the mailer ported so far has `sendPasswordReset` and nothing else, so a React invite
- * would create an account whose holder is never told. That is worse than no button. The
- * page says so and points at the classic page, which still works and writes the same
- * rows.
+ * Adding is not a smaller version of editing, which is why it is a job rather than an
+ * insert: `_create_user_account` writes the users row, resolves or CREATES a tenant,
+ * writes the membership, mints the invite token and sends the welcome email, and it
+ * decides who exists on this deployment.
+ *
+ * DELETING IS ABSENT ON PURPOSE rather than unfinished. Deactivating an account has the
+ * same effect on access and keeps its history — the decisions it recorded, the
+ * opportunities it submitted — attached to a name rather than orphaned. The classic page
+ * still has the delete for the rare case that genuinely needs it.
  *
  * THE RESET DOES NOT CHANGE THE PASSWORD, deliberately, and the Python's comment is worth
  * repeating because the opposite looks more secure: overwriting the password here locks
@@ -135,8 +139,10 @@ export function createUserRoutes(
       // Only a super_user may choose WHOSE tenant an account lands in. An admin adds to
       // their own, and the route ignores a target from anybody else.
       canChooseTenant: isSuperUser(actor),
-      addNote: "Removing an account is still on the classic Settings page. Deactivating "
-        + "one here has the same effect on access and leaves its history intact.",
+      addNote: "Deactivating an account is the way to remove someone's access here: it "
+        + "keeps the decisions they recorded and the opportunities they submitted "
+        + "attached to a name rather than orphaned. The classic page still has a "
+        + "permanent delete for the rare case that needs one.",
     });
   }
 
