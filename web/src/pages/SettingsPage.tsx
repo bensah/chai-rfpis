@@ -18,6 +18,7 @@ import ClassicPage from "./ClassicPage";
 import SetupTab from "../settings/SetupTab";
 import UsersTab from "../settings/UsersTab";
 import { BlacklistedPanel, TenantsPanel } from "../settings/TenantsTab";
+import DeploymentPanel from "../settings/DeploymentPanel";
 import RecordsTab from "../settings/RecordsTab";
 import ScanTab from "../settings/ScanTab";
 import AnalyticsTab from "../settings/AnalyticsTab";
@@ -115,12 +116,9 @@ export default function SettingsPage({ user, classicUrl, shell }: {
               {acct === "Users" && <UsersTab />}
               {acct === "Tenants" && <TenantsPanel />}
               {acct === "Blacklisted" && <BlacklistedPanel />}
+              {acct === "Deployment" && <DeploymentPanel />}
               {acct === "Deployment" && <ContactCheck shell={shell} />}
               {acct === "Deployment" && <JobTest />}
-              {/* Every Accounts sub-tab is ported now; Deployment keeps the classic
-                  frame under it for the environment diagnostics, which are not. */}
-              {acct === "Deployment"
-                && <ClassicPage page="settings" classicUrl={classicUrl} />}
             </div>
           </>
         )}

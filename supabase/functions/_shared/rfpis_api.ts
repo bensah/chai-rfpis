@@ -45,6 +45,7 @@ import {
 } from "./api/analytics.ts";
 import { runSummary, splitHistory } from "./api/scan_history.ts";
 import { createPlatformRoutes } from "./api/routes_platform.ts";
+import { secretRows, verdicts } from "./api/env_diag.ts";
 import { createScanPrefRoutes } from "./api/routes_scan_prefs.ts";
 import { createProfileRoutes } from "./api/routes_profile.ts";
 import { createSearchRoutes } from "./api/routes_search.ts";
@@ -281,6 +282,45 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/settings/sources/blocked" && m === "PUT") return platform.putBlocked(req, ctx);
     if (path === "/settings/sources/registry" && m === "GET") return platform.registry(req, ctx);
     if (path === "/settings/sources/registry" && m === "POST") return platform.registryAction(req, ctx);
+    /**
+     * `GET /settings/deployment` — what THIS runtime is configured with.
+     *
+     * SUPER_USER ONLY, because it describes the keys the whole deployment runs on. It
+     * reveals no secret: lengths, fingerprints and a key CLASS, which is what makes two
+     * panels comparable without either of them holding anything worth stealing.
+     *
+     * It is the half Streamlit cannot see. `core/env_diag.py` describes the Python
+     * process; this describes the Edge Function that serves React, and when the two
+     * disagree about the data, the difference between them is the answer.
+     */
+    if (path === "/settings/deployment" && m === "GET") {
+      if (!isSuperUser(ctx.user as PermUser)) {
+        return json({ error: "Deployment diagnostics are for the Super User." }, 403);
+      }
+      const rows = await secretRows({
+        supabaseUrl: env.supabaseUrl, supabaseKey: env.supabaseKey,
+        jwtSecret: env.jwtSecret,
+      });
+      const extras = {
+        // Whether a queued job can actually reach a runner. `dispatchJob` is the
+        // injected dispatcher; absent, every job sits at "queued" for ever — which is
+        // the single most confusing failure this product has, because nothing errors.
+        dispatchConfigured: !!deps.dispatchJob,
+        mailerConfigured: !!(env.resendApiKey && env.resendFrom),
+        adminContact: !!(env.adminContactEmail ?? "").trim(),
+      };
+      return json({
+        runtime: "Edge Function",
+        secrets: rows,
+        verdicts: verdicts(rows, extras),
+        extras,
+        allowedOrigins: env.allowedOrigins ?? [],
+        note: "This describes the function that serves this app. The classic Settings "
+          + "page describes the Python process, and the two are meant to be compared — "
+          + "a fingerprint that differs is two environments holding different secrets.",
+      });
+    }
+
     if (path === "/settings/tenants" && m === "GET") return platform.tenants(req, ctx);
     if (path === "/settings/tenants" && m === "POST") return platform.tenantAction(req, ctx);
     if (path === "/settings/learning" && m === "GET") return platform.learning(req, ctx);
