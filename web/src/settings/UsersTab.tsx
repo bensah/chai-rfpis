@@ -18,12 +18,14 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle, CheckCircle2, KeyRound, Save, Search, ShieldAlert, X,
+  AlertTriangle, CheckCircle2, KeyRound, Save, Search, ShieldAlert, UserPlus,
 } from "lucide-react";
 import {
   fetchUsers, resetUserPassword, saveUser,
   type AdminUser, type AdminUsers, type ResetResult, type Warning,
 } from "../api";
+import InviteDialog from "./InviteDialog";
+import { Dialog, Field } from "./dialog";
 import {
   Badge, Button, Card, Notice, Select, Spinner, fieldClass,
 } from "../ui";
@@ -44,6 +46,7 @@ export default function UsersTab() {
   const [picked, setPicked] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [inviting, setInviting] = useState(false);
 
   const load = () => fetchUsers().then((d) => { setData(d); setError(null); })
     .catch((e: unknown) =>
@@ -103,6 +106,12 @@ export default function UsersTab() {
               aria-label="Tenant filter" className="w-auto">
               {["All tenants", ...tenants].map((r) => <option key={r}>{r}</option>)}
             </Select>
+          )}
+          {data.canAdd && (
+            <Button variant="primary" onClick={() => setInviting(true)}
+              icon={<UserPlus className="h-4 w-4" />}>
+              Add a user
+            </Button>
           )}
         </div>
 
@@ -167,9 +176,7 @@ export default function UsersTab() {
           />
         )}
 
-        {!data.canAdd && (
-          <Notice tone="brand" className="mt-4">{data.addNote}</Notice>
-        )}
+        <Notice tone="brand" className="mt-4">{data.addNote}</Notice>
       </Card>
 
       {editing && target && (
@@ -180,6 +187,10 @@ export default function UsersTab() {
       )}
       {resetting && target && (
         <ResetDialog user={target} onClose={() => setResetting(false)}
+          onDone={() => void load()} />
+      )}
+      {inviting && (
+        <InviteDialog data={data} onClose={() => setInviting(false)}
           onDone={() => void load()} />
       )}
     </div>
@@ -231,27 +242,6 @@ function SelectedBar({ user, onEdit, onReset }: {
           </Button>
         </div>
       )}
-    </div>
-  );
-}
-
-function Dialog({ title, onClose, children }: {
-  title: string; onClose: () => void; children: React.ReactNode;
-}) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-900/40 p-4">
-      <Card className="my-8 w-full max-w-3xl p-6">
-        <div className="mb-4 flex items-start justify-between gap-4">
-          <h2 className="text-lg font-bold text-brand-700">{title}</h2>
-          <button
-            type="button" onClick={onClose} aria-label="Close"
-            className="rounded p-1 text-ink-400 transition-colors hover:bg-ink-100 hover:text-ink-700"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-        {children}
-      </Card>
     </div>
   );
 }
@@ -454,18 +444,3 @@ function ResetDialog({ user, onClose, onDone }: {
   );
 }
 
-function Field({ label, value, onChange, disabled, hint }: {
-  label: string; value: string; onChange: (v: string) => void;
-  disabled?: boolean; hint?: string;
-}) {
-  return (
-    <div>
-      <div className="mb-1.5 text-sm font-medium text-ink-700">{label}</div>
-      <input
-        className={fieldClass} value={value} disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      {hint && <p className="mt-1 text-xs text-ink-500">{hint}</p>}
-    </div>
-  );
-}

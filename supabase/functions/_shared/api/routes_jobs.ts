@@ -265,6 +265,25 @@ const KINDS: Record<string, JobKind> = {
     allowed: async (u, ctx) => isDeveloperSuper(u, await ctx.homeIsDeveloper()),
     group: (_c, _id, params) => `suggestion-${str(params?.suggestion_id)}`,
   },
+
+  /**
+   * Settings → Accounts → Users: one invited account.
+   *
+   * `_create_user_account` inserts the user with a hash nobody knows, resolves where the
+   * account goes — the admin's own tenant, an existing one, or a NEW tenant it CREATES —
+   * writes the membership, mints the activation token and sends the welcome email. It
+   * decides who exists on this deployment, which is not a rule to hold twice.
+   *
+   * GROUPED PER EMAIL ADDRESS, so a double-click cannot race two inserts for the same
+   * person. Two half-created accounts for one address is the failure that is hardest to
+   * see afterwards: the second insert fails on the unique index and leaves the first
+   * without its membership.
+   */
+  create_user: {
+    allowed: (u) => isAdmin(u),
+    group: (_c, _id, params) =>
+      `create-user-${str(params?.email).trim().toLowerCase()}`,
+  },
 };
 
 /**

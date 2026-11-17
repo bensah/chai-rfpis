@@ -1339,9 +1339,17 @@ export type AdminUser = {
 
 export type AdminUsers = {
   users: AdminUser[];
-  /** False while invitations are still the classic page's job — `addNote` says why. */
   canAdd: boolean;
+  /** The roles this actor may hand out, so the form offers nothing the route refuses. */
+  assignableRoles: string[];
+  /** Only a super_user may choose WHOSE tenant a new account lands in. */
+  canChooseTenant: boolean;
   addNote: string;
+};
+
+/** Creating an account is QUEUED: the Python inserts the row and creates the tenant. */
+export type InviteQueued = {
+  job_id: string; dispatched: boolean; email: string; detail: string;
 };
 
 export type ResetResult = {
@@ -1355,6 +1363,8 @@ export const fetchUsers = () => call<AdminUsers>("/settings/users");
 export const saveUser = (id: string, form: Record<string, unknown>) =>
   patch<{ saved: boolean; warnings?: Warning[] }>(
     `/settings/users/${encodeURIComponent(id)}`, form);
+export const inviteUser = (form: Record<string, unknown>) =>
+  post<InviteQueued>("/settings/users", form);
 export const resetUserPassword = (id: string) =>
   post<ResetResult>(`/settings/users/${encodeURIComponent(id)}/reset`);
 

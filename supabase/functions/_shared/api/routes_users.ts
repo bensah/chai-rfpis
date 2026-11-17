@@ -31,12 +31,12 @@
  */
 import { q, type Db } from "./db.ts";
 import { body, json, str } from "./http.ts";
-import { assignableRoles, isAdmin, type PermUser } from "./permissions.ts";
+import { assignableRoles, isAdmin, isSuperUser, type PermUser } from "./permissions.ts";
 import type { Ctx } from "./session.ts";
 import type { Mailer } from "./email.ts";
 import {
-  accountStatus, editPatch, editProblems, editRights, overrideRows, overridesFor,
-  roleAllowed, tenantLabels, visibleUsers,
+  accountStatus, cleanNewUser, editPatch, editProblems, editRights, newUserProblems,
+  overrideRows, overridesFor, roleAllowed, tenantLabels, visibleUsers,
 } from "./users_admin.ts";
 
 type Row = Record<string, unknown>;
@@ -50,8 +50,14 @@ type IssueToken = (
   userId: string, purpose: "reset" | "invite", createdBy: string,
 ) => Promise<{ token: string; code: string }>;
 
+/** The job queue. Creating an account is Python's — see `create` below. */
+type Enqueue = (
+  kind: string, params: Record<string, unknown>, ctx: Ctx,
+) => Promise<{ id: string; dispatched: boolean } | null>;
+
 export function createUserRoutes(
   db: Db, issueToken: IssueToken, mailer: Mailer | null, allowedOrigins: string[] = [],
+  enqueue: Enqueue | null = null,
 ) {
   const BLOCKED = () => json({ error: "Managing users is for administrators." }, 403);
 
@@ -121,10 +127,15 @@ export function createUserRoutes(
         roles: [...new Set([...assignableRoles(actor), str(u.role)])].filter(Boolean),
       })),
       // What the actor may assign, so the page offers nothing the route would refuse.
-      canAdd: false,
-      addNote: "Adding and removing accounts is still on the classic Settings page: an "
-        + "invitation needs the welcome email, which this API does not send yet. Creating "
-        + "an account whose holder is never told is worse than no button.",
+      canAdd: true,
+      // Which roles this actor may hand out, so the form offers nothing the route
+      // refuses — the same reasoning as `rights` on each row.
+      assignableRoles: assignableRoles(actor),
+      // Only a super_user may choose WHOSE tenant an account lands in. An admin adds to
+      // their own, and the route ignores a target from anybody else.
+      canChooseTenant: isSuperUser(actor),
+      addNote: "Removing an account is still on the classic Settings page. Deactivating "
+        + "one here has the same effect on access and leaves its history intact.",
     });
   }
 
@@ -268,5 +279,88 @@ export function createUserRoutes(
     });
   }
 
-  return { list, patch, resetPassword };
+  /**
+   * `POST /settings/users` — invite one account. Queued; the Python creates it.
+   *
+   * WHAT THIS ROUTE DECIDES, and what it refuses to:
+   *
+   *   it decides   whether the actor may create an account at all, what ROLE they may
+   *                give it, and — the one that matters — WHOSE tenant it lands in.
+   *   it refuses   to create anything. `_create_user_account` inserts the row, resolves
+   *                or creates the tenant, writes the membership, mints the activation
+   *                token and sends the welcome email. That is 140 lines of rules about
+   *                who exists on this deployment, and a second copy of them here would
+   *                be a second answer to that question.
+   *
+   * THE TENANT TARGET IS NOT TAKEN FROM THE CLIENT unless the actor is a super_user.
+   * An admin adds people to THEIR OWN tenant, full stop: accepting a tenant id from the
+   * request would let any admin put an account into any organisation on the deployment,
+   * and the account would look perfectly ordinary once it was there.
+   */
+  async function create(req: Request, ctx: Ctx): Promise<Response> {
+    const actor = ctx.user as PermUser;
+    if (!isAdmin(actor)) return BLOCKED();
+    if (!enqueue) return json({ error: "Background jobs are not configured." }, 503);
+
+    const p = (await body(req)) as Row;
+    const form = cleanNewUser(p);
+    const problems = newUserProblems(form.email, form.name);
+    if (problems.length) {
+      // Capitalised the way the Streamlit dialog shows them, so the two apps word the
+      // same refusal the same way.
+      return json({
+        error: "Please fix the following:",
+        problems: problems.map((x) => x.charAt(0).toUpperCase() + x.slice(1) + "."),
+      }, 400);
+    }
+
+    const role = form.role || "collaborator";
+    if (!assignableRoles(actor).includes(role)) {
+      return json({ error: `You cannot create an account with the role "${role}".` }, 403);
+    }
+
+    // Already taken? Answered here rather than left to the unique index, because the
+    // index's error arrives as a failed JOB — a page refresh later, in words nobody
+    // wrote for a reader.
+    const existing = await db.service.get("users",
+      `select=id&email=eq.${q(form.email)}&limit=1`).catch(() => [] as Row[]);
+    if (existing.length) {
+      return json({
+        error: `An account already exists for ${form.email}.`,
+        problems: [form.email],
+      }, 409);
+    }
+
+    const superUser = isSuperUser(actor);
+    const tid = viewedTid(ctx);
+    const tenant = superUser
+      // Only a super_user may name a target, and only the three shapes the Python knows.
+      ? {
+        mode: ["own", "existing", "new"].includes(str(p.tenantMode))
+          ? str(p.tenantMode) : "own",
+        tenant_id: str(p.tenantId) || tid,
+        new_name: str(p.newTenantName).trim(),
+        kind: str(p.tenantKind) === "individual" ? "individual" : "organization",
+      }
+      // An admin: their own tenant, whatever the request said.
+      : { mode: "own", tenant_id: tid, new_name: "", kind: "organization" };
+
+    const queued = await enqueue("create_user", {
+      email: form.email, name: form.name, role,
+      department: form.dept || null, program: form.program || null,
+      tenant, by: str(actor?.email),
+    }, ctx);
+    if (!queued) return json({ error: "Could not queue the invitation." }, 500);
+    return json({
+      job_id: queued.id,
+      dispatched: queued.dispatched,
+      email: form.email,
+      detail: queued.dispatched
+        ? `Creating ${form.email} and sending an activation link. The result appears here `
+          + "when it finishes."
+        : "Queued, but no runner could be reached — the account has NOT been created yet.",
+    });
+  }
+
+  return { list, patch, resetPassword, create };
 }

@@ -721,6 +721,95 @@ def _excel_sync(job: JobRow, params: dict, runner: str) -> dict:
     }
 
 
+def _create_user(job: JobRow, params: dict, runner: str) -> dict:
+    """Settings → Accounts → Users: create one invited account.
+
+    WHY THIS IS A JOB. `views/account_sections._create_user_account` is not a row insert
+    with an email after it. It inserts the user with a password hash nobody knows (32
+    bytes of urandom, hashed and discarded, so there is no interim credential to
+    intercept), resolves where the account GOES — the admin's own tenant, an existing one,
+    or a NEW tenant it creates — disambiguates an individual account whose name collides
+    with an existing tenant, writes the membership, mints the activation token and sends
+    the welcome email, collecting structured warnings at every step. It creates TENANTS.
+    A TypeScript re-implementation would be a second set of rules about who exists on this
+    deployment, and its failures would be accounts in half-states nobody looks for.
+
+    It is imported rather than lifted: `views/account_sections` pulls in streamlit, which
+    warns about a missing ScriptRunContext in a bare process and otherwise behaves. The
+    function itself touches no widget — it is shared by Add user and Bulk add precisely so
+    the two cannot disagree.
+
+    IT NEVER RAISES. The contract is `{"ok", "error", "warnings", "notes", "link",
+    "emailed", "mail_error"}`, where `ok` means the account exists and `link` is set
+    whenever the activation link has to be handed over by hand. So a "failed" creation is
+    reported as a RESULT the page can read, not as a crashed job — and the link, which is
+    the only credential this flow produces, is never lost to an exception.
+
+    THE ACTOR IS RE-READ FROM THE USERS TABLE, as in _suggestion_review: by the time a
+    runner picks a job up, the only record of who asked is what was written down, and
+    `_create_user_account` makes permission decisions from the user dict it is given.
+    """
+    from db.supabase_client import service_client
+
+    email = str(params.get("email") or "").strip()
+    name = str(params.get("name") or "").strip()
+    role = str(params.get("role") or "collaborator").strip() or "collaborator"
+    by = str(params.get("by") or "").strip()
+    if not email or not name:
+        raise ValueError("create_user needs an email and a name")
+    if not by:
+        raise ValueError("create_user needs the inviting administrator's email")
+
+    rows = (service_client().table("users")
+            .select("id,email,name,role,is_active,access_overrides")
+            .eq("email", by).limit(1).execute().data or [])
+    if not rows:
+        raise ValueError(f"create_user: no account for {by}")
+    actor = rows[0]
+
+    # Where the account goes. The shape `_create_user_account` documents; `mt` says
+    # whether this deployment is multi-tenant at all.
+    tenant = params.get("tenant")
+    if not isinstance(tenant, dict):
+        tenant = {}
+    try:
+        from auth import tenant_context as tc
+        tenant.setdefault("mt", bool(tc.multitenant_enabled()))
+    except Exception:
+        tenant.setdefault("mt", False)
+    tenant.setdefault("mode", "own")
+    tenant.setdefault("kind", "organization")
+
+    job.progress(30, f"Creating the account for {email}")
+    from views.account_sections import _create_user_account
+    res = _create_user_account(
+        actor, email=email, name=name, role=role,
+        dept=params.get("department"), program=params.get("program"),
+        tenant=tenant)
+
+    ok = bool(res.get("ok"))
+    emailed = bool(res.get("emailed"))
+    job.progress(100, "Created" if ok else "Not created")
+    return {
+        "ok": ok,
+        "email": email,
+        "emailed": emailed,
+        # The activation link, returned ONLY when the email did not go. It is the single
+        # credential this flow produces and there is no other copy — swallowing it would
+        # leave an account nobody can ever reach.
+        "link": res.get("link") if not emailed else None,
+        "error": res.get("error"),
+        "warnings": list(res.get("warnings") or []),
+        "notes": list(res.get("notes") or []),
+        "mail_error": res.get("mail_error"),
+        "summary": (
+            f"{email} created and sent an activation link." if ok and emailed
+            else f"{email} created, but no email went out — share the activation link "
+                 "below. It works once and expires in 7 days." if ok
+            else f"Not created: {res.get('error') or 'see the warnings'}"),
+    }
+
+
 def _suggestion_review(job: JobRow, params: dict, runner: str) -> dict:
     """Settings → Suggestions: approve or reject one proposal to a SHARED resource.
 
@@ -798,6 +887,8 @@ KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "excel_sync": _excel_sync,
     # Settings → Suggestions: applying a proposal to a SHARED catalogue.
     "suggestion_review": _suggestion_review,
+    # Settings → Accounts → Users: an invited account, which also creates tenants.
+    "create_user": _create_user,
 }
 
 

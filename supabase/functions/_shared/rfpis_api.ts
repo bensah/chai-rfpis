@@ -106,7 +106,8 @@ export function createApi(env: Env, deps: Deps) {
   // Settings → Accounts → Users. It resets a password through auth's OWN `issueToken`,
   // not a second minting path: that function retires any live token on the account first,
   // and a duplicate would be a second place to forget that step.
-  const users = createUserRoutes(db, auth.issueToken, mailer, env.allowedOrigins ?? []);
+  const users = createUserRoutes(db, auth.issueToken, mailer, env.allowedOrigins ?? [],
+    jobs.enqueue);
   // Settings → Records: one route over several tables, and the TABLE IS NAMED BY THE
   // CLIENT — so it names a spec key, never a table. See api/routes_records.ts.
   const records = createRecordRoutes(db);
@@ -269,6 +270,7 @@ export function createApi(env: Env, deps: Deps) {
     // Settings → Accounts → Users. Admin to reach the surface, canManageUser per TARGET
     // on every write — two different questions, both asked. See api/routes_users.ts.
     if (path === "/settings/users" && m === "GET") return users.list(req, ctx);
+    if (path === "/settings/users" && m === "POST") return users.create(req, ctx);
     {
       // Matched on the SEGMENTS rather than a prefix: `/settings/users/<id>` is the
       // account and `/settings/users/<id>/reset` is an action on it, and a prefix test
