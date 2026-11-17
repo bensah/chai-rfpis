@@ -1527,6 +1527,27 @@ export type TenantsData = {
   note: string | null;
 };
 
+export type DeploymentSecret = {
+  name: string; present: boolean; length: number;
+  /** First 8 hex of sha256 — comparable between runtimes, not reversible. */
+  fingerprint?: string | null;
+  project_ref?: string | null;
+  kind?: string;
+  is_service_role?: boolean | null;
+};
+
+export type DeploymentInfo = {
+  runtime: string;
+  secrets: DeploymentSecret[];
+  verdicts: { level: "bad" | "warn" | "good"; text: string }[];
+  extras: { dispatchConfigured: boolean; mailerConfigured: boolean; adminContact: boolean };
+  allowedOrigins: string[];
+  note: string;
+};
+
+/** What the runtime SERVING React is configured with — the half Streamlit cannot see. */
+export const fetchDeployment = () => call<DeploymentInfo>("/settings/deployment");
+
 export const fetchTenants = () => call<TenantsData>("/settings/tenants");
 /** Queued: two of these writes clear a cache a TypeScript write would leave stale. */
 export const tenantAction = (body: Record<string, unknown>) =>
