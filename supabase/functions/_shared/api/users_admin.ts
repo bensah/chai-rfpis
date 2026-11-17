@@ -150,6 +150,12 @@ export function cleanNewUser(form: Json): { email: string; name: string; role: s
 /**
  * The edit dialog's own validation: a usable address, and nobody else holding it.
  *
+ * ONLY FOR FIELDS THE REQUEST CARRIES. The Streamlit dialog is a form and always submits
+ * every input, so its check can assume an email is present; a PATCH cannot. Validating an
+ * absent key rejected "change this person's department" with "Email must be a valid
+ * address", which is both wrong and impossible to act on — found by probing the route,
+ * not by reading it.
+ *
  * The collision test is case-INSENSITIVE and skips the target's own current address, so
  * re-saving a form without touching the email is not a collision with yourself.
  */
@@ -157,6 +163,7 @@ export function editProblems(
   form: Json, currentEmail: string, otherEmails: Iterable<string>,
 ): string[] {
   const errs: string[] = [];
+  if (!("email" in form)) return errs;
   const next = trimmed(form.email);
   if (!next || !next.includes("@")) errs.push("Email must be a valid address.");
   if (next && next.toLowerCase() !== trimmed(currentEmail).toLowerCase()) {

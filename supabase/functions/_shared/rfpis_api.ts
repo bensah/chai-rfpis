@@ -37,6 +37,7 @@ import { loadOrgIdentity } from "./api/report_section2.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
 import { createOrgRoutes } from "./api/routes_org.ts";
 import { createOrgSetupRoutes } from "./api/routes_org_setup.ts";
+import { createUserRoutes } from "./api/routes_users.ts";
 import { createProfileRoutes } from "./api/routes_profile.ts";
 import { createSearchRoutes } from "./api/routes_search.ts";
 import { createSubmitRoutes } from "./api/routes_submit.ts";
@@ -97,6 +98,10 @@ export function createApi(env: Env, deps: Deps) {
   // Settings → Setup: that editor. Admin-gated per route, since an Edge Function has no
   // nav to omit the page from.
   const orgSetup = createOrgSetupRoutes(db);
+  // Settings → Accounts → Users. It resets a password through auth's OWN `issueToken`,
+  // not a second minting path: that function retires any live token on the account first,
+  // and a duplicate would be a second place to forget that step.
+  const users = createUserRoutes(db, auth.issueToken, mailer, env.allowedOrigins ?? []);
   // Profile: self-service only, and every route keyed on the session's own id.
   const profile = createProfileRoutes(db, deps);
 
@@ -204,6 +209,23 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/settings/setup/identity" && m === "PUT") return orgSetup.putIdentity(req, ctx);
     if (path === "/settings/setup/profile" && m === "PUT") return orgSetup.putProfile(req, ctx);
     if (path === "/settings/setup/team" && m === "PUT") return orgSetup.putTeam(req, ctx);
+
+    // Settings → Accounts → Users. Admin to reach the surface, canManageUser per TARGET
+    // on every write — two different questions, both asked. See api/routes_users.ts.
+    if (path === "/settings/users" && m === "GET") return users.list(req, ctx);
+    {
+      // Matched on the SEGMENTS rather than a prefix: `/settings/users/<id>` is the
+      // account and `/settings/users/<id>/reset` is an action on it, and a prefix test
+      // would hand "<id>/reset" to the patch route as an id — which then matches no row
+      // and answers "No such user" for a request that was perfectly well formed.
+      const seg = path.startsWith("/settings/users/")
+        ? path.slice("/settings/users/".length).split("/") : [];
+      const id = seg[0] ? decodeURIComponent(seg[0]) : "";
+      if (id && seg.length === 1 && m === "PATCH") return users.patch(req, ctx, id);
+      if (id && seg.length === 2 && seg[1] === "reset" && m === "POST") {
+        return users.resetPassword(req, ctx, id);
+      }
+    }
 
     // Nothing here takes a user id from the request — see api/routes_profile.ts.
     if (path === "/profile" && m === "GET") return profile.read(req, ctx);

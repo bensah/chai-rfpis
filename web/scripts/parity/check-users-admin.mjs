@@ -235,6 +235,17 @@ same("the use-default sentinel", P.USE_DEFAULT, want.use_default);
   ok("re-saving a form without touching the email is not a collision with yourself",
     U.editProblems({ email: "ME@x.org" }, "me@x.org", ["other@x.org"]).length === 0
     && U.editProblems({ email: "other@x.org" }, "me@x.org", ["other@x.org"]).length === 1);
+
+  ok("a request that carries no email is not judged on one",
+    U.editProblems({ department: "BD" }, "me@x.org", ["other@x.org"]).length === 0,
+    "the Streamlit dialog is a FORM and always submits every input, so its check can "
+    + "assume an email is there. A PATCH cannot. Validating an absent key rejected "
+    + "\"change this person's department\" with \"Email must be a valid address\", which "
+    + "is both wrong and impossible to act on.");
+
+  ok("...but an email that IS carried and empty is still refused",
+    U.editProblems({ email: "   " }, "me@x.org", []).length === 1,
+    "it is the login username; saving a blank one locks the account out.");
 }
 
 console.log(`\n${checks} comparisons, ${diffs} differing`);
