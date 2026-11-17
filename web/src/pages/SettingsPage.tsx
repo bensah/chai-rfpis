@@ -13,6 +13,7 @@ import { JOB_STATUS_LABEL, useJob } from "../jobs";
 import ClassicPage from "./ClassicPage";
 import SetupTab from "../settings/SetupTab";
 import UsersTab from "../settings/UsersTab";
+import RecordsTab from "../settings/RecordsTab";
 import { hrefOf } from "../router";
 import {
   Badge, Button, Card, Eyebrow, LinkButton, Notice, PageHeader, Select,
@@ -71,6 +72,8 @@ export default function SettingsPage({ user, classicUrl }: { user: User; classic
       <div className="mt-6">
         {tab === "Setup" ? (
           <SetupTab />
+        ) : tab === "Records" ? (
+          <RecordsTab />
         ) : tab === "Archive" ? (
           <Archive />
         ) : tab !== "Accounts" ? (

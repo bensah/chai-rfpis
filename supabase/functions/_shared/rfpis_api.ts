@@ -38,6 +38,7 @@ import { createShellRoutes } from "./api/routes_shell.ts";
 import { createOrgRoutes } from "./api/routes_org.ts";
 import { createOrgSetupRoutes } from "./api/routes_org_setup.ts";
 import { createUserRoutes } from "./api/routes_users.ts";
+import { createRecordRoutes } from "./api/routes_records.ts";
 import { createProfileRoutes } from "./api/routes_profile.ts";
 import { createSearchRoutes } from "./api/routes_search.ts";
 import { createSubmitRoutes } from "./api/routes_submit.ts";
@@ -102,6 +103,9 @@ export function createApi(env: Env, deps: Deps) {
   // not a second minting path: that function retires any live token on the account first,
   // and a duplicate would be a second place to forget that step.
   const users = createUserRoutes(db, auth.issueToken, mailer, env.allowedOrigins ?? []);
+  // Settings → Records: one route over several tables, and the TABLE IS NAMED BY THE
+  // CLIENT — so it names a spec key, never a table. See api/routes_records.ts.
+  const records = createRecordRoutes(db);
   // Profile: self-service only, and every route keyed on the session's own id.
   const profile = createProfileRoutes(db, deps);
 
@@ -209,6 +213,10 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/settings/setup/identity" && m === "PUT") return orgSetup.putIdentity(req, ctx);
     if (path === "/settings/setup/profile" && m === "PUT") return orgSetup.putProfile(req, ctx);
     if (path === "/settings/setup/team" && m === "PUT") return orgSetup.putTeam(req, ctx);
+
+    if (path === "/settings/records" && m === "GET") return records.read(req, ctx);
+    if (path === "/settings/records" && m === "PATCH") return records.update(req, ctx);
+    if (path === "/settings/records" && m === "DELETE") return records.remove(req, ctx);
 
     // Settings → Accounts → Users. Admin to reach the surface, canManageUser per TARGET
     // on every write — two different questions, both asked. See api/routes_users.ts.

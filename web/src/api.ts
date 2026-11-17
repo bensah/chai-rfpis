@@ -1358,6 +1358,47 @@ export const saveUser = (id: string, form: Record<string, unknown>) =>
 export const resetUserPassword = (id: string) =>
   post<ResetResult>(`/settings/users/${encodeURIComponent(id)}/reset`);
 
+// ── Settings → Records ───────────────────────────────────────────────────────
+//
+// One route over several tables. The client names a SPEC KEY ("Meeting Logs"), never a
+// table — see supabase/functions/_shared/api/routes_records.ts for why that distinction
+// is the whole security of the surface.
+
+export type RecordSpec = {
+  table: string;
+  orderCol: string;
+  tableCols: string[];
+  colLabels: Record<string, string>;
+  dateCols: string[];
+  searchCols: string[];
+  advancedFilters: string[];
+  /** [column, kind, label]; kind is date | text | area | bool. */
+  editFields: [string, string, string][];
+  caption: string;
+};
+
+export type RecordsPage = {
+  table: string;
+  /** "aux" is an editable table; "extracted" is the read-only global store. */
+  kind: "aux" | "extracted" | "screened";
+  rows: Record<string, unknown>[];
+  total: number;
+  truncated?: boolean;
+  spec?: RecordSpec;
+  columns?: string[];
+  note?: string;
+  /** The picker's options, from the generated list — carried with every answer. */
+  options?: string[];
+};
+
+export const fetchRecords = (table: string) =>
+  call<RecordsPage>(`/settings/records?table=${encodeURIComponent(table)}`);
+export const saveRecord = (table: string, id: string, values: Record<string, unknown>) =>
+  patch<{ saved: Record<string, unknown> }>("/settings/records", { table, id, values });
+export const deleteRecord = (table: string, id: string) =>
+  del<{ deleted: string }>(
+    `/settings/records?table=${encodeURIComponent(table)}&id=${encodeURIComponent(id)}`);
+
 export const fetchSetup = () => call<OrgSetup>("/settings/setup");
 export const saveSetupIdentity = (form: Record<string, unknown>) =>
   put<SetupSaved>("/settings/setup/identity", form);
