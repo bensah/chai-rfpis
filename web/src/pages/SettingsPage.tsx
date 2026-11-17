@@ -60,7 +60,11 @@ export default function SettingsPage({ user, classicUrl }: { user: User; classic
   // admin.py's tab list and order.
   const tabs = ["Setup", "Accounts", "Records", "Archive", ...(dev ? ["Sources"] : []), "Manual Scan",
     ...(dev ? ["Learning data"] : []), ...(devSuper ? ["Suggestions"] : []), ...(isSuper(user) ? ["Analytics"] : [])];
-  const [tab, setTab] = useState("Accounts");
+  // Setup, as the Streamlit page opens — `st.tabs` lands on the first, which is Setup.
+  // It opened on Accounts while Accounts was the only tab that had been built, and
+  // leaving it there now would mean the two apps disagree about what Settings IS at a
+  // glance, which is the same argument the Records picker's order rests on.
+  const [tab, setTab] = useState(tabs[0]);
   const acctTabs = [...(isSuper(user) ? [] : ["Active tenant"]), "Users", "Tenants", "Blacklisted",
     ...(isSuper(user) ? ["Deployment"] : [])];
   const [acct, setAcct] = useState(acctTabs[0]);
@@ -69,7 +73,7 @@ export default function SettingsPage({ user, classicUrl }: { user: User; classic
     <section>
       <PageHeader
         title={<span className="flex items-center gap-2.5"><SettingsIcon className="h-6 w-6 text-accent-600" strokeWidth={1.9} /> Settings</span>}
-        lead="Accounts, tenants, records and the scan — everything an administrator controls."
+        lead="Your organisation’s profile and people, the records behind the app, and the scan — everything an administrator controls."
       />
       <Tabs tabs={tabs} active={tab} onPick={setTab} />
       <div className="mt-6">
