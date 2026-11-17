@@ -301,6 +301,23 @@ const KINDS: Record<string, JobKind> = {
     allowed: async (u, ctx) => isDeveloperAdmin(u, await ctx.homeIsDeveloper()),
     group: () => "source-registry",
   },
+
+  /**
+   * Settings → Accounts → Tenants: one write to the platform's organisation list.
+   *
+   * SUPER_USER ONLY. These controls decide which organisations exist, which may reach
+   * cross-tenant developer tasks, and whose profile may be read to score somebody else's
+   * call. An ordinary admin administers their own organisation and none of this.
+   *
+   * ONE GROUP FOR THE WHOLE LIST. Two of these writes clear `core.applicant_graph`'s
+   * cache as a side effect, and the parent link leans on a database cycle-guard that
+   * reasons over the whole chain; concurrent writes would each decide from a different
+   * view of it.
+   */
+  tenant_action: {
+    allowed: (u) => isSuperUser(u),
+    group: () => "tenant-admin",
+  },
 };
 
 /**

@@ -721,6 +721,102 @@ def _excel_sync(job: JobRow, params: dict, runner: str) -> dict:
     }
 
 
+def _tenant_action(job: JobRow, params: dict, runner: str) -> dict:
+    """Settings → Accounts → Tenants: one write to the platform's organisation list.
+
+    WHY A JOB, AND NOT SIX ROUTES. Two of these writes have a consequence that is
+    invisible from the row they change: setting a tenant's consortium consent or its
+    PARENT link must clear `core.applicant_graph`'s cache, because that resolver holds
+    the tenant rows it scores co-applicants from. A TypeScript write would change the
+    column and leave the resolver answering from the old one — for as long as the process
+    lives, with nothing anywhere to suggest why a consortium link was not being honoured.
+    The blacklist write also carries a migration-077 audit stamp with a status-only
+    fallback, and the parent link leans on a database cycle-guard whose rejection is the
+    point rather than an error to retry.
+
+    So every write goes through the functions that know those things, lifted out of
+    `views/account_sections.py` — the module imports streamlit, and these helpers call
+    `st.error` on failure, which is why they are executed with a stub that collects the
+    message instead of drawing it.
+
+    AN UNKNOWN ACTION IS REFUSED. These are the controls that decide which organisations
+    exist, who may reach cross-tenant developer tasks, and whose profile may be read to
+    score somebody else's call. There is no safe default among them.
+    """
+    import ast as _ast
+    import types as _types
+    from datetime import datetime as _dt, timezone as _tz
+
+    from db.supabase_client import service_client
+
+    action = str(params.get("action") or "").strip()
+    by = str(params.get("by") or "").strip() or None
+    tids = [str(t).strip() for t in (params.get("tenant_ids") or []) if str(t).strip()]
+    on = bool(params.get("on"))
+
+    # VALIDATED FIRST, before anything is lifted or any client is built. These actions
+    # change which organisations exist and who may reach cross-tenant tasks; a request
+    # that cannot name one of them should cost nothing and touch nothing.
+    _NEEDS_IDS = {"activate", "suspend", "blacklist", "developer", "consortium"}
+    if action not in (_NEEDS_IDS | {"parent"}):
+        raise ValueError(f"tenant_action: unknown action {action!r}")
+    if action in _NEEDS_IDS and not tids:
+        raise ValueError(f"{action} needs tenant_ids")
+    if action == "parent" and not str(params.get("child_id") or "").strip():
+        raise ValueError("parent link needs a child_id")
+
+    # The helpers, with `st` stubbed: they are module-level in a Streamlit view and call
+    # st.error on failure. The stub records what they would have shown, so a failure is
+    # reported in the job row rather than swallowed.
+    errors: list[str] = []
+    stub = _types.SimpleNamespace(error=lambda m: errors.append(str(m)))
+    src = (REPO_ROOT / "views" / "account_sections.py").read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+    wanted = {"_set_many_status", "_set_many_tenant_blacklist", "_set_many_developer",
+              "_set_many_consortium_consent", "_set_parent"}
+    defs = [n for n in tree.body if isinstance(n, _ast.FunctionDef) and n.name in wanted]
+    missing = wanted - {d.name for d in defs}
+    if missing:
+        raise ValueError(f"views/account_sections.py no longer defines {sorted(missing)}")
+    ns: dict = {"st": stub, "datetime": _dt, "timezone": _tz}
+    exec(compile(_ast.Module(body=defs, type_ignores=[]), "account_sections", "exec"), ns)
+
+    svc = service_client()
+    if action in ("activate", "suspend"):
+        job.progress(40, f"Setting {len(tids)} organisation(s) to {action}d")
+        ns["_set_many_status"](svc, tids, "active" if action == "activate" else "suspended")
+        verb = "reactivated" if action == "activate" else "suspended"
+    elif action == "blacklist":
+        job.progress(40, f"{'Blacklisting' if on else 'Restoring'} {len(tids)}")
+        ns["_set_many_tenant_blacklist"](svc, tids, on, by)
+        verb = "blacklisted" if on else "restored"
+    elif action == "developer":
+        job.progress(40, "Setting the developer flag")
+        ns["_set_many_developer"](svc, tids, on)
+        verb = "flagged as developer tenants" if on else "cleared of the developer flag"
+    elif action == "consortium":
+        job.progress(40, "Setting consortium sharing")
+        ns["_set_many_consortium_consent"](svc, tids, on)
+        verb = "opted into consortium sharing" if on else "opted out of consortium sharing"
+    elif action == "parent":
+        child = str(params.get("child_id") or "").strip()
+        parent = str(params.get("parent_id") or "").strip() or None
+        job.progress(40, "Linking the organisations")
+        ns["_set_parent"](svc, child, parent)
+        tids = [child]
+        verb = "linked to a parent" if parent else "unlinked from its parent"
+
+    job.progress(100, "Done" if not errors else "Reported a problem")
+    return {
+        "ok": not errors,
+        "action": action,
+        "tenant_ids": tids,
+        "errors": errors,
+        "summary": (f"{len(tids)} organisation(s) {verb}." if not errors
+                    else f"Not applied: {errors[0]}"),
+    }
+
+
 def _registry_action(job: JobRow, params: dict, runner: str) -> dict:
     """Settings → Sources → Verify Registry: one write to the shared source registry.
 
@@ -977,6 +1073,8 @@ KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "create_user": _create_user,
     # Settings → Sources → Verify Registry: every write to the shared registry.
     "registry_action": _registry_action,
+    # Settings → Accounts → Tenants: the platform organisation list.
+    "tenant_action": _tenant_action,
 }
 
 

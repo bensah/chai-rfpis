@@ -17,6 +17,7 @@ import { JOB_STATUS_LABEL, useJob } from "../jobs";
 import ClassicPage from "./ClassicPage";
 import SetupTab from "../settings/SetupTab";
 import UsersTab from "../settings/UsersTab";
+import { BlacklistedPanel, TenantsPanel } from "../settings/TenantsTab";
 import RecordsTab from "../settings/RecordsTab";
 import ScanTab from "../settings/ScanTab";
 import AnalyticsTab from "../settings/AnalyticsTab";
@@ -108,11 +109,13 @@ export default function SettingsPage({ user, classicUrl, shell }: {
             <div className="mt-5 space-y-6">
               {acct === "Active tenant" && <ActiveTenant user={user} />}
               {acct === "Users" && <UsersTab />}
+              {acct === "Tenants" && <TenantsPanel />}
+              {acct === "Blacklisted" && <BlacklistedPanel />}
               {acct === "Deployment" && <ContactCheck shell={shell} />}
               {acct === "Deployment" && <JobTest />}
-              {/* Tenants and Blacklisted are still the classic page's; Users and Active
-                  tenant are not, so neither should get a classic frame under it. */}
-              {!["Active tenant", "Users"].includes(acct)
+              {/* Every Accounts sub-tab is ported now; Deployment keeps the classic
+                  frame under it for the environment diagnostics, which are not. */}
+              {acct === "Deployment"
                 && <ClassicPage page="settings" classicUrl={classicUrl} />}
             </div>
           </>

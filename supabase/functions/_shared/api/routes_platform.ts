@@ -27,7 +27,10 @@
  */
 import { q, type Db } from "./db.ts";
 import { body, json, str } from "./http.ts";
-import { isDeveloperAdmin, isDeveloperMember, isDeveloperSuper, type PermUser } from "./permissions.ts";
+import {
+  isAdmin, isDeveloperAdmin, isDeveloperMember, isDeveloperSuper, isSuperUser,
+  type PermUser,
+} from "./permissions.ts";
 import type { Ctx } from "./session.ts";
 
 type Row = Record<string, unknown>;
@@ -216,6 +219,122 @@ export function createPlatformRoutes(db: Db, enqueue: Enqueue | null = null) {
     });
   }
 
+  // ── Tenants and the blacklist ──────────────────────────────────────────────
+
+  /**
+   * `GET /settings/tenants` — the platform's organisation list.
+   *
+   * VISIBLE TO EVERY ADMIN, EDITABLE BY A SUPER_USER. That split is the Streamlit page's
+   * own: knowing which organisations exist on a shared deployment is ordinary context,
+   * while suspending one, flagging it as a developer tenant or letting its profile be
+   * read to score somebody else's call is not.
+   *
+   * A NON-SUPER SEES ONLY THE ORGANISATIONS THEY BELONG TO. The Streamlit page scopes it
+   * the same way, and the reason is not secrecy but relevance — a list of every
+   * organisation on the deployment answers no question an ordinary admin has, and it
+   * names other people's clients.
+   */
+  async function tenants(_req: Request, ctx: Ctx): Promise<Response> {
+    const u = ctx.user as PermUser;
+    if (!isAdmin(u)) return json({ error: "Organizations is for administrators." }, 403);
+    const canManage = isSuperUser(u);
+
+    const [rows, memberships] = await Promise.all([
+      db.service.getAll("tenants", "select=*", "name").catch(() => [] as Row[]),
+      db.service.getAll("tenant_memberships", "select=tenant_id,user_id,status", "tenant_id")
+        .catch(() => [] as Row[]),
+    ]);
+
+    let visible = rows;
+    if (!canManage) {
+      const mine = new Set(memberships
+        .filter((m) => str(m.user_id) === str(ctx.user?.id))
+        .map((m) => str(m.tenant_id)));
+      visible = rows.filter((r) => mine.has(str(r.id)));
+    }
+
+    const counts = new Map<string, { active: number; pending: number }>();
+    for (const m of memberships) {
+      const tid = str(m.tenant_id);
+      const c = counts.get(tid) ?? { active: 0, pending: 0 };
+      if (str(m.status) === "active") c.active += 1;
+      else if (str(m.status) === "pending") c.pending += 1;
+      counts.set(tid, c);
+    }
+    const byId = new Map(rows.map((r) => [str(r.id), r]));
+
+    return json({
+      tenants: visible.map((t) => ({
+        id: str(t.id),
+        name: str(t.name),
+        slug: str(t.slug) || null,
+        kind: str(t.kind) || "organization",
+        status: str(t.status) || "active",
+        is_platform: !!t.is_platform,
+        is_developer: !!t.is_developer,
+        share_for_consortium_scoring: !!t.share_for_consortium_scoring,
+        parent_tenant_id: str(t.parent_tenant_id) || null,
+        // Resolved here: the page would otherwise have to look it up in a list a
+        // non-super cannot see all of, and would show a bare uuid for a parent outside
+        // their own scope.
+        parent_name: str(byId.get(str(t.parent_tenant_id))?.name) || null,
+        blacklisted_at: t.blacklisted_at ?? null,
+        blacklisted_by: str(t.blacklisted_by) || null,
+        blacklist_reason: str(t.blacklist_reason) || null,
+        created_at: t.created_at ?? null,
+        members: counts.get(str(t.id))?.active ?? 0,
+        pending: counts.get(str(t.id))?.pending ?? 0,
+      })),
+      canManage,
+      note: canManage ? null
+        : "Read-only. Suspending an organisation, flagging it as a developer tenant or "
+          + "opting it into consortium sharing affects the whole deployment, so it is a "
+          + "super-user action. This lists the organisations you belong to.",
+    });
+  }
+
+  /** `POST /settings/tenants` — queue one write to the organisation list. */
+  async function tenantAction(req: Request, ctx: Ctx): Promise<Response> {
+    if (!isSuperUser(ctx.user as PermUser)) {
+      return json({
+        error: "Changing an organization's status is a super-user action.",
+      }, 403);
+    }
+    if (!enqueue) return json({ error: "Background jobs are not configured." }, 503);
+
+    const p = (await body(req)) as Row;
+    const action = str(p.action).trim();
+    const known = ["activate", "suspend", "blacklist", "developer", "consortium", "parent"];
+    if (!known.includes(action)) {
+      return json({ error: `Unknown organization action "${action}".` }, 400);
+    }
+    const tenantIds = (Array.isArray(p.tenant_ids) ? p.tenant_ids : [])
+      .map((t) => str(t).trim()).filter(Boolean);
+    if (action !== "parent" && !tenantIds.length) {
+      return json({ error: "Pick at least one organization first." }, 400);
+    }
+    // A tenant cannot be its own parent. The database has a cycle-guard that catches the
+    // longer loops, and it is right that it does — but a self-link is worth refusing
+    // where somebody can read why, rather than as a constraint violation in a job row.
+    if (action === "parent" && str(p.child_id) && str(p.child_id) === str(p.parent_id)) {
+      return json({ error: "An organization cannot be its own parent." }, 400);
+    }
+
+    const queued = await enqueue("tenant_action", {
+      action, tenant_ids: tenantIds, on: p.on === true,
+      child_id: str(p.child_id).trim(), parent_id: str(p.parent_id).trim(),
+      by: str(ctx.user?.email),
+    }, ctx);
+    if (!queued) return json({ error: "Could not queue that." }, 500);
+    return json({
+      job_id: queued.id,
+      dispatched: queued.dispatched,
+      detail: queued.dispatched
+        ? "Queued. The change applies once the runner picks it up."
+        : "Queued, but no runner could be reached — nothing has changed yet.",
+    });
+  }
+
   // ── Learning data ──────────────────────────────────────────────────────────
 
   /**
@@ -316,5 +435,8 @@ export function createPlatformRoutes(db: Db, enqueue: Enqueue | null = null) {
     });
   }
 
-  return { sources, putBlocked, registry, registryAction, learning, suggestions, review };
+  return {
+    sources, putBlocked, registry, registryAction, tenants, tenantAction,
+    learning, suggestions, review,
+  };
 }

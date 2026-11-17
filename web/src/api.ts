@@ -1509,6 +1509,29 @@ export type SuggestionsData = {
 /** A review is QUEUED, never applied in the request — the runner holds the rules. */
 export type ReviewQueued = { job_id: string; dispatched: boolean; detail: string };
 
+export type TenantRow = {
+  id: string; name: string; slug: string | null; kind: string; status: string;
+  is_platform: boolean; is_developer: boolean; share_for_consortium_scoring: boolean;
+  parent_tenant_id: string | null;
+  /** Resolved server-side: a non-super cannot see every organization to look it up. */
+  parent_name: string | null;
+  blacklisted_at: string | null; blacklisted_by: string | null;
+  blacklist_reason: string | null; created_at: string | null;
+  members: number; pending: number;
+};
+
+export type TenantsData = {
+  tenants: TenantRow[];
+  /** Readable by any admin, editable by a super_user only. */
+  canManage: boolean;
+  note: string | null;
+};
+
+export const fetchTenants = () => call<TenantsData>("/settings/tenants");
+/** Queued: two of these writes clear a cache a TypeScript write would leave stale. */
+export const tenantAction = (body: Record<string, unknown>) =>
+  post<{ job_id: string; dispatched: boolean; detail: string }>("/settings/tenants", body);
+
 export const fetchSources = () => call<SourcesData>("/settings/sources");
 
 export type RegistryData = {

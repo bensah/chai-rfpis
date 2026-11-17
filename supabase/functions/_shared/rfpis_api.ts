@@ -281,6 +281,8 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/settings/sources/blocked" && m === "PUT") return platform.putBlocked(req, ctx);
     if (path === "/settings/sources/registry" && m === "GET") return platform.registry(req, ctx);
     if (path === "/settings/sources/registry" && m === "POST") return platform.registryAction(req, ctx);
+    if (path === "/settings/tenants" && m === "GET") return platform.tenants(req, ctx);
+    if (path === "/settings/tenants" && m === "POST") return platform.tenantAction(req, ctx);
     if (path === "/settings/learning" && m === "GET") return platform.learning(req, ctx);
     if (path === "/settings/suggestions" && m === "GET") return platform.suggestions(req, ctx);
     {
