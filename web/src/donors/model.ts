@@ -1,6 +1,15 @@
 // Donor display + scoring rules, ported from app_pages/donors.py so both apps show the
 // same labels, categories and completeness numbers. Keep the two in step: each function
 // names the Python helper it mirrors.
+//
+// THE VOCABULARY IS NOT WRITTEN HERE. Every constant below comes from
+// web/src/generated/donor_vocab.json, which scripts/gen_donor_vocab.py lifts out of
+// donors.py's own AST. It used to be hand-copied, and a hand-copied classification set is
+// the one that silently goes wrong: donors.py decides what is a FLAG by what is NOT named
+// in these sets, so a column missing from a copy here does not go missing — it turns into
+// a spurious form field, a spurious completeness denominator and a worse percentage.
+import { pyRound } from "../../../supabase/functions/_shared/api/py_round";
+import V from "../generated/donor_vocab.json";
 import { categoryFull, expandGeo, expandProgramAreas, subareaLabel } from "./vocab";
 
 export type Donor = Record<string, unknown> & { canonical_key: string };
@@ -9,59 +18,8 @@ export type Contact = Record<string, unknown>;
 // ---------------------------------------------------------------------------
 // Labels (_ACR, _LABEL_OVERRIDES, _label)
 // ---------------------------------------------------------------------------
-const ACR: Record<string, string> = {
-  lmic: "LMIC", ngo: "NGO", hiv: "HIV", aids: "AIDS", tb: "TB", ncd: "NCD", ncds: "NCDs",
-  mnch: "MNCH", srhr: "SRHR", hss: "HSS", ai: "AI", usd: "USD", uei: "UEI", sam: "SAM",
-  mou: "MOU", cv: "CV", cvs: "CVs", irb: "IRB", ccm: "CCM", dfi: "DFI", us: "US",
-  mande: "M&E", govt: "Govt",
-};
-
-const LABEL_OVERRIDES: Record<string, string> = {
-  donor_type: "Donor type (descriptive)",
-  donor_is_dual_role_implementer: "Also an implementer that publishes calls?",
-  donor_opportunity_listing_urls: "Opportunity listing URL(s)",
-  donor_local_board_required: "Local board members required",
-  donor_govt_mou_required: "Government MOU required",
-  donor_funding_platform_registration_required: "Funding-platform registration required",
-  donor_cofinancing_required: "Co-financing required",
-  donor_state_party_cofinancing_required: "Government / counterpart co-financing required",
-  donor_indirect_cost_disallowed: "Indirect / overhead costs not allowed",
-  donor_fund_use_conditions: "Conditions on use of funds",
-  donor_multi_country_encouraged: "Encourages multi-country proposals",
-  donor_summary_description: "Summary",
-  donor_values: "Values",
-  donor_strategy_url: "Strategy (URL)",
-  donor_projected_budget_period: "Budget period",
-  donor_strategic_priorities: "Strategic priorities",
-  donor_in_scope: "What they fund (in scope)",
-  donor_out_of_scope: "What they don't fund (out of scope)",
-  donor_selection_criteria: "Selection / evaluation criteria",
-  donor_funding_programs: "Funding programs / windows",
-  donor_eligibility_notes: "Who can apply / lead",
-  donor_application_deadlines: "Key dates / deadlines",
-  donor_submission_portal_url: "Submission portal (URL)",
-  donor_strategic_fit_notes: "Ideal applicant & what this funder rewards",
-  donor_gaps_risks: "Common pitfalls & disqualifiers",
-  donor_recommended_approach: "How to position a competitive application",
-  donor_funders_collaborators: "Funders & Collaborators",
-  donor_hq_country_required: "Applicant must be HQ'd in",
-  org_stage_required: "Org stage required",
-  donor_max_annual_budget: "Max annual budget (eligibility ceiling)",
-  donor_indirect_cost_max_pct: "Indirect cost policy (% of project cost) allowed",
-  donor_min_track_record: "Min largest grant managed (floor)",
-  donor_required_partner_type: "Required partner type",
-  donor_required_partner_country: "Required partner country",
-  donor_max_request_pct_of_budget: "Max request (% of project budget)",
-  donor_min_cofinancing_secured_pct: "Min co-financing secured (%)",
-  donor_independent_entity_required: "Independent entity required (no INGO affiliates)",
-  donor_welcome_registration_required: "Pre-registration / senior-leadership approval required",
-  donor_entity_type_required: "Entity type required",
-  donor_registration_region: "Registration region/country required",
-  donor_requires_pi: "Requires an individual / PI",
-  donor_pi_country_scope: "PI base-country scope",
-  donor_max_prior_grant: "Max prior grant/award (eligibility ceiling)",
-  donor_prior_beneficiary_rule: "Prior-beneficiary rule",
-};
+const ACR: Record<string, string> = V.acr;
+const LABEL_OVERRIDES: Record<string, string> = V.labelOverrides;
 
 export function label(col: string): string {
   if (LABEL_OVERRIDES[col]) return LABEL_OVERRIDES[col];
@@ -84,13 +42,7 @@ export function prettyChoice(v: unknown): string {
 // ---------------------------------------------------------------------------
 // De-shouting (_ACRONYMS, _smart_token, _deshout) + display (_disp)
 // ---------------------------------------------------------------------------
-const ACRONYMS = new Set([
-  "HIV", "AIDS", "TB", "MNCH", "HSS", "SRHR", "SRH", "NCD", "NCDS", "LMIC", "LMICS", "NGO",
-  "NGOS", "CCM", "DFI", "UHC", "PHC", "WHO", "UN", "US", "EU", "UK", "AI", "HPV", "NTD", "NTDS",
-  "RMNCAH", "RMNCH", "STI", "STIS", "WASH", "UNICEF", "UNAIDS", "UNFPA", "UNHCR", "UNESCO",
-  "USAID", "CEPI", "GAVI", "COVID", "IRB", "MOU", "CSO", "CSOS", "PREP", "FP", "GBV", "R&D",
-  "DR-TB", "GF", "AFD", "AFDB", "EC", "MCF", "BMGF",
-]);
+const ACRONYMS = new Set(V.acronyms);
 
 const isUpper = (s: string) => s === s.toUpperCase() && s !== s.toLowerCase();
 
@@ -232,44 +184,11 @@ export const isYes = (v: unknown) => String(v ?? "").trim().toLowerCase() === "y
 // ---------------------------------------------------------------------------
 // Field classification (_META … _FLAG_GROUPS)
 // ---------------------------------------------------------------------------
-const META = ["id", "updated_at", "created_at", "canonical_key", "category_clean",
-  "online_source_check_status", "last_checked", "row_type", "award_size_basis"];
-const SHORT_TEXT = ["donor", "donor_short", "donor_category", "donor_type", "donor_website",
-  "donor_award_low", "donor_award_high", "donor_total_annual_funding_global", "donor_funding_mechanism"];
-const LONG_TEXT = ["donor_aliases", "donor_geographic_scope", "donor_active_route_status",
-  "donor_direct_local_org_eligible", "donor_priority_areas", "donor_verification_caveats",
-  "donor_evidence_summary", "notes", "donor_source_urls", "donor_opportunity_listing_urls"];
-export const CONTACT_FIELDS = ["donor_hq_address", "donor_hq_country", "donor_main_phone",
-  "donor_general_email", "donor_linkedin_url", "donor_other_profile_urls", "donor_contact_persons",
-  "donor_contact_emails", "donor_contact_phones", "donor_contact_linkedin_urls"];
-const CHOICE = ["donor_prefinance_required", "donor_verification_level", "donor_is_dual_role_implementer"];
-const PROFILE = ["donor_founded", "donor_summary_description", "donor_mission", "donor_vision",
-  "donor_values", "donor_strategy_url", "donor_total_awards", "donor_total_funding_to_date",
-  "donor_current_awards", "donor_past_awards", "donor_projected_budget", "donor_projected_budget_period",
-  "donor_funding_cycle", "donor_recent_activity", "donor_application_process",
-  "donor_reporting_requirements", "donor_past_projects_json", "donor_strategic_priorities",
-  "donor_in_scope", "donor_out_of_scope", "donor_selection_criteria", "donor_funding_programs",
-  "donor_funding_tiers_json", "donor_eligibility_notes", "donor_application_deadlines",
-  "donor_submission_portal_url", "donor_strategic_fit_notes", "donor_gaps_risks",
-  "donor_recommended_approach", "donor_priority_ratings", "donor_funders_collaborators",
-  "donor_hq_country_required", "org_stage_required", "donor_max_annual_budget",
-  "donor_min_track_record", "donor_required_partner_type", "donor_required_partner_country",
-  "donor_max_request_pct_of_budget", "donor_min_cofinancing_secured_pct",
-  "donor_entity_type_required", "donor_registration_region", "donor_requires_pi",
-  "donor_pi_country_scope", "donor_max_prior_grant", "donor_prior_beneficiary_rule",
-  "donor_indirect_cost_max_pct", "donor_fund_use_conditions"];
-const HIDDEN = ["donor_verification_caveats", "donor_funded_geographies"];
-const NON_FLAG = new Set([...META, ...SHORT_TEXT, ...LONG_TEXT, ...CHOICE, ...CONTACT_FIELDS, ...PROFILE, ...HIDDEN]);
-
-const ELIG = ["donor_ngo_eligible", "donor_for_profit_eligible", "donor_govt_or_ccm_route_required",
-  "donor_grant_route", "donor_procurement_tender_route", "donor_loan_dev_finance_route",
-  "donor_subrecipient_partner_possible", "donor_open_call_unsolicited", "donor_invitation_solicited",
-  "donor_two_stage_application", "donor_online_portal_submission", "donor_lmic_africa_focus",
-  "donor_global_multi_country_scope"];
-
-export const LIST_FIELDS = new Set(["donor_geographic_scope", "donor_priority_areas",
-  "donor_funding_mechanism", "donor_funders_collaborators", "donor_hq_country_required",
-  "donor_registration_region", "donor_required_partner_type", "donor_required_partner_country"]);
+export const CONTACT_FIELDS = V.contact;
+const NON_FLAG = new Set([...V.meta, ...V.shortText, ...V.longText, ...Object.keys(V.choice),
+  ...V.contact, ...V.profile, ...V.hidden]);
+const ELIG = V.elig;
+export const LIST_FIELDS = new Set(V.listFields);
 
 export type Schema = {
   columns: string[];                         // every column, in first-seen order (CSV export)
@@ -299,20 +218,8 @@ export function buildSchema(rows: Donor[]): Schema {
 // ---------------------------------------------------------------------------
 // Completeness (_COMPLETENESS_TEXT, _completeness, _completeness_band)
 // ---------------------------------------------------------------------------
-const COMPLETENESS_TEXT = ["donor", "donor_category", "donor_website", "donor_founded",
-  "donor_general_email", "donor_main_phone", "donor_hq_country", "donor_hq_address",
-  "donor_linkedin_url", "donor_other_profile_urls", "donor_summary_description", "donor_mission",
-  "donor_vision", "donor_values", "donor_strategic_priorities", "donor_strategy_url",
-  "donor_award_low", "donor_award_high", "donor_total_annual_funding_global", "donor_total_awards",
-  "donor_total_funding_to_date", "donor_current_awards", "donor_past_awards", "donor_projected_budget",
-  "donor_funding_programs", "donor_in_scope", "donor_out_of_scope", "donor_direct_local_org_eligible",
-  "donor_active_route_status", "donor_prefinance_required", "donor_application_process",
-  "donor_funding_cycle", "donor_reporting_requirements", "donor_application_deadlines",
-  "donor_submission_portal_url", "donor_recent_activity", "donor_eligibility_notes",
-  "donor_selection_criteria", "donor_strategic_fit_notes", "donor_gaps_risks",
-  "donor_recommended_approach", "donor_verification_level", "donor_evidence_summary", "notes",
-  "donor_source_urls"];
-const COMPLETENESS_JSON = ["donor_funding_tiers_json", "donor_past_projects_json"];
+const COMPLETENESS_TEXT = V.completenessText;
+const COMPLETENESS_JSON = V.completenessJson;
 
 export function completeness(row: Donor, schema: Schema): { pct: number; have: number; total: number } {
   let have = 0;
@@ -330,11 +237,11 @@ export function completeness(row: Donor, schema: Schema): { pct: number; have: n
     total++;
     if (["yes", "no", "not_sure"].includes(String(row[c] ?? "").trim().toLowerCase())) have++;
   }
-  // Python's round() is banker's rounding; match it so both apps print the same percent.
-  const raw = total ? (100 * have) / total : 0;
-  const fl = Math.floor(raw);
-  const pct = raw - fl === 0.5 ? (fl % 2 === 0 ? fl : fl + 1) : Math.round(raw);
-  return { pct, have, total };
+  // Python's round() is half-to-EVEN, and JS's Math.round is half-up, so 12.5% has to
+  // land on 12 and not 13. pyRound is the shared implementation (and the only one that
+  // gets the near-tie cases right); this used to be a second hand-rolled copy of the
+  // rule, which is exactly how the two apps start disagreeing about a number.
+  return { pct: pyRound(total ? (100 * have) / total : 0), have, total };
 }
 
 export function completenessBand(pct: number): { label: string; color: string } {
