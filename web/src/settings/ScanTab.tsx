@@ -24,17 +24,20 @@
  *   Search          not a job at all: the search page already exists, and sending people
  *                   there keeps one search UI, one ranking and one place feedback lands.
  *
- * WHAT IS NOT HERE: the run-history panel. `_run_summary` in admin.py aggregates
- * `scan_logs` by `run_id`, with a timestamp-gap fallback for rows written before
- * migration 065 — its own piece of work, and the classic page still shows it. What this
- * page reports is the run IT started, from the job's own result.
+ * THE HISTORY PANEL reports the last run of each kind, summed over its source rows —
+ * `scan_logs` holds one per SOURCE per run. That grouping is on the server
+ * (api/scan_history.ts) and pinned against admin.py's own `_run_summary`, because
+ * getting it wrong produces a figure that is merely too big, and a too-big "found" on a
+ * scan panel does not look like a bug.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle, CheckCircle2, ExternalLink, FileSpreadsheet, PlayCircle, Radar, Search,
   Target,
 } from "lucide-react";
-import { startJob, type Job, type User } from "../api";
+import {
+  fetchScanHistory, startJob, type Job, type ScanHistory, type User,
+} from "../api";
 import { JOB_STATUS_LABEL, useJob } from "../jobs";
 import { hrefOf } from "../router";
 import { Badge, Button, Card, Eyebrow, LinkButton, Notice } from "../ui";
@@ -79,6 +82,7 @@ export default function ScanTab({ user }: { user: User }) {
               + "press joins the run already in flight.",
             ]}
             tone="warn"
+            history="extraction"
           />
         )}
 
@@ -98,6 +102,7 @@ export default function ScanTab({ user }: { user: User }) {
               "Opportunities it finds eligible land in this organisation's pipeline, "
               + "where the Screen tab picks them up.",
             ]}
+            history="screening"
           />
         )}
 
@@ -149,9 +154,11 @@ export default function ScanTab({ user }: { user: User }) {
  * shown as a warning, not a tick: in both cases the work did not fully happen, and in
  * both cases nothing is broken.
  */
-function Runner({ kind, icon, title, button, lead, notes, tone = "brand" }: {
+function Runner({ kind, icon, title, button, lead, notes, tone = "brand", history }: {
   kind: string; icon: React.ReactNode; title: string; button: string;
   lead: string; notes: string[]; tone?: "brand" | "warn";
+  /** Which half of scan_logs this control's runs appear in, when it has one. */
+  history?: "screening" | "extraction";
 }) {
   const [started, setStarted] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -238,6 +245,84 @@ function Runner({ kind, icon, title, button, lead, notes, tone = "brand" }: {
           )}
         </div>
       )}
+
+      {history && <History kind={history} />}
     </Card>
+  );
+}
+
+/**
+ * What the last run found.
+ *
+ * THE FIGURES ARE SUMS OVER A GROUP, not a row: `scan_logs` holds one row per SOURCE per
+ * run. The grouping lives on the server (api/scan_history.ts), where it is pinned against
+ * the Python, because getting it wrong produces a number that is merely too big — and a
+ * too-big "found" on a scan panel does not look like a bug, it looks like a good scan.
+ *
+ * `added` NULL IS PRINTED AS "not counted", never as zero. A run that predates migration
+ * 094, or an extract-only crawl that inserts nothing into any pipeline, recorded no
+ * count at all, and "added 0" would be a different claim.
+ */
+function History({ kind }: { kind: "screening" | "extraction" }) {
+  const [data, setData] = useState<ScanHistory | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    fetchScanHistory().then(setData).catch((e: unknown) =>
+      setError(e instanceof Error ? e.message : "Couldn't read the scan history."));
+  }, []);
+
+  if (error) return <Notice tone="warn" className="mt-4">{error}</Notice>;
+  if (!data) return null;
+  const side = data[kind];
+  if (!side.last) {
+    return (
+      <p className="mt-4 text-xs text-ink-500">
+        No {kind === "screening" ? "screening run" : "crawl"} recorded yet.
+      </p>
+    );
+  }
+  const r = side.last;
+  return (
+    <div className="mt-5 rounded-lg border border-ink-200 bg-ink-50 p-4">
+      <div className="text-[0.7rem] font-semibold tracking-[0.06em] text-ink-500 uppercase">
+        Last {kind === "screening" ? "screening run" : "crawl"}
+      </div>
+      <div className="mt-1 text-sm text-ink-700">
+        {r.ts} · started by {r.trigger} · {r.sources} source
+        {r.sources === 1 ? "" : "s"}
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Fig label="Found" value={r.found} />
+        <Fig label="New" value={r.new} />
+        <Fig
+          label="Added to the pipeline"
+          value={r.added === null ? null : r.added}
+          absent="not counted"
+        />
+        <Fig label="Rejected" value={r.rejected} />
+      </div>
+      {r.added === null && (
+        <p className="mt-2 text-xs text-ink-500">
+          This run did not record how many rows it added — either it predates that
+          counter, or it was a crawl, which inserts nothing into any pipeline.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Fig({ label, value, absent }: {
+  label: string; value: number | null; absent?: string;
+}) {
+  return (
+    <div>
+      <div className="text-[0.7rem] font-semibold tracking-[0.06em] text-ink-500 uppercase">
+        {label}
+      </div>
+      <div className={`mt-0.5 font-bold tabular-nums ${
+        value === null ? "text-base text-ink-400" : "text-2xl text-brand-700"}`}>
+        {value === null ? (absent ?? "—") : value.toLocaleString()}
+      </div>
+    </div>
   );
 }

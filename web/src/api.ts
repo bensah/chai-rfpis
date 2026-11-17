@@ -1434,6 +1434,27 @@ export type PlatformAnalytics = {
 
 export const fetchAnalytics = () => call<PlatformAnalytics>("/settings/analytics");
 
+// ── Settings → Manual Scan → history ─────────────────────────────────────────
+
+export type RunSummary = {
+  ts: string; trigger: string; found: number; new: number;
+  /** Null when NO row of the run recorded one — "did not count", not "counted zero". */
+  added: number | null;
+  rejected: number;
+  /** The source rows the run wrote, which is what the sums are over. */
+  sources: number;
+};
+
+export type ScanHistory = {
+  /** This organisation's own screening runs. */
+  screening: { last: RunSummary | null; recent: Record<string, unknown>[] };
+  /** Crawls of the shared store, which belong to no organisation. */
+  extraction: { last: RunSummary | null; recent: Record<string, unknown>[] };
+  matchLabel: string;
+};
+
+export const fetchScanHistory = () => call<ScanHistory>("/settings/scan-history");
+
 // ── Settings → Sources, Learning data, Suggestions ───────────────────────────
 //
 // The three DEVELOPER surfaces. What they have in common is what puts them together:

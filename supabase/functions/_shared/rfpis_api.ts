@@ -25,7 +25,7 @@ import { createDb, q } from "./api/db.ts";
 import { createMailer } from "./api/email.ts";
 import { createFormOptions } from "./api/form_options.ts";
 import { corsHeaders, gzipped, HttpError, json, withCors } from "./api/http.ts";
-import { isSuperUser, type PermUser } from "./api/permissions.ts";
+import { isAdmin, isSuperUser, type PermUser } from "./api/permissions.ts";
 import { createAuthRoutes, type AuthDeps } from "./api/routes_auth.ts";
 import { createJobRoutes, type Dispatch } from "./api/routes_jobs.ts";
 import { createPhase1Routes } from "./api/routes_phase1.ts";
@@ -40,7 +40,10 @@ import { createOrgRoutes } from "./api/routes_org.ts";
 import { createOrgSetupRoutes } from "./api/routes_org_setup.ts";
 import { createUserRoutes } from "./api/routes_users.ts";
 import { createRecordRoutes } from "./api/routes_records.ts";
-import { systemDiscoveryStats, tenantActivity, userStats } from "./api/analytics.ts";
+import {
+  MATCH_RUN_LABEL, systemDiscoveryStats, tenantActivity, userStats,
+} from "./api/analytics.ts";
+import { runSummary, splitHistory } from "./api/scan_history.ts";
 import { createPlatformRoutes } from "./api/routes_platform.ts";
 import { createScanPrefRoutes } from "./api/routes_scan_prefs.ts";
 import { createProfileRoutes } from "./api/routes_profile.ts";
@@ -242,6 +245,31 @@ export function createApi(env: Env, deps: Deps) {
         systemDiscoveryStats(db), tenantActivity(db), userStats(db),
       ]);
       return json({ discovery, tenants: tenantRows, users });
+    }
+
+    /**
+     * `GET /settings/scan-history` — what the last runs found.
+     *
+     * Admin-gated, tenant-scoped, and SPLIT: a screening run and a crawl answer different
+     * questions, and one list reports one as the other. The split is on `source`, whose
+     * screening value is MATCH_RUN_LABEL — owned by api/analytics.ts so the two readers
+     * of that constant stay one.
+     *
+     * 500 rows, newest first, as the Streamlit page reads: scan_logs is one row per
+     * SOURCE per run, so a few hundred rows is a handful of runs.
+     */
+    if (path === "/settings/scan-history" && m === "GET") {
+      if (!isAdmin(ctx.user as PermUser)) {
+        return json({ error: "Scan history is for administrators." }, 403);
+      }
+      const rows = await db.as(ctx.scope).get(
+        "scan_logs", "select=*&order=scan_date.desc&limit=500").catch(() => []);
+      const { screening, extraction } = splitHistory(rows, MATCH_RUN_LABEL);
+      return json({
+        screening: { last: runSummary(screening), recent: screening.slice(0, 50) },
+        extraction: { last: runSummary(extraction), recent: extraction.slice(0, 50) },
+        matchLabel: MATCH_RUN_LABEL,
+      });
     }
 
     if (path === "/settings/scan-prefs" && m === "GET") return scanPrefs.read(req, ctx);
