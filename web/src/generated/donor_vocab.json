@@ -200,6 +200,37 @@
   "notes",
   "donor_source_urls"
  ],
+ "conditionChoice": {
+  "donor_entity_type_required": [
+   "",
+   "grassroot_local",
+   "multi_country",
+   "individual"
+  ],
+  "donor_pi_country_scope": [
+   "",
+   "donor_in_scope",
+   "foreign"
+  ],
+  "donor_prior_beneficiary_rule": [
+   "",
+   "eligible",
+   "ineligible_current",
+   "ineligible_previous",
+   "ineligible_any"
+  ],
+  "donor_requires_pi": [
+   "",
+   "yes",
+   "no"
+  ],
+  "org_stage_required": [
+   "",
+   "any",
+   "early-stage",
+   "established"
+  ]
+ },
  "contact": [
   "donor_hq_address",
   "donor_hq_country",

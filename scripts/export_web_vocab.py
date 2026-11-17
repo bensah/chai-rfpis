@@ -34,6 +34,12 @@ def main() -> None:
         },
         "geo": {
             "options": list(geo.GEO_OPTIONS),
+            # GEO_OPTIONS is broad regions THEN countries, and the donor form
+            # needs them apart: HQ country offers countries only, while
+            # registration region offers both. Splitting it in the browser would
+            # mean knowing where the boundary falls.
+            "countries": list(geo.COUNTRIES),
+            "broad": list(getattr(geo, "BROAD_GEOGRAPHIES", []) or []),
             # lowercased region label -> lowercased member countries (geo.expand's table)
             "regionMembers": {k: [c.lower() for c in v] for k, v in geo._REGION_MEMBERS.items()},
         },

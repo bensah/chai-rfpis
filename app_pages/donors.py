@@ -900,7 +900,7 @@ def _edit_dialog(row: dict, *, suggest_mode: bool = False) -> None:
                 help="Countries the applicant may be HQ'd in — pick one or several, or "
                      "'Any' if HQ location is unrestricted. e.g. 'United States' for "
                      "US-501c3-only funders."))
-        _stage_opts2 = ["", "any", "early-stage", "established"]
+        _stage_opts2 = _df.CONDITION_CHOICE["org_stage_required"]
         _cur_st = str(row.get("org_stage_required") or "").strip()
         edited["org_stage_required"] = _hs2.selectbox(
             _label("org_stage_required"), _stage_opts2,
@@ -942,9 +942,9 @@ def _edit_dialog(row: dict, *, suggest_mode: bool = False) -> None:
         st.divider()
         st.markdown("**Who this funder will contract with** — leave any blank when the "
                     "funder's guidelines don't state it.")
-        _ent_opts = ["", "grassroot_local", "multi_country", "individual"]
+        _ent_opts = _df.CONDITION_CHOICE["donor_entity_type_required"]
         _cur_ent = str(row.get("donor_entity_type_required") or "").strip()
-        _req_pi_opts = ["", "yes", "no"]
+        _req_pi_opts = _df.CONDITION_CHOICE["donor_requires_pi"]
         _cur_rpi = str(row.get("donor_requires_pi") or "").strip().lower()
         _et1, _et2 = st.columns(2)
         edited["donor_entity_type_required"] = _et1.selectbox(
@@ -962,7 +962,7 @@ def _edit_dialog(row: dict, *, suggest_mode: bool = False) -> None:
         _broad_geo = list(getattr(_geo, "BROAD_GEOGRAPHIES", None)
                           or (list(getattr(_geo, "UN_REGIONS", []))
                               + list(getattr(_geo, "INCOME_TIERS", []))))
-        _pi_scope_opts = ["", "donor_in_scope", "foreign"]
+        _pi_scope_opts = _df.CONDITION_CHOICE["donor_pi_country_scope"]
         _cur_pis = str(row.get("donor_pi_country_scope") or "").strip()
         _rr1, _rr2 = st.columns(2)
         with _rr1:
@@ -988,8 +988,7 @@ def _edit_dialog(row: dict, *, suggest_mode: bool = False) -> None:
             key=f"maxpg_{ck}",
             help="Applicant ineligible if its LARGEST prior grant EXCEEDS this "
                  "(e.g. '500000'). A CEILING — distinct from the track-record floor.")
-        _pbr_opts = ["", "eligible", "ineligible_current", "ineligible_previous",
-                     "ineligible_any"]
+        _pbr_opts = _df.CONDITION_CHOICE["donor_prior_beneficiary_rule"]
         _cur_pbr = str(row.get("donor_prior_beneficiary_rule") or "").strip()
         edited["donor_prior_beneficiary_rule"] = _ps2.selectbox(
             _label("donor_prior_beneficiary_rule"), _pbr_opts,

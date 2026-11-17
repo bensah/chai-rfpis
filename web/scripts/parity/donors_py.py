@@ -54,6 +54,39 @@ from db.supabase_client import service_client                # noqa: E402
 
 from core import donor_fields as F                           # noqa: E402
 
+SRC = REPO_ROOT / "app_pages" / "donors.py"
+
+
+def edited_columns() -> list[str]:
+    """Every donor_intel column `_edit_dialog` writes, read out of its AST.
+
+    THE ONE THING THE REACT FORM CANNOT BE ALLOWED TO QUIETLY LACK. A field missing from
+    a form does not look like a bug — it looks like a donor nobody has filled in, and the
+    completeness percentage agrees with that reading. So the Streamlit dialog's field set
+    is extracted here and the React spec is compared against it, rather than both being
+    maintained by hand and drifting.
+
+    The dialog is parsed, never executed: it calls Streamlit at module scope.
+    """
+    import ast
+    tree = ast.parse(SRC.read_text(encoding="utf-8"), filename=str(SRC))
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "_edit_dialog"), None)
+    if fn is None:
+        raise SystemExit("_edit_dialog is gone from donors.py — this check needs rewriting")
+    cols = set()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Assign):
+            continue
+        for t in node.targets:
+            if (isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name)
+                    and t.value.id == "edited" and isinstance(t.slice, ast.Constant)):
+                cols.add(t.slice.value)
+    if not cols:
+        raise SystemExit("found no edited[...] columns — the dialog's shape changed")
+    return sorted(cols)
+
+
 
 def _namespace(columns: list[str]) -> dict:
     """The helpers, plus the DERIVED half computed over the columns actually read.
@@ -163,6 +196,7 @@ def main() -> None:
                      for h, t in ROUNDING_PROBES],
         # The derived half, emitted so a denominator mismatch is reported as what it is
         # rather than as every donor's percentage being wrong at once.
+        "editedColumns": edited_columns(),
         "flags": ns["_FLAGS"],
         "fit": ns["_FIT"],
     }, ensure_ascii=False, default=str))

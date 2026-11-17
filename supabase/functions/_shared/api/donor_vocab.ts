@@ -31,6 +31,14 @@ export const CONTACT_COLS: string[] = ["contact_name", "role_title", "email", "p
 /** Fixed enums. The leading "" is the unset option and must stay first. */
 export const CHOICE: Record<string, string[]> = {"donor_is_dual_role_implementer": ["", "yes", "no"], "donor_prefinance_required": ["", "none", "partial", "reimbursement_only"], "donor_verification_level": ["", "high", "medium", "low"]};
 
+/**
+ * The hard-eligibility enums. THE STORED VALUE IS THE KEY, not a label:
+ * core.criteria_derive matches "grassroot_local" and "ineligible_current" exactly, so a
+ * form that stored a prettified label would satisfy no rule and fail no rule — which
+ * reads as a donor with no eligibility conditions at all.
+ */
+export const CONDITION_CHOICE: Record<string, string[]> = {"donor_entity_type_required": ["", "grassroot_local", "multi_country", "individual"], "donor_pi_country_scope": ["", "donor_in_scope", "foreign"], "donor_prior_beneficiary_rule": ["", "eligible", "ineligible_current", "ineligible_previous", "ineligible_any"], "donor_requires_pi": ["", "yes", "no"], "org_stage_required": ["", "any", "early-stage", "established"]};
+
 /** Qualitative profile + hard eligibility conditions: VALUED text, never flags. */
 export const PROFILE: string[] = ["donor_founded", "donor_summary_description", "donor_mission", "donor_vision", "donor_values", "donor_strategy_url", "donor_total_awards", "donor_total_funding_to_date", "donor_current_awards", "donor_past_awards", "donor_projected_budget", "donor_projected_budget_period", "donor_funding_cycle", "donor_recent_activity", "donor_application_process", "donor_reporting_requirements", "donor_past_projects_json", "donor_strategic_priorities", "donor_in_scope", "donor_out_of_scope", "donor_selection_criteria", "donor_funding_programs", "donor_funding_tiers_json", "donor_eligibility_notes", "donor_application_deadlines", "donor_submission_portal_url", "donor_strategic_fit_notes", "donor_gaps_risks", "donor_recommended_approach", "donor_priority_ratings", "donor_funders_collaborators", "donor_hq_country_required", "org_stage_required", "donor_max_annual_budget", "donor_min_track_record", "donor_required_partner_type", "donor_required_partner_country", "donor_max_request_pct_of_budget", "donor_min_cofinancing_secured_pct", "donor_entity_type_required", "donor_registration_region", "donor_requires_pi", "donor_pi_country_scope", "donor_max_prior_grant", "donor_prior_beneficiary_rule", "donor_indirect_cost_max_pct", "donor_fund_use_conditions"];
 

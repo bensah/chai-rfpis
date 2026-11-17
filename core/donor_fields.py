@@ -364,6 +364,23 @@ CHOICE = {
     "donor_verification_level": ["", "high", "medium", "low"],
     "donor_is_dual_role_implementer": ["", "yes", "no"],
 }
+# The hard-eligibility enums (migrations 032 and 049). SEPARATE FROM `CHOICE` because
+# these columns are VALUED PROFILE fields, not flags — `CHOICE` doubles as part of the
+# NON_FLAG set, and adding these to it would be a no-op there but would change what
+# `flag_groups` is told about. They are a vocabulary the edit form needs, nothing more.
+#
+# THE STORED VALUES ARE THE KEYS, not the labels. `core.criteria_derive` matches on
+# "grassroot_local" and "ineligible_current" exactly; a form that stored "Grassroot
+# local" would satisfy no rule and fail no rule, which reads as a donor with no
+# eligibility conditions at all. The leading "" is the unset option and stays first.
+CONDITION_CHOICE = {
+    "org_stage_required": ["", "any", "early-stage", "established"],
+    "donor_entity_type_required": ["", "grassroot_local", "multi_country", "individual"],
+    "donor_requires_pi": ["", "yes", "no"],
+    "donor_pi_country_scope": ["", "donor_in_scope", "foreign"],
+    "donor_prior_beneficiary_rule": [
+        "", "eligible", "ineligible_current", "ineligible_previous", "ineligible_any"],
+}
 # Qualitative donor-intelligence profile (added to the edit form, migration 025).
 # Listed here so these columns are treated as free text — NOT flags — once they
 # exist in the table, and so the View / Share / PDF summaries include them.
