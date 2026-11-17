@@ -1508,6 +1508,20 @@ export type SuggestionsData = {
 export type ReviewQueued = { job_id: string; dispatched: boolean; detail: string };
 
 export const fetchSources = () => call<SourcesData>("/settings/sources");
+
+export type RegistryData = {
+  rows: Record<string, unknown>[];
+  canEdit: boolean;
+  counts: { total: number; unclassified: number; confirmed: number; inCatalogue: number };
+  /** What push_primaries will accept, said so the page does not have to guess. */
+  pushRule: string;
+};
+
+/** Every registry WRITE is queued: core/source_registry.py owns the rules. */
+export const fetchRegistry = () => call<RegistryData>("/settings/sources/registry");
+export const registryAction = (body: Record<string, unknown>) =>
+  post<{ job_id: string; dispatched: boolean; detail: string }>(
+    "/settings/sources/registry", body);
 export const saveBlockedTokens = (rows: { pattern: string; reason: string }[]) =>
   put<{ rows: { pattern: string; reason: string | null }[]; removed: number }>(
     "/settings/sources/blocked", { rows });

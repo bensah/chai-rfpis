@@ -136,6 +136,86 @@ export function createPlatformRoutes(db: Db, enqueue: Enqueue | null = null) {
     return json({ rows, removed: drop.length });
   }
 
+  /**
+   * `GET /settings/sources/registry` — every host the scanner has met.
+   *
+   * The READ is here because it is a select; every WRITE is a job, because
+   * `core/source_registry.py` owns a column whitelist, host normalisation from a URL,
+   * an upsert keyed on host and — `push_primaries` — a dedupe-by-host upsert into the
+   * catalogue every tenant's scan crawls. Four small rules scattered across two
+   * languages is worse than four small rules in the module named after them.
+   */
+  async function registry(_req: Request, ctx: Ctx): Promise<Response> {
+    const u = ctx.user as PermUser;
+    const isDev = await dev(ctx);
+    if (!isDeveloperMember(u, isDev)) {
+      return LOCKED("The source registry",
+        "It decides what every tenant's scan crawls, so it is managed from a developer "
+        + "tenant.");
+    }
+    const rows = await db.service.getAll("source_registry", "select=*", "host")
+      .catch(() => [] as Row[]);
+    // Newest contact first, which is the order somebody reviewing a registry wants: the
+    // hosts the scanner met most recently are the ones nobody has classified yet.
+    rows.sort((a, b) => str(b.last_seen).localeCompare(str(a.last_seen)));
+    return json({
+      rows,
+      canEdit: isDeveloperAdmin(u, isDev),
+      counts: {
+        total: rows.length,
+        unclassified: rows.filter((r) => !str(r.classification).trim()).length,
+        confirmed: rows.filter((r) => str(r.status).toLowerCase() === "confirmed").length,
+        inCatalogue: rows.filter((r) => r.in_catalogue).length,
+      },
+      // The three classifications `push_primaries` cares about, and what it will accept:
+      // it pushes ONLY a confirmed primary, which is the gate that keeps an unverified
+      // aggregator out of every tenant's scan list.
+      pushRule: "Only a host classified PRIMARY and marked CONFIRMED is pushed to the "
+        + "catalogue. Anything else is skipped and named.",
+    });
+  }
+
+  /** `POST /settings/sources/registry` — queue one registry write. */
+  async function registryAction(req: Request, ctx: Ctx): Promise<Response> {
+    const u = ctx.user as PermUser;
+    if (!isDeveloperAdmin(u, await dev(ctx))) {
+      return LOCKED("Editing the source registry",
+        "It decides what every tenant's scan crawls.");
+    }
+    if (!enqueue) return json({ error: "Background jobs are not configured." }, 503);
+
+    const p = (await body(req)) as Row;
+    const action = str(p.action).trim();
+    // Named here as well as in the runner: a request for an action this build does not
+    // know should be refused where somebody can read the refusal, not queued and then
+    // failed minutes later in a job row.
+    if (!["update", "add", "classify", "delete", "push"].includes(action)) {
+      return json({ error: `Unknown registry action "${action}".` }, 400);
+    }
+    const hosts = (Array.isArray(p.hosts) ? p.hosts : []).map((h) => str(h).trim())
+      .filter(Boolean);
+    if (["classify", "delete", "push"].includes(action) && !hosts.length) {
+      return json({ error: "Pick at least one host first." }, 400);
+    }
+
+    const queued = await enqueue("registry_action", {
+      action, hosts, host: str(p.host).trim(),
+      classification: str(p.classification).trim(),
+      status: str(p.status).trim() || "confirmed",
+      fields: (p.fields && typeof p.fields === "object" && !Array.isArray(p.fields))
+        ? p.fields : {},
+      by: str(ctx.user?.email),
+    }, ctx);
+    if (!queued) return json({ error: "Could not queue that." }, 500);
+    return json({
+      job_id: queued.id,
+      dispatched: queued.dispatched,
+      detail: queued.dispatched
+        ? "Queued. The registry's own rules decide what lands."
+        : "Queued, but no runner could be reached — nothing has changed yet.",
+    });
+  }
+
   // ── Learning data ──────────────────────────────────────────────────────────
 
   /**
@@ -236,5 +316,5 @@ export function createPlatformRoutes(db: Db, enqueue: Enqueue | null = null) {
     });
   }
 
-  return { sources, putBlocked, learning, suggestions, review };
+  return { sources, putBlocked, registry, registryAction, learning, suggestions, review };
 }

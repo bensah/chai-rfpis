@@ -19,6 +19,7 @@ import {
   type LearningData, type SourcesData, type SuggestionsData,
 } from "../api";
 import { Badge, Button, Card, Eyebrow, Notice, Spinner, fieldClass } from "../ui";
+import VerifyRegistry from "./VerifyRegistry";
 
 const s = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 const num = (n: number) => n.toLocaleString();
@@ -45,7 +46,7 @@ function useLoad<T>(fn: () => Promise<T>) {
 
 export function SourcesTab() {
   const { data, error, reload } = useLoad<SourcesData>(fetchSources);
-  const [tab, setTab] = useState<"Validated" | "Blocked">("Validated");
+  const [tab, setTab] = useState<"Validated" | "Verify Registry" | "Blocked">("Validated");
 
   if (error) return <Notice tone="bad">{error}</Notice>;
   if (!data) return <Spinner label="Loading the sources catalogue…" />;
@@ -53,7 +54,7 @@ export function SourcesTab() {
   return (
     <div>
       <div role="tablist" className="mb-4 flex flex-wrap gap-1">
-        {(["Validated", "Blocked"] as const).map((t) => (
+        {(["Validated", "Verify Registry", "Blocked"] as const).map((t) => (
           <button
             key={t} role="tab" aria-selected={t === tab} onClick={() => setTab(t)}
             className={`rounded-lg px-3.5 py-1.5 text-sm transition-colors ${
@@ -65,7 +66,9 @@ export function SourcesTab() {
         ))}
       </div>
 
-      {tab === "Validated" ? (
+      {tab === "Verify Registry" ? (
+        <VerifyRegistry />
+      ) : tab === "Validated" ? (
         <Card className="p-6">
           <div className="flex items-center gap-2.5">
             <Database className="h-5 w-5 text-accent-600" />
@@ -79,9 +82,9 @@ export function SourcesTab() {
           {data.note && <SharedNote>{data.note}</SharedNote>}
           <CatalogGrid rows={data.catalog} />
           <p className="mt-3 text-xs text-ink-500">
-            Adding a source, and classifying a host as an aggregator or a primary funder,
-            is still done on the classic Settings page under Verify Registry — it is a
-            judgement about a host rather than an edit to a row, with its own flow.
+            Sources arrive here from <strong>Verify Registry</strong>, where a host is
+            judged a primary funder rather than an aggregator and then pushed — a single
+            point of entry, so the catalogue only ever holds hosts somebody confirmed.
           </p>
         </Card>
       ) : (

@@ -284,6 +284,23 @@ const KINDS: Record<string, JobKind> = {
     group: (_c, _id, params) =>
       `create-user-${str(params?.email).trim().toLowerCase()}`,
   },
+
+  /**
+   * Settings → Sources → Verify Registry: one write to the shared source registry.
+   *
+   * DEVELOPER-TENANT ADMIN ONLY. The registry feeds `donor_sources`, the catalogue every
+   * tenant's scan crawls, so a client tenant's admin classifying a host — or pushing one
+   * into the scan list — changes what every other organisation sees.
+   *
+   * ONE GROUP FOR THE WHOLE REGISTRY, not one per host. The writes are upserts over a
+   * small shared table and `push_primaries` reads the WHOLE registry to dedupe by host;
+   * two of those running at once would each decide, from different snapshots, which
+   * catalogue row a host already owns.
+   */
+  registry_action: {
+    allowed: async (u, ctx) => isDeveloperAdmin(u, await ctx.homeIsDeveloper()),
+    group: () => "source-registry",
+  },
 };
 
 /**

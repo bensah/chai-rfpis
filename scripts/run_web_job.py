@@ -721,6 +721,92 @@ def _excel_sync(job: JobRow, params: dict, runner: str) -> dict:
     }
 
 
+def _registry_action(job: JobRow, params: dict, runner: str) -> dict:
+    """Settings → Sources → Verify Registry: one write to the shared source registry.
+
+    ONE JOB KIND FOR EVERY WRITE, rather than one route each. `core/source_registry.py`
+    owns rules that are small individually and awkward collectively: a column whitelist
+    on edits, host normalisation from a URL on adds, an upsert keyed on host, and —
+    `push_primaries` — a dedupe-by-host upsert into `donor_sources`, the catalogue EVERY
+    tenant's scan crawls. Porting four of those to TypeScript would scatter them; porting
+    none keeps the registry's rules in the module named after it.
+
+    The registry is also the right place for that trade. It is a developer surface used
+    occasionally, so the latency of a job costs nobody anything, while a second
+    implementation of `push_primaries` would quietly seed the scan list differently.
+
+    EVERY ACTION IS NAMED AND UNKNOWN ONES ARE REFUSED. The alternative — falling through
+    to a default — would turn a typo in a request into some other write on a shared
+    table.
+    """
+    from core import source_registry as reg
+
+    action = str(params.get("action") or "").strip()
+    by = str(params.get("by") or "").strip() or None
+    hosts = [str(h).strip() for h in (params.get("hosts") or []) if str(h).strip()]
+    fields = params.get("fields") if isinstance(params.get("fields"), dict) else {}
+
+    if action == "update":
+        host = str(params.get("host") or "").strip()
+        if not host:
+            raise ValueError("registry update needs a host")
+        job.progress(40, f"Saving {host}")
+        ok = reg.update_row(host, fields, by=by)
+        return {"ok": bool(ok), "host": host,
+                "summary": f"Saved {host}." if ok else f"Nothing saved for {host}."}
+
+    if action == "add":
+        target = str(params.get("host") or "").strip()
+        if not target:
+            raise ValueError("registry add needs a host or URL")
+        job.progress(40, f"Adding {target}")
+        ok, message = reg.add_row(target, fields, by=by)
+        return {"ok": bool(ok), "host": target, "summary": message}
+
+    if action == "classify":
+        classification = str(params.get("classification") or "").strip()
+        status = str(params.get("status") or "confirmed").strip() or "confirmed"
+        if not hosts or not classification:
+            raise ValueError("registry classify needs hosts and a classification")
+        job.progress(40, f"Classifying {len(hosts)} host(s)")
+        done = sum(1 for h in hosts
+                   if reg.set_classification(h, classification, status=status, by=by))
+        return {"ok": done == len(hosts), "done": done, "total": len(hosts),
+                "summary": f"Marked {done} of {len(hosts)} host(s) as "
+                           f"{classification} / {status}."}
+
+    if action == "delete":
+        if not hosts:
+            raise ValueError("registry delete needs hosts")
+        job.progress(40, f"Deleting {len(hosts)} host(s)")
+        n = reg.delete_hosts(hosts)
+        return {"ok": n > 0, "done": n, "total": len(hosts),
+                "summary": f"Deleted {n} host(s) from the registry."}
+
+    if action == "push":
+        if not hosts:
+            raise ValueError("registry push needs hosts")
+        job.progress(40, f"Pushing {len(hosts)} host(s) to the catalogue")
+        res = reg.push_primaries(hosts, by=by) or {}
+        added = list(res.get("added") or [])
+        updated = list(res.get("updated") or [])
+        skipped = [list(x) for x in (res.get("skipped") or [])]
+        job.progress(100, "Pushed")
+        return {
+            "ok": not res.get("error"), "added": added, "updated": updated,
+            "skipped": skipped, "error": res.get("error"),
+            # SKIPPED IS NOT A FAILURE and the wording has to say so: push_primaries
+            # refuses anything that is not a CONFIRMED PRIMARY, which is the gate that
+            # keeps an unverified aggregator out of every tenant's scan list.
+            "summary": (f"{len(added)} added and {len(updated)} updated in the "
+                        f"catalogue"
+                        + (f"; {len(skipped)} skipped as not a confirmed primary."
+                           if skipped else ".")),
+        }
+
+    raise ValueError(f"registry_action: unknown action {action!r}")
+
+
 def _create_user(job: JobRow, params: dict, runner: str) -> dict:
     """Settings → Accounts → Users: create one invited account.
 
@@ -889,6 +975,8 @@ KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "suggestion_review": _suggestion_review,
     # Settings → Accounts → Users: an invited account, which also creates tenants.
     "create_user": _create_user,
+    # Settings → Sources → Verify Registry: every write to the shared registry.
+    "registry_action": _registry_action,
 }
 
 
