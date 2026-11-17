@@ -24,9 +24,9 @@
  * names the fields that did not land, and this page shows that message as-is rather than
  * a cheerful "Saved" — the Streamlit page learnt the same lesson the same way.
  *
- * SCAN PREFERENCES is the fourth Streamlit tab and is NOT here yet: it writes its own
- * store (core/policies.py — countries, themes, criteria terms, search terms, currency)
- * and is its own piece of work. The tab says so rather than rendering an empty shell.
+ * SCAN PREFERENCES is the fourth tab and lives in its own file: it writes three stores
+ * of its own (core/policies.py, the search pivots and the currency table) rather than the
+ * two blobs on the tenant row, and two of those three are deployment-wide.
  */
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -37,6 +37,7 @@ import {
   type OrgPartner, type OrgSetup, type SetupOptions, type Warning,
 } from "../api";
 import MultiSelect from "../components/MultiSelect";
+import ScanPrefsTab from "./ScanPrefsTab";
 import { Choice, Lbl, Num, Row, Text } from "../opportunity/controls";
 import {
   Badge, Button, Card, Eyebrow, Notice, Select, Spinner, fieldClass,
@@ -200,7 +201,7 @@ export default function SetupTab() {
         {tab === "Profile" && <ProfileTab data={data} onSaved={setData} />}
         {tab === "Bid Fitness" && <FitTab data={data} onSaved={setData} />}
         {tab === "Team Members" && <TeamTab data={data} onSaved={setData} />}
-        {tab === "Scan Preferences" && <ScanPrefsPlaceholder />}
+        {tab === "Scan Preferences" && <ScanPrefsTab />}
       </div>
     </div>
   );
@@ -746,26 +747,6 @@ function TeamTab({ data, onSaved }: { data: OrgSetup; onSaved: (d: OrgSetup) => 
           return r;
         })}
       />
-    </Card>
-  );
-}
-
-// ── Tab 4: not yet ───────────────────────────────────────────────────────────
-
-function ScanPrefsPlaceholder() {
-  return (
-    <Card className="max-w-3xl p-6">
-      <Eyebrow>Scan preferences</Eyebrow>
-      <p className="mt-1 text-sm leading-relaxed text-ink-600">
-        Eligible countries and themes, the per-criterion keyword terms, the search-term
-        library and the currency table. These write their own store rather than the
-        organization record, so they are a separate piece of this port and are still on
-        the classic Settings page.
-      </p>
-      <Notice tone="brand" className="mt-4">
-        Nothing here is read-only elsewhere — the classic page remains the editor for
-        these four until this tab lands, and both apps write the same rows.
-      </Notice>
     </Card>
   );
 }

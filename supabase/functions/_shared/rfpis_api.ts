@@ -42,6 +42,7 @@ import { createUserRoutes } from "./api/routes_users.ts";
 import { createRecordRoutes } from "./api/routes_records.ts";
 import { systemDiscoveryStats, tenantActivity, userStats } from "./api/analytics.ts";
 import { createPlatformRoutes } from "./api/routes_platform.ts";
+import { createScanPrefRoutes } from "./api/routes_scan_prefs.ts";
 import { createProfileRoutes } from "./api/routes_profile.ts";
 import { createSearchRoutes } from "./api/routes_search.ts";
 import { createSubmitRoutes } from "./api/routes_submit.ts";
@@ -112,6 +113,9 @@ export function createApi(env: Env, deps: Deps) {
   // Settings → Sources, Learning data and Suggestions: the three surfaces whose
   // resources belong to every tenant, so none is scoped to the viewer's own.
   const platform = createPlatformRoutes(db, jobs.enqueue);
+  // Settings → Setup → Scan Preferences. Three stores, because the policy is
+  // tenant-scoped and the search terms and currency table are not.
+  const scanPrefs = createScanPrefRoutes(db);
   // Profile: self-service only, and every route keyed on the session's own id.
   const profile = createProfileRoutes(db, deps);
 
@@ -237,6 +241,11 @@ export function createApi(env: Env, deps: Deps) {
       ]);
       return json({ discovery, tenants: tenantRows, users });
     }
+
+    if (path === "/settings/scan-prefs" && m === "GET") return scanPrefs.read(req, ctx);
+    if (path === "/settings/scan-prefs/policies" && m === "PUT") return scanPrefs.putPolicies(req, ctx);
+    if (path === "/settings/scan-prefs/search-terms" && m === "PUT") return scanPrefs.putSearchTerms(req, ctx);
+    if (path === "/settings/scan-prefs/currencies" && m === "PUT") return scanPrefs.putCurrencies(req, ctx);
 
     if (path === "/settings/sources" && m === "GET") return platform.sources(req, ctx);
     if (path === "/settings/sources/blocked" && m === "PUT") return platform.putBlocked(req, ctx);

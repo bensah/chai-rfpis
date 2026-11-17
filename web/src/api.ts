@@ -1462,6 +1462,48 @@ export const approveSuggestion = (id: string) =>
 export const rejectSuggestion = (id: string, note?: string) =>
   post<ReviewQueued>(`/settings/suggestions/${encodeURIComponent(id)}/reject`, { note });
 
+// ── Settings → Setup → Scan Preferences ──────────────────────────────────────
+//
+// Three stores, because that is where the data lives: the policy is TENANT-scoped and
+// the search terms and the currency table are deployment-wide. That split is
+// core/settings._TENANT_SCOPED_KEYS, not a choice made in the client.
+
+export type CurrencyRow = {
+  code: string; label: string; symbol: string | null;
+  /** How "£" or "FCFA" in a call's text is matched to a rate. Dropping them kills that. */
+  aliases: string[];
+  usd_rate: number;
+};
+
+export type ScanPrefs = {
+  /** The stored document — what the editor edits. An empty scope stays visibly empty. */
+  stored: Record<string, unknown>;
+  /** What the scan gates on TODAY, profile seeding included. */
+  effective: { countries: { eligible: string[]; broad_terms: string[] };
+               themes: { required_any: string[] } };
+  /** True where the effective scope came from the profile rather than the document. */
+  seeded: { countries: boolean; themes: boolean };
+  searchTerms: string[];
+  currencies: CurrencyRow[];
+  options: {
+    countries: string[]; geoOptions: string[];
+    criteria: string[]; criterionLabels: Record<string, string>;
+  };
+  /** A stored policy that would not parse — the scan is running on no rules at all. */
+  policyParseError: boolean;
+  globalKeys: string[];
+};
+
+export const fetchScanPrefs = () => call<ScanPrefs>("/settings/scan-prefs");
+export const saveScanPolicies = (form: Record<string, unknown>) =>
+  put<{ policy: Record<string, unknown>; seeded: boolean; detail: string }>(
+    "/settings/scan-prefs/policies", form);
+export const saveSearchTerms = (terms: string[]) =>
+  put<{ terms: string[]; detail: string }>("/settings/scan-prefs/search-terms", { terms });
+export const saveCurrencies = (rows: CurrencyRow[]) =>
+  put<{ rows: CurrencyRow[]; dropped: number; detail: string }>(
+    "/settings/scan-prefs/currencies", { rows });
+
 export const fetchSetup = () => call<OrgSetup>("/settings/setup");
 export const saveSetupIdentity = (form: Record<string, unknown>) =>
   put<SetupSaved>("/settings/setup/identity", form);
