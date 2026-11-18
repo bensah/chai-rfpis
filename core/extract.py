@@ -530,7 +530,22 @@ def build_record(candidate: dict[str, Any], policies: dict[str, Any], *,
         "content_hash": hashlib.sha1(blob.encode("utf-8")).hexdigest(),
         "extraction_confidence": overall_conf,
         "field_provenance": prov,
-        "solicitation_language": "English",
+        # A HANDLER THAT KNOWS THE LANGUAGE SAYS SO; English is only the default.
+        #
+        # This was the literal string "English" on every row ever written, which
+        # made the column a decoration: it was 100% populated and 100% unverified.
+        # TED proves it wrong at scale — it publishes a description in the
+        # language of the contracting country and translates only the title, so of
+        # 25 health notices probed exactly one was English, and all 25 were filed
+        # as English. A reviewer opening "Application language: English" on a
+        # German tender has been told something untrue by the record.
+        #
+        # English remains the fallback because most sources in the catalogue are
+        # genuinely English and nothing else currently reports a language — but it
+        # is now a default that a handler can correct, not an assertion.
+        "solicitation_language": (str(candidate.get("solicitation_language")).strip()
+                                  if str(candidate.get("solicitation_language") or "").strip()
+                                  else "English"),
     }
 
     # THE DETERMINISTIC PASS RUNS HERE, ON THE WAY IN.
