@@ -15,7 +15,7 @@
  * rather than quietly picking one, because a reader who adds the by-funder column up and
  * compares it to the headline deserves to find out why they differ from the page itself.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { field, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Briefcase, ChevronLeft, ChevronRight, ExternalLink, RotateCw, Search,
 } from "lucide-react";
@@ -23,7 +23,7 @@ import {
   ApiError, fetchGrants, type Grants, type GrantSelection, type GrantWindow,
 } from "../api";
 import { hrefOf, Link } from "../router";
-import { Badge, Card, EmptyState, Notice, PageHeader, Select, Spinner, fieldClass } from "../ui";
+import { Badge, Card, EmptyState, Notice, PageHeader, Select, Spinner, field } from "../ui";
 import { DataTable, fmtInt, fmtUsd, Tile, Tiles } from "../report/charts";
 
 const dash = "—";
@@ -332,7 +332,7 @@ export default function GrantsPage() {
             <Search size={14} aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-400" />
             <input value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }}
               placeholder="Find a funder" aria-label="Find a funder"
-              className={`${fieldClass} w-56 pl-8`} />
+              className={field("w-56 pl-8")} />
           </label>
         </div>
 

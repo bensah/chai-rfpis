@@ -23,7 +23,7 @@
  * the wait, the sort and which period the row falls in. A patched row would sit there
  * claiming a state it had just left.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { field, fieldClass, useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CalendarClock, Hourglass, Send } from "lucide-react";
 import {
   fetchSubmitted, saveRfpFields, type Submitted, type SubmittedRow, type Warning,
@@ -31,7 +31,7 @@ import {
 import OpportunityCell from "../opportunity/OpportunityCell";
 import RfpEditor from "../opportunity/RfpEditor";
 import { atGrain, labelOf, rangeOf, type Period } from "./period";
-import { Badge, Button, Card, EmptyState, Notice, Select, Spinner, fieldClass } from "../ui";
+import { Badge, Button, Card, EmptyState, Notice, Select, Spinner, field, fieldClass } from "../ui";
 
 /** config/dropdowns.yaml's `donor_decision`. The API pins the same list against that file
  *  (pipeline_writes.ts::DONOR_DECISIONS) but does not REFUSE anything outside it — live
@@ -394,7 +394,7 @@ function SubmissionDetail({ row, saving, onSave }: {
               <span className="mb-1 block">Amount secured</span>
               <input value={amount} onChange={(e) => setAmount(e.target.value)}
                 inputMode="decimal" placeholder="optional"
-                className={`${fieldClass} w-36 py-1.5`} />
+                className={field("w-36 py-1.5")} />
             </label>
             <label className="text-xs font-medium text-ink-700">
               <span className="mb-1 block">Currency</span>
@@ -406,7 +406,7 @@ function SubmissionDetail({ row, saving, onSave }: {
             <label className="text-xs font-medium text-ink-700">
               <span className="mb-1 block">Approved on</span>
               <input type="date" value={on} onChange={(e) => setOn(e.target.value)}
-                className={`${fieldClass} w-40 py-1.5`} />
+                className={field("w-40 py-1.5")} />
             </label>
             <Button size="sm" busy={saving}
               onClick={() => onSave(row.uid, {
@@ -434,7 +434,7 @@ function SubmissionDetail({ row, saving, onSave }: {
           </p>
           <div className="mt-3 flex flex-wrap items-end gap-3">
             <input type="date" value={sentOn} onChange={(e) => setSentOn(e.target.value)}
-              aria-label="Date submitted" className={`${fieldClass} w-40 py-1.5`} />
+              aria-label="Date submitted" className={field("w-40 py-1.5")} />
             <Button size="sm" disabled={saving || !sentOn}
               onClick={() => onSave(row.uid, { date_completed: sentOn })}>
               Record the date

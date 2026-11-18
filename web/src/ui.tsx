@@ -140,9 +140,47 @@ export function Notice({ tone = "neutral", icon, className = "", children, ...re
 
 // ── Form controls ────────────────────────────────────────────────────────────
 
-export const fieldClass =
-  "w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm text-ink-800 placeholder:text-ink-400 " +
+const FIELD_BASE =
+  "rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm text-ink-800 placeholder:text-ink-400 " +
   "transition-colors outline-none focus:border-accent-600 focus:ring-2 focus:ring-accent-600/15 disabled:bg-ink-50";
+
+/**
+ * A width the CALLER is supplying — any `w-…` except `w-full` itself.
+ *
+ * `min-w-` and `max-w-` are deliberately NOT matched: they are different properties, they
+ * coexist with `w-full` happily, and every caller passing one today means it.
+ *
+ * A responsive-only width (`lg:w-72` with no base width) is also not matched, because the
+ * `w-` there is preceded by `:` rather than a boundary. Such a caller still loses to
+ * `w-full` — none exists today, and the fix is to pass a base width alongside it.
+ */
+const OWN_WIDTH = /(?:^|\s)w-(?!full\b)[\w./[\]%-]+/;
+
+/**
+ * The input/select skin, with `w-full` UNLESS you are supplying your own width.
+ *
+ * THE TRAP THIS EXISTS TO CLOSE. `fieldClass` used to begin `w-full`, and every caller
+ * wrote the skin and a width into one class string, expecting the later class to win.
+ * It does not:
+ * Tailwind resolves two utilities of equal specificity by their order in the GENERATED
+ * STYLESHEET, not by their order in the attribute, and `w-full` is emitted after the
+ * numeric widths and after `w-auto`. Measured on this stylesheet: `w-full w-56` renders
+ * 750px in a 750px container, `w-56` alone renders 224px.
+ *
+ * So twenty call sites across nine files had been silently full width — the header search
+ * box, the date cells in Submitted, the currency table in Scan preferences, the Records
+ * and Tenants selects, and the four Triage filters that prompted the hunt. Nothing looked
+ * broken enough to report; it just looked like nobody had styled those pages.
+ *
+ * Callers that pass no width are unchanged, which is why `fieldClass` can still be a
+ * plain string: it is this function with no argument.
+ */
+export function field(extra = ""): string {
+  const base = OWN_WIDTH.test(extra) ? FIELD_BASE : `w-full ${FIELD_BASE}`;
+  return extra ? `${base} ${extra}` : base;
+}
+
+export const fieldClass = field();
 
 export function Field({ id, label, hint, children, ...rest }: {
   id: string; label: string; hint?: string; children?: ReactNode;
@@ -157,7 +195,10 @@ export function Field({ id, label, hint, children, ...rest }: {
 }
 
 export function Select({ className = "", ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select className={`${fieldClass} ${className}`} {...rest} />;
+  // `field`, not `${fieldClass} ${className}` — see the note on `field`. Written the old
+  // way, a caller's `w-auto` or `w-24` lost to fieldClass's own `w-full` and every select
+  // that tried to size itself rendered full width.
+  return <select className={field(className)} {...rest} />;
 }
 
 // ── States ───────────────────────────────────────────────────────────────────

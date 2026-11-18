@@ -11,7 +11,7 @@
  * notifications with an unread count, the account menu, the tenant identity,
  * the super_user view-as banner, breadcrumbs and the version footer.
  */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { field, fieldClass, type ReactNode, useCallback, useEffect, useState } from "react";
 import {
   Bell, ChevronsLeft, ChevronsRight, Eye, HelpCircle, LogOut, Menu, Search, Settings, User as UserIcon, X,
 } from "lucide-react";
@@ -23,7 +23,7 @@ import { NAV_ICON } from "./navIcons";
 import Popover from "./Popover";
 import HowToUse from "./HowToUse";
 import { fmtDay, fmtScan, nextScheduledScan, relativeTime } from "./time";
-import { Badge, Button, IconButton, Notice, fieldClass } from "../ui";
+import { Badge, Button, IconButton, Notice, field, fieldClass } from "../ui";
 
 export const APP_NAME = "RFP Intelligence System";
 export const APP_SHORT = "RFPIS";
@@ -422,7 +422,7 @@ function QuickSearch() {
         <input
           value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search"
           placeholder="Search pages, opportunities, donors…"
-          className={`${fieldClass} h-9 w-56 bg-ink-50 py-0 pl-9 lg:w-72`}
+          className={field("h-9 w-56 bg-ink-50 py-0 pl-9 lg:w-72")}
         />
       </form>
       <div className="md:hidden">
