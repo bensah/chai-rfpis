@@ -16,7 +16,7 @@
  * second grid over the same rows. "Extracted Solicitations" is the global raw store, and
  * it is read-only because a scan is what writes it.
  */
-import { useEffect, useMemo, useState } from "react";
+import { field, fieldClass, useEffect, useMemo, useState } from "react";
 import { Database, ExternalLink, Pencil, Save, Search, Trash2, X } from "lucide-react";
 import {
   deleteRecord, fetchRecords, saveRecord,
@@ -24,7 +24,7 @@ import {
 } from "../api";
 import { hrefOf } from "../router";
 import {
-  Badge, Button, Card, Eyebrow, LinkButton, Notice, Select, Spinner, fieldClass,
+  Badge, Button, Card, Eyebrow, LinkButton, Notice, Select, Spinner, field, fieldClass,
 } from "../ui";
 
 type Row = Record<string, unknown>;
@@ -353,7 +353,7 @@ function DateBox({ label, value, onChange }: {
   return (
     <div>
       <div className="mb-1 text-xs font-medium text-ink-600">{label}</div>
-      <input type="date" className={`${fieldClass} w-auto`} value={value}
+      <input type="date" className={field("w-auto")} value={value}
         aria-label={label} onChange={(e) => onChange(e.target.value)} />
     </div>
   );

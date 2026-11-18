@@ -6,13 +6,13 @@
  * a grain and stepping through it is the common case; the explicit range is there for the
  * questions a calendar grain cannot phrase ("the three weeks around the deadline").
  */
-import { useState } from "react";
+import { field, useState } from "react";
 import { CalendarRange, ChevronLeft, ChevronRight } from "lucide-react";
 import {
   atGrain, canGoForward, GRAINS, labelOf, periodOf, rangeOf, shift, today,
   type Period,
 } from "./period";
-import { Button, IconButton, fieldClass } from "../ui";
+import { Button, IconButton, field } from "../ui";
 
 export default function PeriodPicker({ value, onChange, right }: {
   value: Period; onChange: (p: Period) => void; right?: React.ReactNode;
@@ -99,12 +99,12 @@ function CustomRange({ value, onChange }: { value: Period; onChange: (p: Period)
       <label className="text-sm">
         <span className="mb-1 block font-medium text-ink-700">From</span>
         <input type="date" value={from} max={until} onChange={(e) => setFrom(e.target.value)}
-          className={`${fieldClass} w-auto`} />
+          className={field("w-auto")} />
       </label>
       <label className="text-sm">
         <span className="mb-1 block font-medium text-ink-700">To</span>
         <input type="date" value={until} min={from} onChange={(e) => setUntil(e.target.value)}
-          className={`${fieldClass} w-auto`} />
+          className={field("w-auto")} />
       </label>
       <Button
         variant="primary" disabled={bad}

@@ -18,7 +18,7 @@
  * not tenant-scoped — one deployment, one exchange-rate table — and each says so next to
  * its own button rather than relying on a reader to know.
  */
-import { useEffect, useMemo, useState } from "react";
+import { field, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, Ban, CheckCircle2, Coins, Globe2, Plus, Save, Search, Tags, Trash2,
 } from "lucide-react";
@@ -27,7 +27,7 @@ import {
   type CurrencyRow, type ScanPrefs,
 } from "../api";
 import MultiSelect from "../components/MultiSelect";
-import { Button, Card, Eyebrow, Notice, Spinner, fieldClass } from "../ui";
+import { Button, Card, Eyebrow, Notice, Spinner, field } from "../ui";
 
 type Json = Record<string, unknown>;
 const s = (v: unknown) => (v === null || v === undefined ? "" : String(v));
@@ -350,17 +350,17 @@ function Currencies({ data, onSaved }: { data: ScanPrefs; onSaved: () => void })
             {rows.map((r, i) => (
               <tr key={i} className="align-top">
                 <td className="px-3 py-2">
-                  <input className={`${fieldClass} w-24 font-mono`} value={r.code}
+                  <input className={field("w-24 font-mono")} value={r.code}
                     aria-label={`Code ${i + 1}`}
                     onChange={(e) => edit(i, { code: e.target.value })} />
                 </td>
                 <td className="px-3 py-2">
-                  <input className={`${fieldClass} w-28`} value={r.label}
+                  <input className={field("w-28")} value={r.label}
                     aria-label={`Label ${i + 1}`}
                     onChange={(e) => edit(i, { label: e.target.value })} />
                 </td>
                 <td className="px-3 py-2">
-                  <input className={`${fieldClass} w-20`} value={s(r.symbol)}
+                  <input className={field("w-20")} value={s(r.symbol)}
                     aria-label={`Symbol ${i + 1}`}
                     onChange={(e) => edit(i, { symbol: e.target.value || null })} />
                 </td>
@@ -373,7 +373,7 @@ function Currencies({ data, onSaved }: { data: ScanPrefs; onSaved: () => void })
                 <td className="px-3 py-2">
                   <input
                     type="number" step="0.0001" min="0.0001"
-                    className={`${fieldClass} w-28 tabular-nums`} value={r.usd_rate}
+                    className={field("w-28 tabular-nums")} value={r.usd_rate}
                     aria-label={`USD rate ${i + 1}`}
                     onChange={(e) => edit(i, { usd_rate: Number(e.target.value) })}
                   />
