@@ -78,19 +78,16 @@ answer the co-financing question at all.
 
 ### Before → after
 
-The code is merged; **the backfill over stored rows has not been applied** (a write
-to the shared production database needs the owner). These are its dry-run figures,
-which are exact — the same function, over the same rows:
-
-```bash
-python scripts/backfill_field_extract.py --table catalog          # dry run
-python scripts/backfill_field_extract.py --table catalog --apply  # the owner's call
-```
+**Applied to the live catalogue on 2026-11-18**, with the owner's go-ahead: 1463 of
+1687 rows updated. One row lost its connection mid-write; a second pass picked it
+up and wrote nothing to the other 1686, which is the blanks-only rule holding.
+Both figures below are MEASURED before and after the write, not projected — they
+match the dry run to a tenth of a point.
 
 | | before | after | |
 |---|---|---|---|
-| catalog | 41.6% | **48.2%** | +6.6 pts, 1463 of 1687 rows updated |
-| pipeline | 48.2% | **51.1%** | +3.0 pts |
+| catalog | 41.6% | **48.3%** | +6.6 pts, 1463 of 1687 rows updated |
+| pipeline | 48.2% | **51.1%** | +3.0 pts, 1 row now at ≥80% |
 
 | field | before | after |
 |---|---|---|
@@ -101,7 +98,7 @@ python scripts/backfill_field_extract.py --table catalog --apply  # the owner's 
 | `resource_links` | 18.8% | 40.5% |
 | `what_is_not_funded` | 4.7% | 23.0% |
 | `attachments` | 1.9% | 13.3% |
-| `total_program_funding` | 0.0% | 10.3% |
+| `total_program_funding` | 0.0% | 10.2% |
 | `eligibility_applicant_types` | 27.7% | 34.5% |
 | `project_duration` | 1.9% | 8.4% |
 | `call_award_ceiling` | 0.8% | 1.8% |
@@ -111,8 +108,14 @@ python scripts/backfill_field_extract.py --table catalog --apply  # the owner's 
 | `expected_awards` | 0.0% | 0.4% |
 | `eligibility_countries` | 7.1% | 7.4% |
 
-Also written: `donor_key` / `donor_intel_id` on 176 rows, which are NULL on all
-1687 today. The scorer already resolves the donor by funder name on every pass; the
+On the opportunity the owner opened to show the problem — AS-261113-143730, the
+FCDO SRHR call — the page gained three blocks that had been empty: how to submit
+("Online portal: SmartSimple (queries: rcc@3ieimpact.org)"), who may apply (NGO /
+non-profit, university / research institute, private company, consortium) and the
+call's exclusions. Its coverage is 19 of 41.
+
+Also written: `donor_key` / `donor_intel_id` on 176 rows, which were NULL on all
+1687. The scorer already resolves the donor by funder name on every pass; the
 row has never recorded which donor it resolved to, so nothing downstream can audit
 why MUST-5 activated. Exact matching only — `core/donor_intel.py` says why the
 fuzzy fallback (which would reach 37.3% of rows) is the wrong trade on a gate path.

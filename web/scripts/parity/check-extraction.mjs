@@ -46,16 +46,21 @@ const python = process.env.RFPIS_PYTHON
 // THE FLOOR, and why it is set where it is.
 //
 // Measured 2026-11-18 over 1687 live catalogue rows: 41.6% of the 41-field schema, 0 rows
-// at the owner's 80% bar. `scripts/backfill_field_extract.py` lifts that to a projected
-// 48.2% once it is applied, and the deterministic pass now runs inside extraction so new
-// rows arrive with those fields.
+// at the owner's 80% bar. `scripts/backfill_field_extract.py` was applied the same day and
+// the measurement then read 48.3%, matching its dry run to a tenth of a point. The
+// deterministic pass also runs inside extraction, so new rows arrive with those fields.
 //
-// The floor is 40.0 rather than either of those figures, deliberately. It has to pass
-// BEFORE the backfill is applied (it has not been — a write to the shared production
-// database needs the owner), and it is a REGRESSION guard, not a target: its job is to fail
-// when a change stops filling fields, not to encode the number of the day. Raise it after
-// the backfill lands, to a point or two under whatever the measurement then reports.
-const COVERAGE_FLOOR = 40.0;
+// The floor is a point under that, not at it. It is a REGRESSION guard rather than a
+// target: its job is to fail when a change stops filling fields, and a floor set exactly
+// at the current reading would go red on the ordinary churn of the catalogue — a week of
+// thin new rows moves the average without anything being wrong.
+//
+// It is NOT the owner's 80%, and should not be raised towards it on principle. Seven of
+// the 41 fields name facts the sources do not publish (measured — see
+// `measure_extraction_coverage.py --availability` and docs/EXTRACTION_COVERAGE_REPORT.md),
+// which caps this number around 83% even if everything else were perfect. Raise the floor
+// when a change earns it, and say in the commit which change.
+const COVERAGE_FLOOR = 47.0;
 
 let diffs = 0, checks = 0;
 const ok = (label, cond, detail = "") => {
