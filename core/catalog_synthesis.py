@@ -742,7 +742,41 @@ def synthesize_row(row: dict, *, html: str | None = None) -> dict:
         return out
     parsed = _parse_json(raw)
     if not parsed:
-        log.info("catalog_synthesis non-JSON for %s: %r", row.get("uid"), raw[:200])
+        # ONE RETRY, because a dropped answer is now permanent.
+        #
+        # A reply that does not parse used to cost the row its synthesis silently
+        # — logged at INFO, which nothing watches — and a later backfill picked it
+        # up. Under the owner's rule of 2026-11-19 there is no later: the row is
+        # written once and never revisited, so a single flaky reply means that
+        # call has no overview for good.
+        #
+        # Seen on a live TED notice: the same row, the same prompt, the same model
+        # produced an unusable reply on one attempt and five clean fields on the
+        # next. That is the whole case for retrying — not a model that cannot do
+        # the job, a reply that happened to come back malformed.
+        #
+        # Exactly one retry, at temperature 0. The first attempt runs warm so the
+        # prose varies between calls; if that produced something unparseable, the
+        # variation is not what is wanted on the way back.
+        log.info("catalog_synthesis non-JSON for %s, retrying once: %r",
+                 row.get("uid"), raw[:200])
+        try:
+            _CALLS += 1
+            resp = _client().chat.completions.create(
+                model=_model(),
+                messages=[{"role": "system", "content": _SYSTEM},
+                          {"role": "user", "content": prompt}],
+                temperature=0, max_tokens=_MAX_OUTPUT_TOKENS)
+            raw = (resp.choices[0].message.content or "") if resp.choices else ""
+        except Exception as exc:
+            log.warning("catalog_synthesis retry failed for %s: %s: %s",
+                        row.get("uid"), type(exc).__name__, exc)
+            return out
+        parsed = _parse_json(raw)
+    if not parsed:
+        log.warning("catalog_synthesis got no usable answer for %s after a retry — "
+                    "that row has no overview and nothing will revisit it",
+                    row.get("uid"))
         return out
 
     # Field by field, so a partial answer is still worth writing — the point of making a
