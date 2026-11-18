@@ -25,6 +25,7 @@ import {
   type Reviewed, type ReviewedRow, type Warning,
 } from "../api";
 import OpportunityCell from "../opportunity/OpportunityCell";
+import OpportunityPeek from "../opportunity/OpportunityPeek";
 import RfpEditor from "../opportunity/RfpEditor";
 import { atGrain, periodOf, rangeOf, labelOf, type Period } from "./period";
 import { Badge, Button, Card, EmptyState, Notice, Select, Spinner, fieldClass } from "../ui";
@@ -72,6 +73,7 @@ export default function ReviewedStage({ period, onPickPeriod }: {
   const [notices, setNotices] = useState<Warning[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
   const [editUid, setEditUid] = useState<string | null>(null);
+  const [peekUid, setPeekUid] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -247,7 +249,15 @@ export default function ReviewedStage({ period, onPickPeriod }: {
                 const behind = scoreIsBehind(r);
                 const stuck = rescoreFailed(r);
                 return (
-                  <tr key={r.uid} className="border-b border-ink-100 transition-colors last:border-0 hover:bg-ink-50">
+                  <tr key={r.uid} className="cursor-pointer border-b border-ink-100 transition-colors last:border-0 hover:bg-ink-50"
+                    onClick={(e) => {
+                      // A click that landed on a link, a button or a form control is
+                      // THAT control's — the title still opens the full record, the ↗
+                      // still leaves for the funder, and the decision select still works.
+                      // Only the rest of the row opens the summary.
+                      if ((e.target as HTMLElement).closest("a,button,select,input,textarea,label")) return;
+                      setPeekUid(r.uid);
+                    }}>
                     <td className="px-4 py-3">
                       <OpportunityCell uid={r.uid} title={r.opportunity_title}
                         link={r.opportunity_link} onEdit={setEditUid} />
@@ -328,6 +338,16 @@ export default function ReviewedStage({ period, onPickPeriod }: {
           </table>
         </div>
       </Card>
+      {/* The summary overlay. `onEdit` hands the row to the editor and closes this, so
+          there is one editor rather than a second set of controls in here. */}
+      {peekUid && (
+        <OpportunityPeek
+          uid={peekUid}
+          onClose={() => setPeekUid(null)}
+          onEdit={(u) => { setPeekUid(null); setEditUid(u); }}
+          onChanged={load}
+        />
+      )}
       {editUid && (
         <RfpEditor uid={editUid} onClose={() => setEditUid(null)} onSaved={load} />
       )}
