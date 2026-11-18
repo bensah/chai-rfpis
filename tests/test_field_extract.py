@@ -176,6 +176,65 @@ def test_call_compliance_flags_use_the_bare_key_vocabulary():
 
 
 # ---------------------------------------------------------------------------
+# the funder's own reference
+# ---------------------------------------------------------------------------
+# `funding_opportunity_number` was blank on 100% of the live Find a Tender, UNGM
+# and Contracts Finder rows — 638 of them — while 183 Find a Tender notices carry
+# "Notice identifier: 2026/S 000-074968" in their own text.
+FTS = ("Act 2023 - view information about notice types Notice identifier: "
+       "2026/S 000-074968 Procurement identifier (OCID): ocds-h6vhtk-06de5e")
+
+
+def test_a_labelled_reference_is_read_off_the_notice():
+    assert fe.opportunity_number(FTS, not_equal_to="ocds-h6vhtk-06de5e") \
+        == "2026/S 000-074968"
+
+
+def test_the_value_may_carry_one_internal_space():
+    """Find a Tender writes its reference as two tokens, and the pattern must
+    stop at the second rather than eating the next heading."""
+    got = fe.opportunity_number(FTS, not_equal_to="ocds-h6vhtk-06de5e")
+    assert "Procurement" not in got
+
+
+@pytest.mark.parametrize("text", [
+    "please contact UNGM Support, referencing the exact FAO Tender Reference Number. "
+    "10 working days before the deadline.",
+    "Quote the reference number in all correspondence.",
+    "A call for proposals on maternal health with no reference at all.",
+])
+def test_a_sentence_about_references_is_not_a_reference(text):
+    """UNGM talks ABOUT references far more often than it states one. A pattern
+    trusting the label alone read "Number. 10" out of the first of these and
+    stored it on 51 live rows."""
+    assert fe.opportunity_number(text) is None
+
+
+def test_a_reference_matching_the_header_id_is_not_a_second_one():
+    """The schema and the page treat this as the SECOND reference; storing the
+    same value twice prints the header id again under its own heading."""
+    assert fe.opportunity_number("Notice identifier: 2026/S 000-074968",
+                                 not_equal_to="2026/S 000-074968") is None
+
+
+@pytest.mark.parametrize("stored_id", ["19-2026", "ITB Reference No: 19/2026"])
+def test_the_same_reference_spelled_differently_still_counts_as_the_same(stored_id):
+    """UNGM stores `19-2026` while its notice says "Tender 19/2026"; a literal
+    comparison called those different and duplicated the id onto the page."""
+    text = "Renovation Works ITB Reference No.: Tender 19/2026 UNRWA Field Office: GFO"
+    assert fe.opportunity_number(text, not_equal_to=stored_id) is None
+
+
+def test_a_genuinely_different_reference_is_kept():
+    text = "Renovation Works ITB Reference No.: Tender 19/2026 UNRWA Field Office: GFO"
+    assert fe.opportunity_number(text, not_equal_to="ocds-abc-123") == "Tender 19/2026"
+
+
+def test_a_reference_must_contain_a_digit():
+    assert fe.opportunity_number("Solicitation Number: PENDING") is None
+
+
+# ---------------------------------------------------------------------------
 # eligibility
 # ---------------------------------------------------------------------------
 def test_applicant_types_come_from_an_eligibility_passage():
