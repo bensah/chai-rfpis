@@ -23,7 +23,8 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle, ArrowUpDown, CalendarClock, ExternalLink, Pencil, Search, X,
+  AlertTriangle, ArrowUpDown, CalendarClock, ChevronLeft, ChevronRight, ExternalLink,
+  Pencil, Search, X,
 } from "lucide-react";
 import {
   fetchOpportunityList,
@@ -32,8 +33,13 @@ import {
 import RfpEditor from "../opportunity/RfpEditor";
 import { hrefOf, Link, setParams, useLocation } from "../router";
 import {
-  Badge, Card, EmptyState, Notice, PageHeader, Select, Spinner, field, type Tone,
+  Badge, Card, EmptyState, IconButton, Notice, PageHeader, Select, Spinner, field,
+  type Tone,
 } from "../ui";
+
+/** Rows per page (owner, 2026-11-18). Ten is also what Funding and Donors show, and a
+ *  reader moving between them should not have to learn a different page size for each. */
+const PAGE_SIZE = 10;
 
 const DECISION_TONE: Record<string, Tone> = {
   proceed: "good", "proceed as sub": "good", park: "warn", decline: "bad",
@@ -246,6 +252,21 @@ export default function OpportunitiesPage(
     () => rows.reduce((t, r) => t + r.applications, 0), [rows]);
   const narrowed = rows.length !== inBucket.length;
 
+  // PAGING. Ten rows at a time, over the rows the bucket and filters have already chosen —
+  // never over the bucket, so the figure a tile promised still governs what can appear.
+  //
+  // `cur` is clamped rather than stored clamped: a filter that shortens the list below the
+  // page you are on must not leave you looking at an empty table while the control says
+  // page 4. The effect below resets to 1 on any change to the SELECTION, which is the
+  // honest behaviour when the rows underneath you are no longer the ones you were reading
+  // — paging is a position in a list, and that is a different list.
+  const [page, setPage] = useState(1);
+  useEffect(() => setPage(1), [bucketKey, funder, lead, q, sort]);
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const cur = Math.min(page, pages);
+  const pageRows = useMemo(
+    () => rows.slice((cur - 1) * PAGE_SIZE, cur * PAGE_SIZE), [rows, cur]);
+
   const pick = (k: string) => {
     setParams({ bucket: k });
     // The narrowing filters belong to the bucket you were in; carrying them into another
@@ -344,9 +365,13 @@ export default function OpportunitiesPage(
             <X className="h-3.5 w-3.5" /> Clear filters
           </button>
         )}
+        {/* "Showing" moved to the pager below, where it names the PAGE. Two lines both
+            beginning "Showing", one counting what the filters kept and one counting what
+            fits on screen, is a reader comparing two numbers that answer different
+            questions. This line is the filter's count; the pager's is the page's. */}
         <span className="ml-auto text-sm text-ink-500 tabular-nums">
           {narrowed
-            ? <>Showing <strong className="text-ink-700">{rows.length}</strong> of {inBucket.length}</>
+            ? <><strong className="text-ink-700">{rows.length}</strong> of {inBucket.length} match</>
             : <><strong className="text-ink-700">{rows.length}</strong> {rows.length === 1 ? "opportunity" : "opportunities"}</>}
           {bucket?.kind === "applications" && <> · {applications} applications</>}
         </span>
@@ -403,7 +428,7 @@ export default function OpportunitiesPage(
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => {
+                {pageRows.map((r) => {
                   const d = daysTo(r.deadline, data.today);
                   const dec = lower(r.decision);
                   const ans = lower(r.donorDecision);
@@ -488,6 +513,30 @@ export default function OpportunitiesPage(
             </table>
           </div>
         </Card>
+      )}
+
+      {/* ONLY WHEN THERE IS MORE THAN ONE PAGE. "Page 1 of 1" beside two dead arrows is a
+          control that has nothing to control, on what is usually a short list once a
+          figure and a funder have been chosen. The count itself is never hidden — it is on
+          the filter line above, which is there whether or not this is. */}
+      {pages > 1 && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-ink-600">
+          <span className="tabular-nums">
+            Showing {(cur - 1) * PAGE_SIZE + 1}–{(cur - 1) * PAGE_SIZE + pageRows.length}
+            {" of "}{rows.length}
+          </span>
+          <div className="flex items-center gap-1">
+            <IconButton label="Previous page" disabled={cur <= 1}
+              onClick={() => setPage(cur - 1)}>
+              <ChevronLeft className="h-4 w-4" />
+            </IconButton>
+            <span className="px-2 tabular-nums">Page {cur} of {pages}</span>
+            <IconButton label="Next page" disabled={cur >= pages}
+              onClick={() => setPage(cur + 1)}>
+              <ChevronRight className="h-4 w-4" />
+            </IconButton>
+          </div>
+        </div>
       )}
 
       <p className="mt-3 flex items-center gap-1.5 text-xs text-ink-500">
