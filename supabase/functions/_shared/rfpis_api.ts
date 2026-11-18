@@ -424,6 +424,8 @@ export function createApi(env: Env, deps: Deps) {
     if (path === "/donors/delete" && m === "POST") {
       return donorWrites.remove(req, ctx, null);
     }
+    // Queues a READ, not a write — the reportlab PDF, which cannot render in Deno.
+    if (path === "/donors/pdf" && m === "POST") return donorWrites.pdf(req, ctx);
     const donorKey = path.match(/^\/donors\/([^/]+)$/);
     if (donorKey && m === "PATCH") {
       return donorWrites.update(req, ctx, decodeURIComponent(donorKey[1]));

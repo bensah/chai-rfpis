@@ -114,5 +114,50 @@ export function createDonorWriteRoutes(_db: Db, enqueue: Enqueue | null) {
       `Queued. ${keys.length} donor(s) will be removed from the shared catalogue.`);
   }
 
-  return { create, update, remove };
+  /**
+   * `POST /donors/pdf` — render one or more donor profiles as a branded A4 PDF.
+   *
+   * THE ONE ROUTE HERE THAT QUEUES A READ. Everything else in this file queues a write
+   * and says so; this queues `donor_pdf`, which selects, renders with reportlab and
+   * uploads one file. It is in this file because it is the same resource and the same
+   * seam, not because it changes anything.
+   *
+   * It does not go through `donor_action`, deliberately. That kind's first act is to
+   * decide whether the actor may edit the shared catalogue, and a reader asking for a
+   * printout of what is already on their screen should never be asked that question —
+   * answering it "no" is the behaviour a reader would be stuck with.
+   *
+   * The reply is the queued job, not the file. The caller polls the job and follows the
+   * signed URL in its result, exactly as the Report export does.
+   */
+  async function pdf(req: Request, ctx: Ctx): Promise<Response> {
+    if (!enqueue) return json({ error: "Background jobs are not configured." }, 503);
+    const b = (await body(req).catch(() => ({}))) as Row;
+    const keys = Array.isArray(b.keys)
+      ? b.keys.map((k) => str(k).trim()).filter(Boolean)
+      : [];
+    if (!keys.length) return json({ error: "No donors selected." }, 400);
+    // A bound, because each donor is a page or more of reportlab flowables and the
+    // runner has six minutes. Refusing 200 donors now is a better answer than a job
+    // that is killed half-way and leaves nothing to download.
+    if (keys.length > 50) {
+      return json({
+        error: `${keys.length} donors is more than one PDF can hold. `
+          + "Select up to 50, or use the CSV export for the whole table.",
+      }, 400);
+    }
+    const queued = await enqueue("donor_pdf", {
+      keys,
+      by: str(ctx.user.email),
+      // Named here rather than in the runner so the UI can show the filename while the
+      // job is still running, which is most of the wait.
+      filename: str(b.filename).trim() || undefined,
+      contacts: b.contacts !== false,
+    }, ctx);
+    return queuedReply(queued,
+      keys.length === 1 ? "Queued. The PDF will be ready shortly."
+        : `Queued. A PDF of ${keys.length} donors will be ready shortly.`);
+  }
+
+  return { create, update, remove, pdf };
 }

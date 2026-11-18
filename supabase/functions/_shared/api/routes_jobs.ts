@@ -354,6 +354,28 @@ const KINDS: Record<string, JobKind> = {
       return "donor-catalogue";
     },
   },
+
+  /**
+   * The donor profile PDF — reportlab, so it cannot render here. See
+   * `scripts/run_web_job.py::_donor_pdf`.
+   *
+   * Anyone signed in may ask for one, matching the Streamlit download button, which sits
+   * on a page open to everybody: the PDF prints the fields the reader is already looking
+   * at in the detail dialog, so it reveals nothing the page does not. This is NOT the
+   * donor_action gate — that one guards WRITES to a shared catalogue, and a read is not
+   * a write however similar the parameters look.
+   *
+   * ONE GROUP PER REQUESTER, not per donor and not one global. GitHub keeps a single
+   * pending run per group and CANCELS a third, so a global group would mean one reader's
+   * second click silently killed another reader's export. Per donor would let one person
+   * start a dozen renders by clicking through the catalogue — which is the cost this
+   * group exists to bound. Per requester: your own double-click collapses into one run,
+   * and nobody else waits on you.
+   */
+  donor_pdf: {
+    allowed: (u) => !!u,
+    group: (ctx) => `donor-pdf-${str(ctx.user.email).trim().toLowerCase() || "anon"}`,
+  },
 };
 
 /**

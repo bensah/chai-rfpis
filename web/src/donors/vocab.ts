@@ -3,6 +3,7 @@
 import vocab from "../generated/vocab.json";
 
 const PA_KEYS = vocab.programAreas.keys as unknown as Record<string, [string, string]>;
+const CATEGORY_FULL = vocab.programAreas.categoryFull as unknown as Record<string, string>;
 
 export const PA_CATEGORIES: string[] = vocab.programAreas.categories;
 export const GEO_OPTIONS: string[] = vocab.geo.options;
@@ -32,11 +33,19 @@ export function subareaLabel(key: string): string {
   return splitKey(key)[1];
 }
 
-/** 'HSS - Health Financing' -> 'Health System Strengthening'. */
+/**
+ * 'HSS - Health Financing' -> 'Health System Strengthening'.
+ *
+ * THE FALLBACK IS THE LIVE CASE, not the edge case. `PA_KEYS` holds the classifier's own
+ * keys; a donor's priority list is free text and routinely carries keys it does not know
+ * — 'Cross-cutting - Artificial Intelligence' is stored against most of the catalogue.
+ * Those have to go through the same PREFIX table Python uses (`CATEGORY_FULL`), or the
+ * shared profile reads '(Cross-cutting)' here and '(Cross-cutting (Health))' there.
+ */
 export function categoryFull(key: string): string {
   if (PA_KEYS[key]) return PA_KEYS[key][0];
   const [pre] = splitKey(key);
-  return pre || key;
+  return CATEGORY_FULL[pre] ?? (pre || key);
 }
 
 /** Category names / canonical keys / bare sub-labels -> the set of canonical keys. */

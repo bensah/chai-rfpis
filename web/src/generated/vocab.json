@@ -232,7 +232,22 @@
    "Governance, Peace & Rights",
    "Gender, Equity & Inclusion",
    "Humanitarian & Resilience"
-  ]
+  ],
+  "categoryFull": {
+   "WCH": "Women & Children's Health",
+   "NCDs": "Non-Communicable Diseases",
+   "IDs": "Infectious Diseases",
+   "HSS": "Health System Strengthening",
+   "Cross-cutting": "Cross-cutting (Health)",
+   "EDU": "Education & Learning",
+   "ECON": "Economic Development & Livelihoods",
+   "AGRI": "Agriculture & Food Systems",
+   "WASH": "Water, Sanitation & Hygiene (WASH)",
+   "ENV": "Climate, Energy & Environment",
+   "GOV": "Governance, Peace & Rights",
+   "GES": "Gender, Equity & Inclusion",
+   "HUM": "Humanitarian & Resilience"
+  }
  },
  "geo": {
   "options": [

@@ -734,6 +734,32 @@ export const deleteDonor = (key: string) =>
 export const deleteDonors = (keys: string[]) =>
   call<DonorJob>("/donors/delete", { method: "POST", body: JSON.stringify({ keys }) });
 
+/**
+ * The branded donor PDF. A JOB, not a download, and the only donor job that READS.
+ *
+ * It is reportlab — font metrics, an image reader, a page-break engine — so no amount of
+ * work in the browser or the Edge Function would produce the same document. Drawing a
+ * second PDF here instead would mean two layouts for one profile: different fonts, no org
+ * logo, no footer, and a drift that nobody sees because a PDF is read by the person it was
+ * sent to.
+ *
+ * Poll with `awaitJob`; a finished one carries `DonorPdfResult` with a SHORT-LIVED signed
+ * URL. `expiresInS` is worth telling the user, because the natural thing to do with a
+ * download link is paste it into a chat thread.
+ */
+export type DonorPdfResult = {
+  ok: boolean; url: string; filename: string; bytes: number; expiresInS: number;
+  donors: number;
+  /** Selected keys that no longer exist — named rather than silently dropped. */
+  missing: string[];
+  pruned: number; runner: string; summary: string;
+};
+
+export const requestDonorPdf = (
+  keys: string[], opts: { filename?: string; contacts?: boolean } = {},
+) => call<DonorJob>("/donors/pdf",
+  { method: "POST", body: JSON.stringify({ keys, ...opts }) });
+
 export const fetchDonors = () => call<{ donors: Donor[] }>("/donors").then((r) => {
   try {
     localStorage.setItem(DONOR_CACHE_KEY, JSON.stringify(r.donors));

@@ -149,6 +149,92 @@ try {
       + "set and the check is decorative.");
   }
 
+  // 7d. THE SHARE DOCUMENT, line by line, over every live donor.
+  //
+  // This is the only donor output that LEAVES the product. A user copies it into an
+  // email, downloads the markdown, or sends the PDF to a colleague who has no login and
+  // cannot compare it with anything. Every other divergence in this file is one a reader
+  // of both apps could spot; this one is read by the recipient and by nobody who could.
+  //
+  // It is also 115 lines of hand-ported layout that nothing compared until now, which is
+  // how `Math.round` sat in projectLine where Python rounds half-to-even.
+  {
+    same("the flag GROUPS the summary reads", schema.groups, want.groups);
+    for (const exp of want.summary) {
+      const row = byKey.get(exp.canonical_key);
+      if (!row) continue;
+      const got = M.summaryLines(row, schema);
+      // Compared as whole documents, then narrowed: a section inserted or dropped
+      // shifts every later line, and forty "DIFF line 63" messages say less than one
+      // that names the line that actually differs.
+      if (J(got) === J(exp.lines)) { checks++; continue; }
+      const at = got.findIndex((l, i) => l !== exp.lines[i]);
+      same(`summaryLines(${exp.canonical_key}) line ${at} of ${exp.lines.length}`,
+        got[at], exp.lines[at]);
+    }
+
+    // The same function over INVENTED rows: the ratings tie-break, the unclamped
+    // int(), a priority area with no rating, and a ratings blob that will not parse.
+    // None of these appears in the live table, and two of them were wrong.
+    for (const p of want.summaryProbes) {
+      const got = M.summaryLines(p.row, schema);
+      if (J(got) === J(p.lines)) { checks++; continue; }
+      const at = got.findIndex((l, i) => l !== p.lines[i]);
+      same(`summaryLines(${p.row.canonical_key}) line ${at}`, got[at], p.lines[at]);
+    }
+    ok("a probe row stores a rating above 5",
+      want.summaryProbes.some((p) => /— [6-9]\/5/.test(p.lines.join("\n"))),
+      "int(v) does not clamp and the React port did. Without such a probe the two "
+      + "agree on every value anybody has actually stored, which is how it survived.");
+    ok("a probe row has two priority areas that tie on rating",
+      want.summaryProbes.some((p) => {
+        const r = p.lines.filter((l) => l.startsWith("- **Priority:**"));
+        return r.length >= 2 && new Set(r.map((l) => l.slice(-4))).size < r.length;
+      }),
+      "the tie-break is the only part of the sort the comparator can get wrong.");
+    ok("the empty probe produces a title and nothing else",
+      want.summaryProbes.some((p) => p.row.canonical_key === "probe_empty"
+        && p.lines.length === 2),
+      "a donor with no data must share as a name, not as a page of empty headings.");
+
+    for (const c of want.projectLines) {
+      same(`projectLine(${J(c.rec)})`, M.projectLine(c.rec), c.out);
+    }
+    ok("the project probes contain an amount that rounds half-to-even",
+      want.projectLines.some((c) => {
+        const n = Number(c.rec.amount);
+        return Number.isFinite(n) && Math.abs(n % 1) === 0.5 && c.out.includes(String(Math.floor(n)));
+      }),
+      "without one, Math.round and Python's ,.0f agree on every probe and this block "
+      + "proves nothing about the rule that was actually wrong.");
+
+    for (const c of want.tierLines) {
+      same(`tierLine(${J(c.rec)})`, M.tierLine(c.rec), c.out);
+    }
+    for (const c of want.contactLines) {
+      same(`contactLine(${J(c.rec)})`, M.contactLine(c.rec), c.out);
+    }
+    for (const c of want.shareFilenames) {
+      same(`shareFilename(${J(c.row)}, pdf)`, M.shareFilename(c.row, "pdf"), c.pdf);
+      same(`shareFilename(${J(c.row)}, md)`, M.shareFilename(c.row, "md"), c.md);
+    }
+    for (const c of want.shareMarkdown) {
+      const row = byKey.get(c.canonical_key);
+      if (!row) continue;
+      // The contacts fixture is the Python side's own probe list, so this pins the
+      // FLATTENING — the hard break becoming an em-dash and the `$` escape coming back
+      // out — as well as the block's position after the last section.
+      const contacts = want.contactLines.map((p) => p.rec);
+      same(`shareMarkdown(${c.canonical_key}) with contacts`,
+        M.shareMarkdown(row, schema, contacts), c.md);
+    }
+    ok("the share markdown carries no leftover Streamlit escapes",
+      want.shareMarkdown.every((c) => !c.md.includes("\\$")),
+      "`contactLine` escapes `$` because st.markdown reads `$…$` as LaTeX. A file or an "
+      + "email is not Streamlit, so the escape has to come back out — otherwise the "
+      + "recipient reads 'Budget \\$5,000'.");
+  }
+
   // 7bis. THE FORM'S FIELD COVERAGE, against the Streamlit dialog's own AST.
   //
   // This is the check this file exists for now. A field missing from a form does not
@@ -281,6 +367,60 @@ try {
     const none = R.createDonorWriteRoutes(null, null);
     ok("with no runner configured the route refuses rather than pretending",
       (await none.update(post({ edited: { donor: "X" } }), ctx, "g")).status === 503);
+
+    // The PDF route. The one here that queues a READ, and the shape worth pinning is
+    // that it does NOT look like the write routes.
+    sent.length = 0;
+    await routes.pdf(post({ keys: ["gates", " ", "wellcome"] }), ctx);
+    ok("a PDF request queues donor_pdf, not donor_action",
+      sent.length === 1 && sent[0].kind === "donor_pdf",
+      "donor_action's first act is to ask whether the actor may EDIT the shared "
+      + "catalogue. A reader asking for a printout of what is already on their screen "
+      + "must never be refused on that question.");
+    ok("...with the blank keys dropped",
+      JSON.stringify(sent[0].params.keys) === JSON.stringify(["gates", "wellcome"]));
+    ok("...and the requester named, since the runner has no session",
+      sent[0].params.by === "someone@example.org");
+
+    sent.length = 0;
+    const noDonors = await routes.pdf(post({ keys: [] }), ctx);
+    ok("a PDF of nothing is refused rather than queued",
+      noDonors.status === 400 && sent.length === 0);
+
+    sent.length = 0;
+    const tooMany = await routes.pdf(
+      post({ keys: Array.from({ length: 51 }, (_, i) => `d${i}`) }), ctx);
+    ok("a PDF of more donors than the runner's budget is refused UP FRONT",
+      tooMany.status === 400 && sent.length === 0,
+      "the runner has six minutes and each donor is a page or more of flowables. A job "
+      + "killed half-way leaves nothing to download and no explanation.");
+
+    sent.length = 0;
+    await routes.pdf(post({ keys: ["gates"], contacts: false }), ctx);
+    ok("contacts can be turned off for a bulk render",
+      sent[0].params.contacts === false,
+      "a combined PDF would otherwise do one donor_contacts read per donor.");
+    sent.length = 0;
+    await routes.pdf(post({ keys: ["gates"] }), ctx);
+    ok("...but they are ON by default",
+      sent[0].params.contacts === true,
+      "a shared profile missing its focal persons looks like a donor with none.");
+
+    const noPdfRunner = await none.pdf(post({ keys: ["gates"] }), ctx);
+    ok("with no runner configured the PDF route refuses too",
+      noPdfRunner.status === 503);
+  }
+
+  // 7e. The job kind has to exist on the Edge Function's side as well, or `enqueue`
+  //     returns null and the caller is told "unknown job kind" for work that exists.
+  //     (check-submit compares the whole list against the runner's KINDS; this names
+  //     the one this file is about, so a failure here points at the right file.)
+  {
+    const JR = await server.ssrLoadModule(
+      "/../supabase/functions/_shared/api/routes_jobs.ts");
+    const kinds = JR.jobKinds();
+    ok("donor_pdf is a kind this API will queue", kinds.includes("donor_pdf"));
+    ok("donor_action still is", kinds.includes("donor_action"));
   }
 
   // 8. Claims worth stating outright, which a value-by-value comparison would not catch
