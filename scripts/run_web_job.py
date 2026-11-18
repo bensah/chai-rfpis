@@ -1054,6 +1054,118 @@ def _suggestion_review(job: JobRow, params: dict, runner: str) -> dict:
     }
 
 
+def _donor_pdf(job: JobRow, params: dict, runner: str) -> dict:
+    """The donor profile as a branded, print-ready A4 PDF.
+
+    WHY THIS IS A JOB AND NOT A ROUTE. It is reportlab — a Python renderer with font
+    metrics, an image reader and a page-break engine — so the Edge Function could not
+    produce it whatever we did there. The alternative was to hand the browser the
+    markdown and let it draw its own PDF, which would be a SECOND document: different
+    fonts, no org logo, no footer, and a layout that drifts from the one Streamlit
+    prints the moment either side is touched. One document, rendered once, by the code
+    that already renders it.
+
+    READ-ONLY, and the only job kind that is. Everything it touches is a select; the
+    sole write is the PDF into the private export bucket, under the job's own id.
+
+    PERMISSIONS ARE THE READ'S, NOT THE WRITE'S. Anyone who can open the Donors page can
+    already see every field this prints — the page shows them in the detail dialog — so
+    the gate is a signed-in member, matching the Streamlit download button, which sits
+    on a page open to everybody. It is NOT gated on developer-Super like the edit
+    actions: a PDF of what the reader is already looking at reveals nothing new.
+
+    params: {"keys": [canonical_key, ...] required, "by": email required,
+             "filename": optional, "contacts": optional bool (default true)}
+    """
+    from core import donor_fields as F
+    from core import donor_share as S
+    from core import export_store
+
+    from db.supabase_client import service_client
+
+    keys = [str(k).strip() for k in (params.get("keys") or []) if str(k or "").strip()]
+    by = str(params.get("by") or "").strip()
+    want_contacts = params.get("contacts") is not False
+    if not keys:
+        raise ValueError("donor_pdf needs at least one canonical_key")
+    if not by:
+        raise ValueError("donor_pdf needs the requesting user's email")
+
+    svc = service_client()
+    job.progress(10, "Reading donors")
+    rows = (svc.table("donor_intel").select("*")
+            .in_("canonical_key", keys).execute().data or [])
+    if not rows:
+        raise ValueError("donor_pdf: none of those donors exist")
+
+    # The order the CALLER asked for, not the order PostgREST returned. A multi-donor
+    # PDF is read against the selection that produced it, and `in_` does not promise one.
+    by_key = {str(r.get("canonical_key")): r for r in rows}
+    ordered = [by_key[k] for k in keys if k in by_key]
+    missing = [k for k in keys if k not in by_key]
+
+    # The flag GROUPS come from the live table, exactly as the page derives them: the
+    # classification is negative, so a guessed column list would print the wrong
+    # eligibility questions rather than none.
+    columns = list(rows[0].keys())
+    _flags, _fit, _req, groups = F.flag_groups(columns)
+
+    job.progress(35, "Building the summary")
+    blocks: list[list[str]] = []
+    for r in ordered:
+        contacts: list[dict] = []
+        if want_contacts:
+            # Best-effort, exactly as the share dialog treats them: a donor_contacts read
+            # that fails must not cost the reader the profile itself.
+            try:
+                contacts = (svc.table("donor_contacts").select("*")
+                            .eq("canonical_key", r.get("canonical_key"))
+                            .order("is_official", desc=True).order("contact_name")
+                            .execute().data or [])
+            except Exception:  # noqa: BLE001
+                contacts = []
+        blocks.append(S.share_lines(r, groups, contacts))
+
+    # Several donors print as one document with a rule between them, which is what the
+    # markdown share does with "---". A PDF has no horizontal rule in this flow, so the
+    # blank line plus the next donor's "# " title is the separator — and "# " is what
+    # starts a new title block in donor_pdf.
+    lines: list[str] = []
+    for i, b in enumerate(blocks):
+        if i:
+            lines.append("")
+        lines.extend(b)
+
+    filename = str(params.get("filename") or "").strip() or (
+        S.share_filename(ordered[0], "pdf") if len(ordered) == 1 else "donors_selected.pdf")
+
+    job.progress(60, "Rendering the PDF")
+    data = S.donor_pdf(lines)
+
+    job.progress(85, "Uploading")
+    export_store.ensure_bucket()
+    # The donor catalogue is cross-tenant, so the file is not a tenant's — it goes in the
+    # shared folder, and the SIGNED URL is what limits who can fetch it.
+    folder = "donor-pdf"
+    pruned = export_store.prune(folder)
+    path = f"{folder}/{job.id}/{filename}"
+    export_store.put(path, data, "application/pdf")
+    url = export_store.signed_url(path, download_as=filename)
+
+    job.progress(100, "Ready")
+    # The URL is a bearer capability for one object. It goes in the job row, which the
+    # API serves only to whoever started the job, an admin of their tenant, or a
+    # super_user, and it expires on its own — nothing has to revoke it.
+    return {
+        "ok": True, "url": url, "filename": filename, "bytes": len(data),
+        "expiresInS": export_store.SIGNED_URL_TTL_S, "donors": len(ordered),
+        "missing": missing, "pruned": pruned, "runner": runner,
+        "summary": (f"{filename} is ready."
+                    + (f" {len(missing)} selected donor(s) no longer exist."
+                       if missing else "")),
+    }
+
+
 def _donor_action(job: JobRow, params: dict, runner: str) -> dict:
     """Donor Intelligence: every write to the shared donor catalogue.
 
@@ -1227,6 +1339,8 @@ KINDS: dict[str, Callable[[JobRow, dict, str], dict]] = {
     "tenant_action": _tenant_action,
     # Donor Intelligence: every write to the shared donor catalogue.
     "donor_action": _donor_action,
+    # Donor Intelligence → Share: the branded reportlab PDF. The only READ-ONLY kind.
+    "donor_pdf": _donor_pdf,
 }
 
 

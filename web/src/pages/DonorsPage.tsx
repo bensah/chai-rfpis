@@ -5,13 +5,14 @@ import {
 } from "lucide-react";
 import { cachedDonors, currentSession, fetchContacts, fetchDonors } from "../api";
 import { AddDonorDialog, DeleteDonorsDialog } from "../donors/DonorWriteDialogs";
+import { DonorShareDialog } from "../donors/DonorShareDialog";
 import DonorEditDialog from "../donors/DonorEditDialog";
 import { isDeveloperSuper } from "../../../supabase/functions/_shared/api/permissions";
 import CategoryChart from "../components/CategoryChart";
 import DonorDialog from "../components/DonorDialog";
 import MultiSelect from "../components/MultiSelect";
 import {
-  APPLICANT_FLAG, applyFilters, buildSchema, download, EMPTY_FILTERS, normalizeCategory, summaryLines, titleName,
+  APPLICANT_FLAG, applyFilters, buildSchema, download, EMPTY_FILTERS, normalizeCategory, titleName,
   type Contact,
   toCsv, UNCATEGORISED, webUrl, type Donor, type Filters,
 } from "../donors/model";
@@ -32,6 +33,7 @@ export default function DonorsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<Donor[] | null>(null);
+  const [sharing, setSharing] = useState<Donor[] | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ row: Donor; contacts: Contact[] } | null>(null);
   const [opening, setOpening] = useState(false);
@@ -113,13 +115,11 @@ export default function DonorsPage() {
     return n;
   });
 
-  const share = (list: Donor[]) => {
-    const md = list.map((r) => summaryLines(r, schema).join("\n")).join("\n\n---\n\n");
-    const name = list.length === 1
-      ? `${String(list[0].donor_short || list[0].donor || "donor").trim().replace(/ /g, "_")}.md`
-      : "donors_selected.md";
-    download(name, md, "text/markdown");
-  };
+  // Opens the dialog rather than downloading straight away. The markdown is one of two
+  // things a user wants here, and never the one they want when sending a profile OUT of
+  // the team — that is the branded PDF, which has to be rendered by a job because it is
+  // reportlab. A button that silently dropped a .md file could not offer it.
+  const share = (list: Donor[]) => setSharing(list);
 
   if (!donors && loading) return <Spinner label="Loading donor records…" />;
 
@@ -266,7 +266,7 @@ export default function DonorsPage() {
                 )}
                 {selectedRows.length > 0 && (
                   <Button size="sm" onClick={() => share(selectedRows)} icon={<Share2 className="h-4 w-4" />}>
-                    Share{selectedRows.length > 1 ? ` ${selectedRows.length}` : ""} (.md)
+                    Share{selectedRows.length > 1 ? ` ${selectedRows.length}` : ""}
                   </Button>
                 )}
                 {selectedRows.length > 0 && canEdit && (
@@ -376,6 +376,9 @@ export default function DonorsPage() {
       )}
 
       {viewing && <DonorDialog row={viewing} schema={schema} onClose={() => setViewing(null)} onShare={() => share([viewing])} />}
+      {sharing && (
+        <DonorShareDialog rows={sharing} schema={schema} onClose={() => setSharing(null)} />
+      )}
       {adding && (
         <AddDonorDialog
           suggest={!canEdit}
