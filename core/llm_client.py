@@ -52,6 +52,19 @@ def last_provider() -> str:
     return _LAST_PROVIDER
 
 
+def _chain_model() -> str:
+    """The model of the chain's first configured provider, or "" when no chain is
+    set. Kept separate so `model_chain` reads as one resolution order."""
+    if not (os.environ.get("RFPIS_LLM_PROVIDERS") or "").strip():
+        return ""
+    try:
+        from core import llm_providers
+        p = llm_providers.primary()
+    except Exception:
+        return ""
+    return p.model if p else ""
+
+
 def model_chain(model_env: str, default: str) -> list[str]:
     """Ordered list of models to try for a feature.
 
@@ -60,11 +73,37 @@ def model_chain(model_env: str, default: str) -> list[str]:
       fallbacks = $<feature>_FALLBACK_MODELS (csv)  or  $LLM_FALLBACK_MODELS (csv)
 
     where <feature> is model_env without its trailing ``_MODEL`` (so
-    ``LLM_JUDGE_MODEL`` → ``LLM_JUDGE_FALLBACK_MODELS``)."""
-    primary = os.environ.get(model_env) or os.environ.get("LLM_JUDGE_MODEL") or default
+    ``LLM_JUDGE_MODEL`` → ``LLM_JUDGE_FALLBACK_MODELS``).
+
+    THE MODEL MUST FOLLOW THE ENDPOINT. When `RFPIS_LLM_PROVIDERS` names a chain,
+    `primary_endpoint` hands the caller that chain's first provider — and the
+    legacy model names belong to a DIFFERENT vendor. The two spell the same model
+    differently on purpose (`gpt-oss:120b` on Ollama, `gpt-oss-120b` on Cerebras),
+    so pairing the chain's endpoint with the legacy name sends a vendor a model it
+    has never heard of, and the 404 reads exactly like an outage.
+
+    The chain's model displaces the FEATURE name too, and that is deliberate even
+    though a feature name usually wins. `LLM_SYNTH_MODEL` is `gpt-oss:120b` in the
+    live .env — the Ollama spelling, written when Ollama was the only endpoint.
+    Honouring it while calling Cerebras would send that vendor a model it does not
+    publish, which is the exact failure this is meant to prevent; the variable is
+    not a statement about Cerebras, it is a leftover about Ollama.
+
+    A model can still be named per feature — against the vendor that serves it, as
+    `RFPIS_LLM_<NAME>_MODEL`, which `llm_providers.provider` already reads. That is
+    the one place a model name and the endpoint it belongs to are stated together.
+    """
+    primary = _chain_model() or os.environ.get(model_env) \
+        or os.environ.get("LLM_JUDGE_MODEL") or default
     fb_env = model_env[:-6] + "_FALLBACK_MODELS" if model_env.endswith("_MODEL") \
         else model_env + "_FALLBACK_MODELS"
-    raw = os.environ.get(fb_env) or os.environ.get("LLM_FALLBACK_MODELS") or ""
+    # The shared `LLM_FALLBACK_MODELS` list is the LEGACY vendor's other models
+    # (`gpt-oss:20b` and friends). Once a chain leads, trying those against the
+    # chain's endpoint is a 404 per call for no gain — failover is the provider
+    # chain's job now. A fallback list set for THIS feature is still honoured,
+    # because that is someone naming models on purpose.
+    raw = os.environ.get(fb_env) or ("" if _chain_model()
+                                     else os.environ.get("LLM_FALLBACK_MODELS") or "")
     chain = [primary] + [m.strip() for m in raw.split(",") if m.strip()]
     seen: set[str] = set()
     out: list[str] = []
@@ -164,21 +203,41 @@ def _timeout() -> float:
 
 
 def primary_endpoint(*base_env_names: str) -> tuple[str, str]:
-    """(base_url, api_key) for a feature's FIRST endpoint, legacy names first.
+    """(base_url, api_key) for a feature's FIRST endpoint.
 
     `base_env_names` are the feature's own variables in priority order, e.g.
     ("LLM_SYNTH_BASE_URL", "LLM_JUDGE_BASE_URL"); the key is read from the same
-    name with `_BASE_URL` replaced by `_API_KEY`. When none of them is set, the
-    first configured provider in `RFPIS_LLM_PROVIDERS` is used instead.
+    name with `_BASE_URL` replaced by `_API_KEY`.
 
-    Legacy first, deliberately: an .env that already works must keep working and
-    must keep calling the same endpoint it calls today. The chain is what makes
-    a feature available when those variables are ABSENT — a provider-only
-    configuration — and what `chat_with_fallback` walks once this endpoint has
-    failed.
+    AN EXPLICIT CHAIN WINS OVER THE LEGACY NAMES, and that is a correction.
+
+    This used to read the legacy variables first unconditionally, so that an .env
+    which already worked kept calling the same endpoint. The reasoning was sound
+    while `RFPIS_LLM_PROVIDERS` was unset everywhere. Once the owner set it — on
+    2026-11-19, to `cerebras,ollama`, after funding Cerebras because the Ollama
+    account was out of credit — it became actively wrong: `LLM_JUDGE_BASE_URL`
+    still points at ollama.com, so every single call tried BOTH ollama models,
+    took a 402 from each, and only then fell through to the provider the owner had
+    put first. Two wasted round-trips and their latency on every request, with the
+    stated order silently ignored.
+
+    So: when `RFPIS_LLM_PROVIDERS` is set, its first configured provider leads.
+    When it is unset the legacy names lead exactly as before, which keeps the
+    back-compat promise where it was actually made — an .env that names no chain.
+    The legacy endpoint is not lost either way: `chat_with_fallback` walks the
+    rest of the chain, and `llm_providers`' `ollama` slot reads those same legacy
+    variables, so it is still tried, just no longer first.
 
     Returns ("", "") when nothing is configured; callers treat that as disabled.
     """
+    if (os.environ.get("RFPIS_LLM_PROVIDERS") or "").strip():
+        try:
+            from core import llm_providers
+            chosen = llm_providers.primary()
+        except Exception:
+            chosen = None
+        if chosen:
+            return chosen.base_url, chosen.key_or_placeholder()
     for name in base_env_names:
         base = (os.environ.get(name) or "").strip()
         if base:

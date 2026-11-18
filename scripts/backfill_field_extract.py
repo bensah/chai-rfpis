@@ -1,11 +1,31 @@
 """Fill the schema fields `core.field_extract` can read, over the rows already stored.
 
-WHY A BACKFILL AND NOT ONLY A PIPELINE CHANGE
----------------------------------------------
-`core/field_extract.py` now runs inside extraction, so every NEW row arrives with
-these fields. That does nothing for the 1687 rows already in the catalogue, and
-those are the rows the team is looking at — including the SRHR call the owner
-opened to show that a discovered call lands almost empty.
+RETIRED 2026-11-19 — DO NOT RUN THIS AGAINST THE LIVE DATABASE.
+---------------------------------------------------------------
+The owner's rule from that date: "we are forward looking now. only new rfps
+should be completed following the updated crawler and extractor so we don't end
+up with extracted calls with low data."
+
+So repairing stored rows is no longer the plan, and this script is kept for its
+measurement value — `--limit N` with no `--apply` still prints exactly what the
+deterministic pass would find on real rows, which is a cheap way to check the
+extractor against the live corpus without writing anything. Running it with
+`--apply` is contrary to a standing instruction.
+
+The work it used to do now happens at ingest: `core/extract.build_record` calls
+`field_extract.derive_fields` before the record is returned, so a new row carries
+these fields when it is first written.
+
+A NOTE ON WHAT THIS DOCSTRING USED TO SAY, because it misled someone once: it
+claimed "`core/field_extract.py` now runs inside extraction, so every NEW row
+arrives with these fields". That was an intention written as a fact — the wiring
+did not exist until 2026-11-19, and every row scanned in between arrived without
+it. The wiring is real now; the lesson is that a docstring is not evidence.
+
+WHAT IT USED TO BE FOR
+----------------------
+The 1687 rows already in the catalogue — including the SRHR call the owner opened
+to show that a discovered call lands almost empty.
 
 The source material is already paid for: `raw_text` is present on 96.7% of
 catalogue rows. Nothing here fetches a page, calls a model or spends anything.

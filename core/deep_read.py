@@ -43,6 +43,18 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 _ENABLED = os.environ.get("RFPIS_DEEP_READ", "1") != "0"
+
+#: Site furniture rather than a call. Keyed on phrases that cannot occur in a
+#: funding synopsis, so a real page is never mistaken for a shell. Used to stop a
+#: single-page app's rendered chrome replacing text a source API already gave us.
+_CHROME_RE = re.compile(
+    r"official website of the United States government|"
+    r"Unsaved changes will be lost|Vulnerability Disclosure Policy|"
+    r"enable JavaScript to (?:view|use|run)", re.I)
+
+
+def _is_chrome(text: str | None) -> bool:
+    return bool(_CHROME_RE.search(str(text or "")))
 _MAX = int(os.environ.get("RFPIS_DEEP_READ_MAX", "60"))
 _TIMEOUT_MS = int(os.environ.get("RFPIS_DEEP_READ_TIMEOUT_MS", "20000"))
 
@@ -390,7 +402,26 @@ def enrich(candidate: dict) -> bool:
     #    `_page_text` — the synthesis + field extractors prefer it over the short
     #    brief, so the whole call (not a summary) drives structuring & the gates.
     _harvest(candidate, text, soup)
-    candidate["_page_text"] = text
+    # A RENDERED PAGE DOES NOT ALWAYS BEAT WHAT WE ALREADY HAVE.
+    #
+    # This used to assign unconditionally, which is right for an ordinary donor
+    # page and wrong for a single-page app. grants.gov renders its opportunity
+    # client-side behind a shell, and what comes back is the nav menu, the cookie
+    # notice and "Unsaved changes will be lost. Ok" — 999 characters of furniture
+    # that then OVERWROTE the synopsis `scraper._scan_grants_gov` had already
+    # fetched from the funder's own API. 168 of 469 live grants.gov rows hold that
+    # shell as their only source text, and no synthesis can read a call out of it.
+    #
+    # So: keep the better text. Site chrome never replaces anything, and a render
+    # that is materially shorter than what a source API already supplied does not
+    # either. A genuinely richer render still wins, which is what the deep read is
+    # for.
+    if not _is_chrome(text) and len(text or "") >= len(candidate.get("_page_text") or ""):
+        candidate["_page_text"] = text
+    else:
+        log.info("deep read kept the existing %d-char source text for %s "
+                 "(rendered %d chars%s)", len(candidate.get("_page_text") or ""),
+                 link, len(text or ""), ", chrome" if _is_chrome(text) else "")
 
     # 2b) Deep-read the FULL RFP: many calls (e.g. Grand Challenges) put the real
     #     detail in an attached multi-page RFP PDF. Fetch its full text and fold it
