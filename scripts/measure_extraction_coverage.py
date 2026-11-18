@@ -81,17 +81,36 @@ def _fetch_all(table: str, columns: str = "*") -> list[dict[str, Any]]:
         start += _PAGE
 
 
+#: How `_source_of` groups. Set by `main` from --group; module-level because the
+#: fetch/report split passes rows, not options, and threading a flag through four
+#: call sites to pick a label is worse than one switch read in one place.
+_GROUP_BY = "handler"
+
+
 def _source_of(row: dict[str, Any]) -> str:
     """The source label to group by.
 
     `source` is free text and a donor-catalogue crawl writes "<Donor> - donor catalog"
-    into it, so grouping on it raw produces one group per donor and no readable table.
-    The suffix is the thing worth grouping by — it names the HANDLER that read the page,
-    which is what a per-source extraction method would be written against.
+    into it. Two groupings answer two different questions, and the default answers the
+    wrong one on its own:
+
+      handler (default)  the suffix — WHICH READER produced the row, which is what a
+                         per-source extraction method would be written against. Keeps
+                         the table short enough to read.
+      donor              the full string — WHICH FUNDER's pages we are bad at.
+
+    The donor grouping exists because the handler one has a blind spot that was pointed
+    out, correctly, the day it was written: it drops 739 of 1687 rows into one bucket
+    called "donor catalog". The owner's example call (FCDO, AS-261113-143730) is in
+    that bucket, so the handler view could show a healthy average while the one call
+    they were looking at sat well below it. An average that can hide the case someone
+    is asking about is not evidence about that case.
     """
     s = str(row.get("source") or row.get("_source_origin") or "").strip()
     if not s:
         return "(no source)"
+    if _GROUP_BY == "donor":
+        return s
     low = s.lower()
     for marker in (" - donor catalog", " – donor catalog", " donor catalog"):
         if low.endswith(marker):
@@ -264,6 +283,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--table", choices=("catalog", "pipeline", "both"), default="both")
+    p.add_argument("--group", choices=("handler", "donor"), default="handler",
+                   help="group per-source rows by the READER (default) or by the funder")
     p.add_argument("--min-rows", type=int, default=5,
                    help="per-source rows needed before a source is listed (default 5)")
     p.add_argument("--json", metavar="PATH", help="write the full breakdown here")
@@ -272,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--availability", action="store_true",
                    help="is a blank field our gap, or a fact no funder publishes?")
     args = p.parse_args(argv)
+    global _GROUP_BY
+    _GROUP_BY = args.group
 
     if args.availability:
         _availability()
