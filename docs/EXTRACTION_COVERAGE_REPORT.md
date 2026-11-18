@@ -120,9 +120,10 @@ row has never recorded which donor it resolved to, so nothing downstream can aud
 why MUST-5 activated. Exact matching only — `core/donor_intel.py` says why the
 fuzzy fallback (which would reach 37.3% of rows) is the wrong trade on a gate path.
 
-## **80% is not reachable against this schema, and the measurement says why**
+## **80% was not reachable against the schema as it stood — and why**
 
-This is the finding that matters more than the +6.6 points.
+This is the finding that mattered more than the +6.6 points, and it is what the
+owner acted on. It is recorded as it was measured, before the removal below.
 
 A field can be blank for two opposite reasons, and fill rate alone cannot tell them
 apart. `--availability` asks a looser question of each row's source text — *does
@@ -157,33 +158,69 @@ model can produce them. They sit around 36% today because the provider ran out o
 credit. Restoring a working provider is worth roughly **+7 points** on its own, and
 is the single largest remaining lever.
 
-With the seven removed and a working model, coverage over the remaining 34 fields
-lands around **66%**. Reaching 80% would require the mid-range fields to be near
-total, and `--availability` says the sources do not support that.
+Removing the seven and restoring a working model would put coverage over the
+remaining 34 fields in the high sixties. Reaching 80% beyond that would require the
+mid-range fields to be near total, and `--availability` says the sources do not
+support that.
 
-### The proposal
+### The decision (owner, 2026-11-18): the seven are out
 
 Per the owner's rule — *where a data point is consistently unavailable across
 sources, propose removing it from the schema instead of continuing to extract it;
-measure before proposing* — **remove these seven from
-`core/opportunity_detail._COVERAGE_FIELDS` and from the page's layout**:
+measure before proposing* — these seven left
+`core.opportunity_detail._COVERAGE_FIELDS`:
 
 `apply_url`, `agency_code`, `grantmaking_entity`, `total_program_funding`,
 `expected_awards`, `call_award_floor`, `funding_tiers`
 
-Two notes on that list. `total_program_funding` and `call_award_floor` now have
-working extractors and fill 10.3% and 1.6% — keep the extractors (a figure read
-when it IS published is worth having) and drop the fields from the COVERAGE
-measurement, so the schema stops being graded on facts funders do not publish.
-`apply_url` is the clearest case: it has a fallback that already works and has never
-held a value.
+They are listed in `_REMOVED_FROM_COVERAGE` beside the schema, with the measured
+figure that justified each one, so the removal is auditable rather than folklore.
 
-**Not proposed for removal:** `expected_award_date` and `time_to_award`. Their
-subjects appear on 21.6% of pages; the gap there is ours, not the sources'.
+**What that did to the number — and what it did not do.**
 
-This is a proposal, not a change. Removing a field from the schema is the owner's
-call, and the columns should stay whatever is decided — dropping a column loses the
-rows that do carry a value.
+| | 41-field schema | 34-field schema |
+|---|---|---|
+| catalog | 48.3% | **57.8%** |
+| pipeline | 51.1% | **58.1%** |
+| rows at ≥80% | 1 | **70** (64 catalogue, 6 pipeline) |
+
+That is not the measurement improving; it is the measurement starting to mean
+something. Nothing about any call changed. What stopped is a standing 17%
+deduction for facts no funder publishes, which no extractor could ever have
+recovered and which made "extraction is poor" impossible to act on.
+
+**Nothing was deleted.** The columns stay, the extractors stay, and five of the
+seven still render. Two points on that, because "remove from the schema" could
+have been read as "take off the page":
+
+* `total_program_funding` and `expected_awards` **stay on the page**. Both are
+  hand-editable — `views/rfp_editor.py:422` and its React twin offer them as typed
+  inputs — so dropping the rows would let a reviewer enter a figure the page then
+  refuses to show back. `total_program_funding` is also the field that keeps a £12m
+  PROGRAMME from reading as a £12m AWARD, which is the confusion the SRHR call
+  demonstrated. Rare is a reason not to GRADE the pipeline on a field; it is not a
+  reason to hide the value when it is there.
+* `call_award_floor` keeps its extractor and its row, because
+  `core/criteria_derive.below_award_floor` SCORES on it and the "Award range" row
+  shows it beside the ceiling. `apply_url` keeps driving the Apply button through
+  its existing fallback.
+
+Only the two nobody can type left the layout: **`funding_tiers`** (0.1% populated,
+LLM-only — and where tiers are found, `extract.tiers_to_bounds` turns them into the
+award range, which still renders) and **`agency_code`** (never populated, a
+super_user row that could only print a dash).
+
+### What 80% would now take
+
+Over the 34 remaining fields, five are genuine reading-and-rewriting that only a
+model can produce — `full_description`, `what_is_funded`, `applicant_fit_profile`,
+`eligibility_other`, `project_stages` — and they sit near 36% because the provider
+ran out of credit. Restoring a working provider is worth roughly **+9 points** on
+this schema and is the single largest remaining lever. That would put coverage in
+the high sixties, with the rest in the fields `--availability` shows are published
+on a third to a half of pages: `project_duration` (38.0%), `resource_links`
+(49.5%), `submission_format` (53.9%), `what_is_not_funded` (34.7%),
+`eligibility_countries` (33.0%).
 
 ## What is covered
 
