@@ -669,6 +669,109 @@ def cost_share_required(text: Any) -> bool | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# funding_opportunity_number — the funder's own reference
+# ---------------------------------------------------------------------------
+#: Labels a portal puts in front of its reference. Ordered loosely by how
+#: specific they are; the first that matches wins.
+_REF_LABELS = (
+    r"notice identifier|notice (?:id|number|no\.?)|procurement identifier|"
+    r"tender (?:reference|identifier|id|number|no\.?)|solicitation (?:number|no\.?)|"
+    r"reference (?:number|no\.?)|contract reference|case number|"
+    r"(?:itb|rfq|rfp|eoi|rfi) (?:reference )?(?:no\.?|number)"
+)
+
+#: The value. It must contain a DIGIT — that is what separates a reference from
+#: the prose that follows the label — and may carry ONE internal space, because
+#: Find a Tender writes "2026/S 000-074968". The second token has to start with a
+#: digit so the pattern stops at the reference instead of eating the next word
+#: ("Notice identifier: 2026/S 000-074968 Procurement identifier (OCID)…").
+#: `(?:\s+(?:number|no\.?|id))?` lets the LABEL swallow its own tail. Without it,
+#: "the exact FAO Tender Reference Number. 10 working days…" parsed as label
+#: "Tender Reference" + value "Number. 10" — a label fragment and an unrelated
+#: figure, stored as a reference on 51 UNGM rows.
+_REF_RE = re.compile(
+    rf"\b(?:{_REF_LABELS})(?:\s+(?:number|no\.?|id))?\s*[:#\-]?\s*"
+    rf"(?P<ref>[A-Za-z0-9][A-Za-z0-9/\-_.]{{2,30}}(?:\s+\d[A-Za-z0-9/\-_.]*)?)", re.I)
+
+#: Words that mean the match ran into prose rather than a reference. Checked
+#: against the value's FIRST token, so "Tender 19/2026" survives (a real UNRWA
+#: reference) while "Number. 10" and "You are" do not.
+#:
+#: UNGM is why this exists: its notices talk ABOUT references far more often than
+#: they state one — "please contact UNGM Support, referencing the exact FAO
+#: Tender Reference Number" — so a pattern that trusts the label alone invents a
+#: reference out of a sentence about references.
+_REF_NOISE = {"number", "numbers", "no", "nos", "id", "ids", "identifier",
+              "reference", "references", "referencing", "the", "and", "is", "as",
+              "for", "of", "in", "a", "an", "to", "you", "this", "that", "your",
+              "please", "quote", "quoting", "above", "below", "same"}
+
+
+def _ref_key(value: Any) -> str:
+    """A reference reduced to its alphanumerics, for comparing two spellings of
+    one reference ("19/2026", "19-2026", "ITB Reference No: 30000032715")."""
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _ref_digits(value: Any) -> str:
+    """Just the digits. The last resort for "is this the same reference", used
+    when one spelling carries a word the other does not — "Tender 19/2026" beside
+    a stored id of "ITB Reference No: 19/2026", where the alphanumeric keys share
+    no containment but the reference is plainly the same one.
+
+    Five digits minimum, because a shorter run collides by accident: a 2026 in
+    both would otherwise merge two unrelated references.
+    """
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits if len(digits) >= 5 else ""
+
+
+def find_opportunity_number(text: Any, *, not_equal_to: Any = None) -> tuple[str | None, str]:
+    """(the funder's published reference, quoted evidence).
+
+    `funding_opportunity_number` is blank on 100% of the live Find a Tender, UNGM
+    and Contracts Finder rows — 638 of them — while 183 Find a Tender notices
+    carry "Notice identifier: 2026/S 000-074968" in their own text.
+
+    `not_equal_to` is the row's `opportunity_id`, and passing it matters. The
+    schema treats this as the SECOND reference: `opportunity_detail._SECTIONS`
+    renders it only "when the funder publishes a SECOND reference distinct from
+    the header id". Find a Tender's `opportunity_id` is the OCDS id
+    (`ocds-h6vhtk-06de5e`) and its notice identifier is the one a human quotes —
+    different things. Storing the same value twice would put a duplicate on the
+    page under a second heading.
+    """
+    body = _norm(text)
+    if not body:
+        return None, ""
+    # COMPARED WITHOUT PUNCTUATION, because the same reference is written two ways
+    # either side of the join: UNGM stores `19-2026` as its opportunity_id while
+    # the notice text says "Tender 19/2026", and `ITB Reference No: 30000032715`
+    # against a body saying "30000032715". A literal comparison called those
+    # different and printed the header id again under "Opportunity number".
+    own = _ref_key(not_equal_to)
+    own_digits = _ref_digits(not_equal_to)
+    for m in _REF_RE.finditer(body):
+        ref = (m.group("ref") or "").strip(" .,;:")
+        if not ref or not any(c.isdigit() for c in ref):
+            continue
+        first = re.split(r"[\s.]", ref, maxsplit=1)[0].strip(" .,;:").lower()
+        if first in _REF_NOISE or ref.lower() in _REF_NOISE:
+            continue
+        key = _ref_key(ref)
+        if own and key and (key == own or key in own or own in key):
+            continue
+        if own_digits and _ref_digits(ref) == own_digits:
+            continue
+        return ref, m.group(0).strip()
+    return None, ""
+
+
+def opportunity_number(text: Any, *, not_equal_to: Any = None) -> str | None:
+    return find_opportunity_number(text, not_equal_to=not_equal_to)[0]
+
+
 def call_compliance_flags(text: Any) -> dict[str, bool]:
     """The requirements THIS CALL states, in the bare-key vocabulary MUST-1/MUST-5
     already read (`criteria_derive._eff_column` prefixes them with `donor_`).
@@ -705,6 +808,7 @@ DERIVED_FIELDS: tuple[str, ...] = (
     "eligibility_applicant_types", "eligibility_countries", "what_is_not_funded",
     "attachments", "resource_links", "submission_format", "call_domain_areas",
     "focus_themes", "instrument_type", "solicitation_type",
+    "funding_opportunity_number",
 )
 
 
@@ -825,6 +929,10 @@ def derive_fields(row: dict[str, Any], *, text: str | None = None) -> dict[str, 
     _set("time_to_award", time_to_award(_deadline,
                                         award_on or row.get("expected_award_date")))
     _set("project_duration", *find_project_duration(body))
+    # The funder's own reference, and only when it is a SECOND one — the schema
+    # and the page both treat this as distinct from the header id.
+    _set("funding_opportunity_number",
+         *find_opportunity_number(body, not_equal_to=row.get("opportunity_id")))
     _set("eligibility_applicant_types", eligibility_applicant_types(body))
     _set("what_is_not_funded", what_is_not_funded(body))
 
