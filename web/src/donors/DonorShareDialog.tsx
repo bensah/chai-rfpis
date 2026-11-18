@@ -110,7 +110,12 @@ export function DonorShareDialog(
       return;
     }
     setNote("Rendering…");
-    const job = await awaitJob(queued.job_id, (j) => setNote(j.message || "Rendering…"));
+    // Five minutes, not awaitJob's default three. The wait is a GitHub Actions cold
+    // start before any rendering begins, and the Report export already found three
+    // minutes short of it. Giving up early does not cancel the job — it just stops
+    // watching one that is about to succeed.
+    const job = await awaitJob(queued.job_id, (j) => setNote(j.message || "Rendering…"),
+      { everyMs: 2000, timeoutMs: 300_000 });
     setBusy(false);
     setNote(null);
     if (!job) {

@@ -367,6 +367,60 @@ try {
     const none = R.createDonorWriteRoutes(null, null);
     ok("with no runner configured the route refuses rather than pretending",
       (await none.update(post({ edited: { donor: "X" } }), ctx, "g")).status === 503);
+
+    // The PDF route. The one here that queues a READ, and the shape worth pinning is
+    // that it does NOT look like the write routes.
+    sent.length = 0;
+    await routes.pdf(post({ keys: ["gates", " ", "wellcome"] }), ctx);
+    ok("a PDF request queues donor_pdf, not donor_action",
+      sent.length === 1 && sent[0].kind === "donor_pdf",
+      "donor_action's first act is to ask whether the actor may EDIT the shared "
+      + "catalogue. A reader asking for a printout of what is already on their screen "
+      + "must never be refused on that question.");
+    ok("...with the blank keys dropped",
+      JSON.stringify(sent[0].params.keys) === JSON.stringify(["gates", "wellcome"]));
+    ok("...and the requester named, since the runner has no session",
+      sent[0].params.by === "someone@example.org");
+
+    sent.length = 0;
+    const noDonors = await routes.pdf(post({ keys: [] }), ctx);
+    ok("a PDF of nothing is refused rather than queued",
+      noDonors.status === 400 && sent.length === 0);
+
+    sent.length = 0;
+    const tooMany = await routes.pdf(
+      post({ keys: Array.from({ length: 51 }, (_, i) => `d${i}`) }), ctx);
+    ok("a PDF of more donors than the runner's budget is refused UP FRONT",
+      tooMany.status === 400 && sent.length === 0,
+      "the runner has six minutes and each donor is a page or more of flowables. A job "
+      + "killed half-way leaves nothing to download and no explanation.");
+
+    sent.length = 0;
+    await routes.pdf(post({ keys: ["gates"], contacts: false }), ctx);
+    ok("contacts can be turned off for a bulk render",
+      sent[0].params.contacts === false,
+      "a combined PDF would otherwise do one donor_contacts read per donor.");
+    sent.length = 0;
+    await routes.pdf(post({ keys: ["gates"] }), ctx);
+    ok("...but they are ON by default",
+      sent[0].params.contacts === true,
+      "a shared profile missing its focal persons looks like a donor with none.");
+
+    const noPdfRunner = await none.pdf(post({ keys: ["gates"] }), ctx);
+    ok("with no runner configured the PDF route refuses too",
+      noPdfRunner.status === 503);
+  }
+
+  // 7e. The job kind has to exist on the Edge Function's side as well, or `enqueue`
+  //     returns null and the caller is told "unknown job kind" for work that exists.
+  //     (check-submit compares the whole list against the runner's KINDS; this names
+  //     the one this file is about, so a failure here points at the right file.)
+  {
+    const JR = await server.ssrLoadModule(
+      "/../supabase/functions/_shared/api/routes_jobs.ts");
+    const kinds = JR.jobKinds();
+    ok("donor_pdf is a kind this API will queue", kinds.includes("donor_pdf"));
+    ok("donor_action still is", kinds.includes("donor_action"));
   }
 
   // 8. Claims worth stating outright, which a value-by-value comparison would not catch
