@@ -55,6 +55,16 @@ const py = (payload) => {
   }
 };
 
+// The best answer in each criterion's own vocabulary, read from the generated table by
+// SCORE rather than by position, so a reworded option does not quietly change what these
+// assertions mean. Used by the alignment-score checks below.
+const BEST_ANSWERS = Object.fromEntries(
+  SC.CRITERIA.map((k) => [
+    k,
+    (V.CRITERION_ANSWERS[k] ?? []).find((o) => SC.criterionScore(k, o) === 2),
+  ]).filter(([, v]) => v !== undefined),
+);
+
 let diffs = 0, checks = 0;
 const j = (v) => JSON.stringify(v);
 const same = (label, ts, pyv) => {
@@ -174,9 +184,22 @@ for (const [i, c] of SCORE_CASES.entries()) {
   same(`score_submission #${i} ${j(c.values)} decline=${c.decline}`,
     [got.score, got.recommendation], want.scores[i]);
 }
-ok("an unanswered form scores the Park midpoint, not zero",
-  SC.alignmentScore({}) === 50,
-  `got ${SC.alignmentScore({})} — "Not sure" is rated 0.5, so nine of them is 50.`);
+// THE PARK MIDPOINT IS GONE (owner, 2026-11-18). An undetermined criterion used to be
+// rated 0.5 and keep its weight, so nine of them averaged to a confident-looking 50.
+// Now it leaves the denominator: nothing was judged, so there is no fit to report and
+// the answer is 0, which the 90/70 bands route to Decline exactly as 50 did.
+ok("an unanswered form has no score at all, rather than a midpoint one",
+  SC.alignmentScore({}) === 0,
+  `got ${SC.alignmentScore({})} — every criterion is "Not sure", so none of them is in `
+  + "the denominator and there is nothing to average.");
+ok("one unknown does not dilute eight good answers",
+  SC.alignmentScore({ ...BEST_ANSWERS, qualification: "Not sure" }) === 100,
+  `got ${SC.alignmentScore({ ...BEST_ANSWERS, qualification: "Not sure" })} — the eight `
+  + "that were judged all passed; 92.5 is the retired half-weight rule.");
+ok("a detected failure still carries its weight",
+  SC.alignmentScore({ ...BEST_ANSWERS, qualification: "No, not eligible" }) === 85,
+  `got ${SC.alignmentScore({ ...BEST_ANSWERS, qualification: "No, not eligible" })} — `
+  + "the rule is about what could not be READ, never about what was read and failed.");
 ok("a decline flag beats any score",
   SC.scoreSubmission({}, true).recommendation === "Decline");
 ok("the bands are 90/70, not 70/45",
@@ -268,15 +291,19 @@ for (const [i, r] of ROW_CASES.entries()) {
   //
   // The owner ruled on 2026-11-17 and bid_effort gained "Not sure", so all nine criteria
   // now carry it and the SAME one-line rule reaches the opposite answer with no code
-  // change. An otherwise-untouched form scores 50.0 where it scored 54.5.
+  // change. An otherwise-untouched form scored 50.0 where it scored 54.5 — and since
+  // 2026-11-18, when an undetermined criterion left the denominator, it scores nothing
+  // at all. The point of the assertion is unchanged: the form must not answer a question
+  // the submitter did not.
   ok("bid_effort now defaults to Not sure, like the other eight",
     v.bid_effort === "Not sure"
       && SC.criterionScore("bid_effort", v.bid_effort) === null,
     `got ${j(v.bid_effort)} scoring ${j(SC.criterionScore("bid_effort", v.bid_effort))}`);
-  ok("so an untouched form sits at the Park midpoint rather than above it",
-    SC.alignmentScore(S.criteriaValues({})) === 50,
-    `got ${SC.alignmentScore(S.criteriaValues({}))} — nine unanswered criteria are nine `
-    + "halves, and anything higher is the form answering one of them for the submitter.");
+  ok("so an untouched form asserts nothing and scores nothing",
+    SC.alignmentScore(S.criteriaValues({})) === 0,
+    `got ${SC.alignmentScore(S.criteriaValues({}))} — nine unanswered criteria leave `
+    + "nothing in the denominator, and anything above 0 is the form answering one of "
+    + "them for the submitter.");
   ok("a value outside the vocabulary is dropped, not stored",
     S.criteriaValues({ capacity: "something nobody offered" }).capacity === "Not sure");
 }

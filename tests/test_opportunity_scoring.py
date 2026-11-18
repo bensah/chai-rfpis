@@ -95,11 +95,23 @@ class TestWeightsAndPoints(unittest.TestCase):
             with self.subTest(criterion=c["key"]):
                 self.assertLessEqual(round(c["points"], 6), c["weight"] * 100)
 
-    def test_an_unscored_criterion_takes_the_park_midpoint(self):
+    def test_an_unscored_criterion_takes_nothing_at_all(self):
+        """REVERSED on 2026-11-18, on the owner's instruction.
+
+        This asserted the Park midpoint — `points == weight * 50` — which is where the
+        reported "7.5 / 15 beside the words Not sure" came from. An undetermined
+        criterion now contributes no points and leaves the denominator, so the page has
+        one statement to make about it instead of three that disagreed. The full
+        reasoning and the rest of the rule are in
+        tests/test_unsure_leaves_the_denominator.py.
+        """
         an = osc.analyse({}, {}, None, {})
         for c in an["criteria"]:
             if c["label"] == "Not sure":
-                self.assertAlmostEqual(c["points"], c["weight"] * 50, places=6)
+                with self.subTest(criterion=c["key"]):
+                    self.assertEqual(c["points"], 0.0)
+                    self.assertFalse(c["counted"])
+                    self.assertNotAlmostEqual(c["points"], c["weight"] * 50, places=6)
 
 
 class TestTheDecisionRule(unittest.TestCase):
@@ -169,11 +181,25 @@ class TestBlockersAndUnscored(unittest.TestCase):
         for b in an["blockers"]:
             self.assertEqual(b["band"], 0)
 
-    def test_unscored_are_the_ones_with_nothing_to_count(self):
+    def test_unscored_are_the_ones_with_no_answer(self):
+        """`scored` changed meaning on 2026-11-18, and this is the change.
+
+        It used to be `bool(total)` — whether any COMPONENT was counted — which is a
+        different question from whether the criterion has an answer, and the two were
+        printed side by side as if they were the same. `scored` is now `band is not
+        None`, so `unscored` means "we could not determine this" and nothing else.
+
+        The component tally is still a fact and still shown; it is just no longer
+        pretending to answer this question. A criterion can carry an answer with no
+        components behind it — a derivation that read the call directly — so
+        `count_text` saying "not scored" no longer implies the criterion is.
+        """
         an = osc.analyse({}, {}, None, {})
         for u in an["unscored"]:
-            self.assertFalse(u["scored"])
-            self.assertEqual(u["count_text"], "not scored")
+            with self.subTest(criterion=u["key"]):
+                self.assertFalse(u["scored"])
+                self.assertIsNone(u["band"])
+                self.assertEqual(u["points"], 0.0)
 
     def test_labels_map_is_keyed_by_criterion(self):
         an = osc.analyse(CANDIDATE, ORG, None, {})

@@ -129,11 +129,19 @@ def _for_web(a):
             "callPct": c.get("call_pct"), "donorPct": c.get("donor_pct"),
             "donorMatched": bool(c.get("donor_matched")),
         },
+        # What the composite was judged on, once an undetermined criterion stopped
+        # carrying weight (core/scorer.alignment_score, 2026-11-18). Without it the page
+        # cannot tell a 100 earned across nine criteria from a 100 earned across two.
+        "scoredOn": {
+            "weight": (a.get("scored_on") or {}).get("weight"),
+            "n": (a.get("scored_on") or {}).get("n"),
+            "of": (a.get("scored_on") or {}).get("of"),
+        },
         "criteria": [{
             "key": x.get("key"), "title": x.get("title"), "label": x.get("label"),
             "band": x.get("band"), "countText": x.get("count_text") or "",
-            "scored": bool(x.get("scored")), "weight": x.get("weight"),
-            "points": x.get("points"),
+            "scored": bool(x.get("scored")), "counted": bool(x.get("counted")),
+            "weight": x.get("weight"), "points": x.get("points"),
         } for x in (a.get("criteria") or [])],
     }
 

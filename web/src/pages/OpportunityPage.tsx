@@ -398,17 +398,39 @@ function CriterionRow({ c }: { c: Criterion }) {
           {c.label ?? "Not sure"}
         </span>
         <span className="min-w-24 text-right text-xs text-ink-400">{c.countText}</span>
-        <span className="min-w-20 text-right text-xs font-semibold text-ink-700 tabular-nums">
-          {c.points.toFixed(1)}
-          <span className="font-normal text-ink-400"> / {max.toFixed(0)}</span>
-        </span>
+        {/* AN UNCOUNTED CRITERION PRINTS NO ARITHMETIC. This slot read "7.5 / 15" beside
+            a label of "Not sure" and a count of "not scored" — the owner's words, "if
+            there is a score, then a component is active". It is one statement now: either
+            the points it earned out of its weight, or that it is not in the denominator
+            at all. The weight is still named, because "which 15 points fell out of the
+            score" is the useful part of the sentence. */}
+        {c.counted
+          ? (
+            <span className="min-w-20 text-right text-xs font-semibold text-ink-700 tabular-nums">
+              {c.points.toFixed(1)}
+              <span className="font-normal text-ink-400"> / {max.toFixed(0)}</span>
+            </span>
+          )
+          : (
+            <span
+              className="min-w-20 text-right text-xs text-ink-400 italic"
+              title={`Undetermined, so its ${max.toFixed(0)} points are out of the score `
+                + "entirely — not counted as a failure."}
+            >
+              not counted
+            </span>
+          )}
       </div>
-      <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-ink-100">
-        <div
-          className={`h-full rounded-full ${BAND_BAR[String(c.band)] ?? "bg-ink-300"}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      {/* No bar where there is nothing to measure: an empty track said "zero of its
+          weight", which is the claim this change exists to stop making. */}
+      {c.counted && (
+        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-ink-100">
+          <div
+            className={`h-full rounded-full ${BAND_BAR[String(c.band)] ?? "bg-ink-300"}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -695,6 +717,21 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
             <strong className="font-semibold text-ink-600">Suggestion</strong>{" "}
             90+ proceed · 70–89 park · under 70 decline — a failed hard requirement
             declines whatever the score.
+            {/* AND WHAT IT WAS SCORED ON. Since 2026-11-18 an undetermined criterion
+                leaves the denominator rather than taking half its weight, so the score
+                is renormalised over whatever could be judged. That makes 88-on-nine and
+                88-on-three the same number, and only this line tells them apart. */}
+            {d.analysis.scoredOn?.n != null
+              && d.analysis.scoredOn.of != null
+              && d.analysis.scoredOn.n < d.analysis.scoredOn.of && (
+              <>
+                {" "}
+                <strong className="font-semibold text-ink-600">Scored on</strong>{" "}
+                {d.analysis.scoredOn.n} of {d.analysis.scoredOn.of} criteria — the rest
+                could not be determined from the call or the donor record, so they are out
+                of the score rather than counted against it.
+              </>
+            )}
           </div>
         )}
       </Card>
