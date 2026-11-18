@@ -18,7 +18,7 @@
  * not tenant-scoped — one deployment, one exchange-rate table — and each says so next to
  * its own button rather than relying on a reader to know.
  */
-import { field, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, Ban, CheckCircle2, Coins, Globe2, Plus, Save, Search, Tags, Trash2,
 } from "lucide-react";

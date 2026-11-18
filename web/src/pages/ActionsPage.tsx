@@ -13,7 +13,7 @@
  * Every write here is sparse — the resolve toggle sends one field — so ticking an item off
  * cannot blank the note it belongs to.
  */
-import { field, fieldClass, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { CalendarDays, Check, ClipboardList, Handshake, Plus, RotateCcw } from "lucide-react";
 import {
   ApiError, createEngagement, createNote, fetchActions, patchEngagement, patchNote, putSchedule,

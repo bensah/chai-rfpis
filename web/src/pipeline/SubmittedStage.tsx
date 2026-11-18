@@ -23,7 +23,7 @@
  * the wait, the sort and which period the row falls in. A patched row would sit there
  * claiming a state it had just left.
  */
-import { field, fieldClass, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CalendarClock, Hourglass, Send } from "lucide-react";
 import {
   fetchSubmitted, saveRfpFields, type Submitted, type SubmittedRow, type Warning,
