@@ -207,8 +207,9 @@ export default function OpportunitiesPage({ user }: { user: User }) {
       {/* ONE ROW, because they are one decision taken in two steps: which figure, then
           which slice of it. Splitting them put the first above the page's heading and the
           second below it, so they looked like different kinds of thing. The picker leads
-          because it is the only one that WIDENS — everything after it narrows. */}
-      {/* THE WIDTH IS ON THE WRAPPER, NOT THE CONTROL, and it has to be. `fieldClass`
+          because it is the only one that WIDENS — everything after it narrows.
+
+          THE WIDTH IS ON THE WRAPPER, NOT THE CONTROL, and it has to be. `fieldClass`
           begins `w-full`, and Tailwind resolves two width utilities by stylesheet order
           rather than by the order they appear in the attribute — so the `w-52` these
           selects used to pass LOST to it, every one of them rendered full width, and that
