@@ -1075,6 +1075,12 @@ def ingest_candidates(
         # model call. On 2026-11-18 the configured provider answered 402 to every
         # request, which left `call_compliance_flags` NULL on every row scanned
         # since and MUST-5 deciding co-financing from donor intel alone.
+        #
+        # It also runs on a DRY RUN now, which the old placement did not — that is
+        # intended rather than incidental. A dry run exists to show what a real
+        # scan would store, and the whole point of this block is that it can move
+        # a recommendation; a preview that skipped it would show a different
+        # verdict from the scan it is previewing. It only reads.
         _apply_call_compliance(row, cand, _syn_call_flags)
 
         # ── RE-GATE AFTER ENRICHMENT ──────────────────────────────────────────
