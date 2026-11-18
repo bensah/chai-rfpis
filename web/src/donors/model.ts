@@ -167,15 +167,30 @@ export const pastProjects = (row: Donor) => jsonDicts(row.donor_past_projects_js
 export const fundingTiers = (row: Donor) => jsonDicts(row.donor_funding_tiers_json).filter((t) => t.name);
 
 /** {canonical key: 0-5} (_as_rating_map). */
-export function ratings(row: Donor): Record<string, number> {
+/**
+ * The stored per-area ratings, truncated toward zero and NOT clamped — `int(v)`.
+ *
+ * The share summary prints these verbatim, so it has to agree with Python's `int(_v)`
+ * on every stored value, including one outside 0–5 that a bad import left behind: a 7
+ * reads "7/5" in both apps, and sorts above the 5s in both, rather than quietly
+ * becoming a 5 in one of them.
+ */
+export function ratingsRaw(row: Donor): Record<string, number> {
   const raw = parseJson(row.donor_priority_ratings, {});
   const out: Record<string, number> = {};
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
       const n = Math.trunc(Number(v));
-      if (!Number.isNaN(n)) out[k] = Math.max(0, Math.min(5, n));
+      if (!Number.isNaN(n)) out[k] = n;
     }
   }
+  return out;
+}
+
+/** `ratingsRaw` clamped to 0–5 — for the rating BARS, whose width is a fraction of 5. */
+export function ratings(row: Donor): Record<string, number> {
+  const out = ratingsRaw(row);
+  for (const k of Object.keys(out)) out[k] = Math.max(0, Math.min(5, out[k]));
   return out;
 }
 
@@ -295,13 +310,16 @@ export function applyFilters(rows: Donor[], f: Filters, schema: Schema): Donor[]
 // ---------------------------------------------------------------------------
 // Share / download summary (_summary_lines + helpers)
 // ---------------------------------------------------------------------------
-function projectLine(p: Record<string, unknown>): string {
+export function projectLine(p: Record<string, unknown>): string {
   const bits: string[] = [];
   const amt = p.amount;
   if (amt !== null && amt !== undefined && amt !== "") {
     const cur = String(p.currency ?? "").trim();
     const n = Number(amt);
-    bits.push((cur ? `${cur} ` : "") + (Number.isFinite(n) ? Math.round(n).toLocaleString("en-US") : String(amt)).trim());
+    // pyRound, NOT Math.round. Python formats the amount with `f"{float(amt):,.0f}"`,
+    // which rounds half-to-EVEN, so an award of 1500.5 prints 1,500 there and would
+    // print 1,501 here — in a document somebody emails to the donor.
+    bits.push((cur ? `${cur} ` : "") + (Number.isFinite(n) ? pyRound(n).toLocaleString("en-US") : String(amt)).trim());
   }
   for (const k of ["year", "country", "stage"]) if (p[k]) bits.push(String(p[k]).trim());
   let head = `- ${String(p.title).trim()}`;
@@ -313,7 +331,7 @@ function projectLine(p: Record<string, unknown>): string {
   return head;
 }
 
-function tierLine(t: Record<string, unknown>): string {
+export function tierLine(t: Record<string, unknown>): string {
   const seg = ["amount", "duration"].filter((k) => t[k]).map((k) => String(t[k]).trim());
   let head = `- **${String(t.name ?? "").trim()}**`;
   if (seg.length) head += ` — ${seg.join(", ")}`;
@@ -383,7 +401,7 @@ export function summaryLines(row: Donor, schema: Schema): string[] {
   if (tiers.length) lines.push("Funding tiers / bands", ...tiers.map(tierLine), "");
 
   const areas = toList(row.donor_priority_areas);
-  const rmap = ratings(row);
+  const rmap = ratingsRaw(row);
   const scopePairs = ([
     ["Funding scope — geographies", listf("donor_geographic_scope")],
     [label("donor_in_scope"), d("donor_in_scope")],
@@ -391,7 +409,13 @@ export function summaryLines(row: Donor, schema: Schema): string[] {
   ] as [string, string | null][]).filter(([, v]) => v);
   if (areas.length || scopePairs.length) {
     lines.push("Scope & fit");
-    for (const [k, v] of Object.entries(rmap).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))) {
+    // CODEPOINT order on the tie-break, not localeCompare. Python sorts by the raw key,
+    // so "IDs - HIV/AIDS" precedes "IDs - Hepatitis" ('I' < 'e'); localeCompare collates
+    // case-insensitively and puts Hepatitis first, reordering a shared profile's
+    // priorities against the one Streamlit prints.
+    const byKeyThenRating = Object.entries(rmap)
+      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    for (const [k, v] of byKeyThenRating) {
       lines.push(`- **Priority:** ${subareaLabel(k)} (${categoryFull(k)}) — ${v}/5`);
     }
     for (const a of areas) if (!(a in rmap)) lines.push(`- **Priority area:** ${subareaLabel(a)}`);
@@ -438,6 +462,62 @@ export function summaryLines(row: Donor, schema: Schema): string[] {
     ["Opportunity listing URL(s)", d("donor_opportunity_listing_urls")],
   ]);
   return lines;
+}
+
+// ---------------------------------------------------------------------------
+// The share document (core/donor_share.py)
+// ---------------------------------------------------------------------------
+
+/** One markdown line for a focal-person contact — `_contact_line`, `$` escaped. */
+export function contactLine(cr: Contact): string {
+  const d = (k: string) => disp(cr[k]);
+  let head = `**${d("contact_name") ?? "(unnamed)"}**`;
+  if (d("role_title")) head += ` — ${d("role_title")}`;
+  if (cr.is_official) head += " · ✅ official";
+  const bits: string[] = [];
+  if (d("email")) bits.push(`✉ ${d("email")}`);
+  if (d("phone")) bits.push(`☎ ${d("phone")}`);
+  const ln = d("linkedin_url");
+  if (ln) bits.push(ln.startsWith("http") ? `[LinkedIn](${ln})` : `LinkedIn: ${ln}`);
+  if (d("address")) bits.push(d("address") as string);
+  if (d("notes")) bits.push(`_${d("notes")}_`);
+  const line = head + (bits.length ? "  \n" + bits.join(" · ") : "");
+  return line.replaceAll("$", "\\$");
+}
+
+/**
+ * `summaryLines` plus the focal-person block — what the Share dialog shows and downloads.
+ *
+ * THE TWO REPLACEMENTS ARE NOT COSMETIC, and they are why this is a function rather than
+ * a template at the call site. `contactLine` formats for Streamlit's markdown: a
+ * two-space hard break before the details, and `$` escaped so an amount in a note is not
+ * read as LaTeX. Flattened into a bullet, the break becomes an em-dash and the escape is
+ * undone — leave either in and a shared summary carries stray backslashes into an email.
+ */
+export function shareLines(row: Donor, schema: Schema, contacts: Contact[] = []): string[] {
+  const lines = summaryLines(row, schema);
+  if (contacts.length) {
+    lines.push("Contacts — focal persons");
+    for (const cr of contacts) {
+      lines.push("- " + contactLine(cr).replaceAll("  \n", " — ").replaceAll("\\$", "$"));
+    }
+    lines.push("");
+  }
+  return lines;
+}
+
+export const shareMarkdown = (row: Donor, schema: Schema, contacts: Contact[] = []) =>
+  shareLines(row, schema, contacts).join("\n");
+
+/**
+ * `GATES.pdf` — the short code, else the name, spaces to underscores.
+ *
+ * Matches `core.donor_share.share_filename` so a profile downloaded from either app
+ * lands under the same name in the same folder rather than beside it.
+ */
+export function shareFilename(row: Donor, ext = "pdf"): string {
+  const stem = String(row.donor_short || row.donor || "donor").trim().replaceAll(" ", "_");
+  return `${stem || "donor"}.${ext}`;
 }
 
 // ---------------------------------------------------------------------------

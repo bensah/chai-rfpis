@@ -53,6 +53,7 @@ import pandas as pd                                          # noqa: E402
 from db.supabase_client import service_client                # noqa: E402
 
 from core import donor_fields as F                           # noqa: E402
+from core import donor_share as S                            # noqa: E402
 
 SRC = REPO_ROOT / "app_pages" / "donors.py"
 
@@ -95,11 +96,12 @@ def _namespace(columns: list[str]) -> dict:
     dataframe it loaded. The completeness denominator comes out of it, so both sides have
     to agree about which live columns are flags before any percentage can agree.
     """
-    flags, fit, _req, _groups = F.flag_groups(columns)
-    return {"_FLAGS": flags, "_FIT": fit,
+    flags, fit, _req, groups = F.flag_groups(columns)
+    return {"_FLAGS": flags, "_FIT": fit, "_GROUPS": groups,
             "_label": F.label, "_normalize_category": F.normalize_category,
             "_to_list": F.to_list, "_disp": F.disp, "_pretty_choice": F.pretty_choice,
             "_title_name": F.title_name,
+            "_summary_lines": lambda row: S.summary_lines(row, groups),
             "_completeness": lambda row: F.completeness(row, flags, fit)}
 
 
@@ -155,6 +157,120 @@ ROUNDING_PROBES = [
 ]
 
 
+# Funded-project records for `project_line`. THE AMOUNT IS THE POINT: Python formats it
+# with `f"{float(amt):,.0f}"` — thousands separators, no decimals, half-to-even on the
+# .5 — and a JS port reaching for toLocaleString or toFixed agrees on 1200 and disagrees
+# on 1500.5, a bare string, or an amount that is not a number at all. The rest covers the
+# optional segments: currency, the year/country/stage joins, description, link.
+PROJECT_PROBES = [
+    {"title": "Minimal"},
+    {"title": "  Padded  ", "amount": 1200, "currency": "USD"},
+    {"title": "No currency", "amount": 1234567.89},
+    {"title": "Tie rounds even", "amount": 1500.5, "currency": "EUR"},
+    {"title": "Tie rounds even 2", "amount": 2500.5},
+    {"title": "Half below", "amount": 0.5},
+    {"title": "Not a number", "amount": "about 3m", "currency": "GBP"},
+    {"title": "Empty amount", "amount": "", "currency": "USD"},
+    {"title": "Zero", "amount": 0},
+    {"title": "Null amount", "amount": None, "year": 2024},
+    {"title": "Segments", "year": 2023, "country": " Kenya ", "stage": "Stage 2"},
+    {"title": "Everything", "amount": 50000, "currency": "USD", "year": "2022",
+     "country": "Mali", "stage": "Pilot", "description": "  A pilot study.  ",
+     "link": " https://example.org/x "},
+    {"title": "Link only", "link": "https://example.org/y"},
+    {"title": "Description only", "description": "Just prose."},
+]
+
+# Funding tiers for `tier_line` — the name is bolded, amount/duration join with a comma,
+# notes become a trailing sentence. A tier with neither amount nor duration must not
+# print a dangling em-dash.
+TIER_PROBES = [
+    {"name": "Seed"},
+    {"name": "  Growth  ", "amount": "$50k–$250k"},
+    {"name": "Scale", "duration": "24 months"},
+    {"name": "Full", "amount": "$1m", "duration": "36 months", "notes": "  By invitation.  "},
+    {"name": "Notes only", "notes": "Rolling."},
+    {"name": "", "amount": "x"},
+]
+
+# Focal-person contacts for `contact_line`. The two formatting rules that matter are the
+# TWO-SPACE hard break before the detail line and the `$` escape — Streamlit reads `$…$`
+# as LaTeX, so an amount in a contact's note would render as maths. The share path undoes
+# both; this pins the raw form so the undoing has something fixed to undo.
+CONTACT_PROBES = [
+    {},
+    {"contact_name": "Ada Lovelace"},
+    {"contact_name": "Ada Lovelace", "role_title": "Programme Officer", "is_official": True},
+    {"contact_name": "Grace", "email": "grace@example.org", "phone": "+1 555 0100"},
+    {"contact_name": "Linked", "linkedin_url": "https://linkedin.com/in/x"},
+    {"contact_name": "Bare handle", "linkedin_url": "in/x"},
+    {"contact_name": "Addressed", "address": "12 High St"},
+    {"contact_name": "Noted", "notes": "Prefers email"},
+    {"contact_name": "Money", "notes": "Budget $5,000 to $10,000"},
+    {"contact_name": "SHOUTING PERSON", "role_title": "DIRECTOR OF PROGRAMS"},
+    {"contact_name": "", "email": "anon@example.org"},
+    {"contact_name": "Everything", "role_title": "Lead", "is_official": True,
+     "email": "e@example.org", "phone": "+1 555", "linkedin_url": "https://x/y",
+     "address": "Somewhere", "notes": "Note $1"},
+]
+
+
+# Whole donor rows, invented, for the parts of the summary the live table does not
+# exercise. Each one pins a rule that was wrong or unpinned:
+#
+#   * the ratings TIE-BREAK is Python's string order on the raw key, so "IDs - HIV/AIDS"
+#     precedes "IDs - Hepatitis" ('I' < 'e'). JS localeCompare collates the other way and
+#     reordered a shared profile's priorities.
+#   * `int(v)` TRUNCATES toward zero and does NOT clamp. A 7 left by a bad import reads
+#     "7/5" and sorts first; React clamped it to 5 and buried it among the 5s.
+#   * a priority area with no rating still prints, under a different bullet.
+#   * an unparseable ratings blob falls back to {} rather than failing the section.
+SUMMARY_ROW_PROBES = [
+    # NOTE THE AREAS LIST ON EVERY RATED PROBE. The Scope & fit section is emitted only
+    # when the row has priority AREAS or a scope pair — a donor carrying ratings and
+    # nothing else prints no priorities at all, in either app. A probe without it is
+    # inert and proves nothing about the sort.
+    {"canonical_key": "probe_tiebreak", "donor": "Tie Break Trust",
+     "donor_priority_areas": json.dumps(["IDs - Malaria"]),
+     "donor_priority_ratings": json.dumps({
+         "IDs - Hepatitis": 5, "IDs - HIV/AIDS": 5, "IDs - Malaria": 5,
+         "Cross-cutting - Artificial Intelligence": 5})},
+    {"canonical_key": "probe_range", "donor": "Out Of Range Fund",
+     "donor_priority_areas": json.dumps(["IDs - Malaria"]),
+     "donor_priority_ratings": json.dumps({
+         "IDs - Malaria": 7, "IDs - TB": 0, "HSS - Health Financing": 3})},
+    {"canonical_key": "probe_truncation", "donor": "Fractional Foundation",
+     "donor_priority_areas": json.dumps(["IDs - Malaria"]),
+     "donor_priority_ratings": json.dumps({
+         "IDs - Malaria": 3.9, "IDs - TB": "4", "HSS - Health Financing": -2})},
+    {"canonical_key": "probe_unrated", "donor": "Unrated Areas Fund",
+     "donor_priority_areas": json.dumps(
+         ["IDs - Malaria", "Cross-cutting - Artificial Intelligence", "GOV - Rule of Law"]),
+     "donor_priority_ratings": json.dumps({"IDs - Malaria": 4})},
+    {"canonical_key": "probe_badjson", "donor": "Broken Ratings Fund",
+     "donor_priority_ratings": "{not json",
+     "donor_priority_areas": json.dumps(["IDs - TB"])},
+    {"canonical_key": "probe_notadict", "donor": "Wrong Shape Fund",
+     "donor_priority_ratings": json.dumps([1, 2, 3]),
+     "donor_priority_areas": json.dumps(["IDs - TB"])},
+    {"canonical_key": "probe_unknown_prefix", "donor": "Unknown Prefix Fund",
+     "donor_priority_areas": json.dumps(["IDs - TB"]),
+     "donor_priority_ratings": json.dumps(
+         {"ZZZ - Something": 4, "Bare key with no prefix": 3})},
+    # Every section empty — the summary must still be a title and nothing else, not a
+    # page of empty headings.
+    {"canonical_key": "probe_empty", "donor": "Empty Fund"},
+    {"canonical_key": "probe_tiers_projects", "donor": "Tiers And Projects Fund",
+     "donor_funding_tiers_json": json.dumps(
+         [{"name": "Seed", "amount": "$10k"}, {"amount": "no name"},
+          {"name": "Scale", "duration": "2y", "notes": "Invite only"}]),
+     "donor_past_projects_json": json.dumps(
+         [{"title": "Named", "amount": 2500.5, "currency": "USD", "year": 2024},
+          {"amount": 10, "description": "no title, dropped"},
+          {"title": "Bare"}])},
+]
+
+
 def main() -> None:
     sys.stdin.read()
     sb = service_client()
@@ -199,6 +315,32 @@ def main() -> None:
         "editedColumns": edited_columns(),
         "flags": ns["_FLAGS"],
         "fit": ns["_FIT"],
+        "groups": ns["_GROUPS"],
+        # THE SHARE DOCUMENT, line by line, over every live row. It is the only donor
+        # output that leaves the product — somebody pastes it into an email or sends the
+        # PDF to a colleague — so a section the React half drops or reorders is read by
+        # the recipient and by nobody who could notice.
+        "summary": [{"canonical_key": r.get("canonical_key"),
+                     "lines": ns["_summary_lines"](r)} for r in rows],
+        # The same function over INVENTED rows, for the rules no live donor exercises.
+        "summaryProbes": [{"row": r, "lines": ns["_summary_lines"](r)}
+                          for r in SUMMARY_ROW_PROBES],
+        "projectLines": [{"rec": p, "out": S.project_line(p)} for p in PROJECT_PROBES],
+        "tierLines": [{"rec": t, "out": S.tier_line(t)} for t in TIER_PROBES],
+        "contactLines": [{"rec": c, "out": S.contact_line(c)} for c in CONTACT_PROBES],
+        "shareFilenames": [
+            {"row": r, "pdf": S.share_filename(r, "pdf"), "md": S.share_filename(r, "md")}
+            for r in ({"donor_short": "GATES", "donor": "Gates Foundation"},
+                      {"donor": "Open  Society Foundations"},
+                      {"donor_short": "", "donor": "Wellcome Trust"},
+                      {"donor_short": "  BMZ  "},
+                      {})],
+        # The whole share document for one real donor, contacts included, flattened the
+        # way the dialog flattens it.
+        "shareMarkdown": ([
+            {"canonical_key": rows[0].get("canonical_key"),
+             "md": S.share_markdown(rows[0], ns["_GROUPS"], CONTACT_PROBES)}
+        ] if rows else []),
     }, ensure_ascii=False, default=str))
 
 

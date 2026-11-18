@@ -20,6 +20,7 @@ import pandas as pd
 import streamlit as st
 
 from core import donor_fields as _df
+from core import donor_share as _ds
 from core import donor_write as _dw
 from core import geographies as _geo
 from core import permissions, settings
@@ -217,17 +218,11 @@ _PARTNER_OPTIONS = list(dict.fromkeys(
 
 
 _disp_field = _df.disp_field
-_json_dicts = _df.json_dicts
-
-
-def _past_projects(row: dict) -> list[dict]:
-    """Parsed past-projects list (only entries with a title), or []."""
-    return [p for p in _json_dicts(row.get("donor_past_projects_json")) if p.get("title")]
-
-
-def _funding_tiers(row: dict) -> list[dict]:
-    """Parsed funding-tiers list (only entries with a name), or []."""
-    return [t for t in _json_dicts(row.get("donor_funding_tiers_json")) if t.get("name")]
+# The share summary, its bullets and the PDF now live in core/donor_share.py, so the
+# donor_pdf JOB can render the same document this page does. The names below stay as
+# aliases: this page is read by people who know it by them.
+_past_projects = _ds.past_projects
+_funding_tiers = _ds.funding_tiers
 
 
 # Fields that count toward the data-completeness score (every donor-facing field).
@@ -282,195 +277,14 @@ def _sub(text: str) -> None:
     st.markdown(f"<div class='di-sub'>{text}</div>", unsafe_allow_html=True)
 
 
-def _project_line(p: dict) -> str:
-    """One markdown bullet for a funded project: title — amount, year, country,
-    stage. <desc>."""
-    bits = []
-    amt = p.get("amount")
-    if amt not in (None, ""):
-        cur = (p.get("currency") or "").strip()
-        try:
-            bits.append((f"{cur} " if cur else "") + f"{float(amt):,.0f}")
-        except (TypeError, ValueError):
-            bits.append(((f"{cur} " if cur else "") + str(amt)).strip())
-    for k in ("year", "country", "stage"):
-        if p.get(k):
-            bits.append(str(p[k]).strip())
-    head = f"- {str(p['title']).strip()}"
-    if bits:
-        head += f" — {', '.join(bits)}"
-    desc = str(p.get("description") or "").strip()
-    if desc:
-        head += f". {desc}"
-    link = str(p.get("link") or "").strip()
-    if link:
-        head += f" ({link})"
-    return head
-
-
-def _tier_line(t: dict) -> str:
-    """One markdown bullet for a funding tier: **name** — amount, duration. <notes>."""
-    seg = [str(t[k]).strip() for k in ("amount", "duration") if t.get(k)]
-    head = f"- **{str(t.get('name', '')).strip()}**"
-    if seg:
-        head += f" — {', '.join(seg)}"
-    notes = str(t.get("notes") or "").strip()
-    if notes:
-        head += f". {notes}"
-    return head
+_project_line = _ds.project_line
+_tier_line = _ds.tier_line
 
 
 def _summary_lines(row: dict) -> list[str]:
-    """Sectioned markdown for share / PDF / download, laid out in 'Donor
-    Intelligence Report' order so the A4-portrait PDF prints with clean section
-    headings. Blank fields and empty sections are skipped — only what's known
-    shows. Section-title lines (no leading '- ') render as PDF sub-headings."""
-    lines = [f"# {_title_name(row)}", ""]
-
-    def section(title: str, pairs: list[tuple[str, str]]) -> None:
-        pairs = [(lbl, v) for lbl, v in pairs if v]
-        if not pairs:
-            return
-        lines.append(title)
-        for lbl, v in pairs:
-            lines.append(f"- **{lbl}:** {v}")
-        lines.append("")
-
-    def flags(group: str) -> str | None:
-        labs = []
-        for c in _FLAG_GROUPS.get(group, []):
-            if _yes(row.get(c)):
-                labs.append(re.sub(r"\s*fit$", "", _label(c), flags=re.I)
-                            if group == "Program-area fit" else _label(c))
-        return ", ".join(labs) or None
-
-    def choice(col: str) -> str | None:
-        return _pretty_choice(row.get(col)) if _disp(row.get(col)) else None
-
-    def listf(col: str) -> str | None:
-        vals = _to_list(row.get(col))
-        return ", ".join(vals) if vals else None
-
-    _cat = _normalize_category(row.get("donor_category"))
-    section("Overview", [
-        ("Category", _cat if _cat != "(uncategorised)" else None),
-        ("Donor type", _disp(row.get("donor_type"))),
-        ("Also an implementer that publishes calls",
-         _disp(row.get("donor_is_dual_role_implementer"))),
-        ("Founded", _disp(row.get("donor_founded"))),
-        ("Website", _disp(row.get("donor_website"))),
-        ("HQ country", _disp(row.get("donor_hq_country"))),
-        ("HQ address", _disp(row.get("donor_hq_address"))),
-        ("General email", _disp(row.get("donor_general_email"))),
-        ("Main phone", _disp(row.get("donor_main_phone"))),
-        ("LinkedIn", _disp(row.get("donor_linkedin_url"))),
-        ("Other profiles", _disp(row.get("donor_other_profile_urls"))),
-    ])
-    section("About & strategy", [
-        ("Summary", _disp(row.get("donor_summary_description"))),
-        ("Mission", _disp(row.get("donor_mission"))),
-        ("Vision", _disp(row.get("donor_vision"))),
-        ("Values", _disp(row.get("donor_values"))),
-        (_label("donor_strategic_priorities"), _disp(row.get("donor_strategic_priorities"))),
-        ("Strategy (URL)", _disp(row.get("donor_strategy_url"))),
-    ])
-
-    _lo, _hi = _disp(row.get("donor_award_low")), _disp(row.get("donor_award_high"))
-    _award = f"{_lo or '—'} – {_hi or '—'}" if (_lo or _hi) else None
-    _pb = _disp(row.get("donor_projected_budget"))
-    if _pb:
-        _per = _disp(row.get("donor_projected_budget_period"))
-        _pb = f"{_pb} ({_per})" if _per else _pb
-    section("Funding", [
-        ("Award range", _award),
-        ("Annual funding", _disp(row.get("donor_total_annual_funding_global"))),
-        ("Total awards", _disp(row.get("donor_total_awards"))),
-        ("Total funding to date", _disp(row.get("donor_total_funding_to_date"))),
-        ("Current awards", _disp(row.get("donor_current_awards"))),
-        ("Past awards", _disp(row.get("donor_past_awards"))),
-        ("Projected budget", _pb),
-        ("Funding mechanism", _disp_field(row, "donor_funding_mechanism")),
-        (_label("donor_funders_collaborators"), _disp_field(row, "donor_funders_collaborators")),
-        (_label("donor_funding_programs"), _disp(row.get("donor_funding_programs"))),
-    ])
-    _tiers = _funding_tiers(row)
-    if _tiers:
-        lines.append("Funding tiers / bands")
-        lines.extend(_tier_line(t) for t in _tiers)
-        lines.append("")
-
-    # Scope & fit — strategic priority areas (graded), geographies, in/out scope.
-    _areas_s = _to_list(row.get("donor_priority_areas"))
-    try:
-        _pa_ratings_s = json.loads(row.get("donor_priority_ratings") or "{}")
-        _pa_ratings_s = _pa_ratings_s if isinstance(_pa_ratings_s, dict) else {}
-    except (ValueError, TypeError):
-        _pa_ratings_s = {}
-    _scope_pairs = [(lbl, v) for lbl, v in (
-        ("Funding scope — geographies", listf("donor_geographic_scope")),
-        (_label("donor_in_scope"), _disp(row.get("donor_in_scope"))),
-        (_label("donor_out_of_scope"), _disp(row.get("donor_out_of_scope"))),
-    ) if v]
-    if _areas_s or _scope_pairs:
-        lines.append("Scope & fit")
-        for _k, _v in sorted(_pa_ratings_s.items(), key=lambda kv: (-int(kv[1]), kv[0])):
-            lines.append(f"- **Priority:** {_pa_sub(_k)} ({_pa_cat(_k)}) — {int(_v)}/5")
-        for _a in _areas_s:
-            if _a not in _pa_ratings_s:
-                lines.append(f"- **Priority area:** {_pa_sub(_a)}")
-        for _lbl, _v in _scope_pairs:
-            lines.append(f"- **{_lbl}:** {_v}")
-        lines.append("")
-    section("Eligibility & process", [
-        ("Legal & registration requirements", flags("Legal & registration requirements")),
-        ("Requirements & compliance", flags("Requirements & compliance")),
-        ("Direct local org eligible", _disp(row.get("donor_direct_local_org_eligible"))),
-        ("Route status", _disp(row.get("donor_active_route_status"))),
-        ("Prefinance", choice("donor_prefinance_required")),
-        ("Application process", _disp(row.get("donor_application_process"))),
-        ("Funding cycle", _disp(row.get("donor_funding_cycle"))),
-        ("Reporting requirements", _disp(row.get("donor_reporting_requirements"))),
-        (_label("donor_application_deadlines"), _disp(row.get("donor_application_deadlines"))),
-        (_label("donor_submission_portal_url"), _disp(row.get("donor_submission_portal_url"))),
-        ("Recent activity", _disp(row.get("donor_recent_activity"))),
-        (_label("donor_eligibility_notes"), _disp(row.get("donor_eligibility_notes"))),
-        (_label("donor_selection_criteria"), _disp(row.get("donor_selection_criteria"))),
-        (_label("donor_hq_country_required"), listf("donor_hq_country_required")),
-        (_label("org_stage_required"), _disp(row.get("org_stage_required"))),
-        (_label("donor_max_annual_budget"), _disp_field(row, "donor_max_annual_budget")),
-        (_label("donor_min_track_record"), _disp_field(row, "donor_min_track_record")),
-        (_label("donor_required_partner_type"), listf("donor_required_partner_type")),
-        (_label("donor_required_partner_country"), listf("donor_required_partner_country")),
-        (_label("donor_max_request_pct_of_budget"), _disp(row.get("donor_max_request_pct_of_budget"))),
-        (_label("donor_min_cofinancing_secured_pct"), _disp(row.get("donor_min_cofinancing_secured_pct"))),
-        (_label("donor_entity_type_required"), choice("donor_entity_type_required")),
-        (_label("donor_registration_region"), listf("donor_registration_region")),
-        (_label("donor_requires_pi"), choice("donor_requires_pi")),
-        (_label("donor_pi_country_scope"), choice("donor_pi_country_scope")),
-        (_label("donor_max_prior_grant"), _disp_field(row, "donor_max_prior_grant")),
-        (_label("donor_prior_beneficiary_rule"), choice("donor_prior_beneficiary_rule")),
-    ])
-
-    projects = _past_projects(row)
-    if projects:
-        lines.append(f"Past Projects — funded projects ({len(projects)})")
-        lines.extend(_project_line(p) for p in projects)
-        lines.append("")
-
-    section("Strategic guidance", [
-        (_label("donor_strategic_fit_notes"), _disp(row.get("donor_strategic_fit_notes"))),
-        (_label("donor_gaps_risks"), _disp(row.get("donor_gaps_risks"))),
-        (_label("donor_recommended_approach"), _disp(row.get("donor_recommended_approach"))),
-    ])
-    section("Sources & data quality", [
-        ("Verification", choice("donor_verification_level")),
-        ("Evidence summary", _disp(row.get("donor_evidence_summary"))),
-        ("Notes", _disp(row.get("notes"))),
-        ("Aliases", _disp(row.get("donor_aliases"))),
-        ("Source URLs", _disp(row.get("donor_source_urls"))),
-        ("Opportunity listing URL(s)", _disp(row.get("donor_opportunity_listing_urls"))),
-    ])
-    return lines
+    """The share / PDF markdown. The flag GROUPS are derived from the live table's
+    columns, so they are passed in rather than re-derived inside the shared module."""
+    return _ds.summary_lines(row, _FLAG_GROUPS)
 
 
 def _multi_with_options(label, options, current, *, key, help=None) -> list[str]:
@@ -568,28 +382,7 @@ def _checkbox_matrix(row: dict, *, editable: bool, key_prefix: str,
     return edited
 
 
-def _contact_line(cr: dict) -> str:
-    """One markdown line for a focal-person contact ($ escaped)."""
-    name = _disp(cr.get("contact_name")) or "(unnamed)"
-    head = f"**{name}**"
-    if _disp(cr.get("role_title")):
-        head += f" — {_disp(cr.get('role_title'))}"
-    if cr.get("is_official"):
-        head += " · ✅ official"
-    bits = []
-    if _disp(cr.get("email")):
-        bits.append(f"✉ {_disp(cr.get('email'))}")
-    if _disp(cr.get("phone")):
-        bits.append(f"☎ {_disp(cr.get('phone'))}")
-    if _disp(cr.get("linkedin_url")):
-        ln = _disp(cr.get("linkedin_url"))
-        bits.append(f"[LinkedIn]({ln})" if ln.startswith("http") else f"LinkedIn: {ln}")
-    if _disp(cr.get("address")):
-        bits.append(_disp(cr.get("address")))
-    if _disp(cr.get("notes")):
-        bits.append(f"_{_disp(cr.get('notes'))}_")
-    line = head + ("  \n" + " · ".join(bits) if bits else "")
-    return line.replace("$", r"\$")
+_contact_line = _ds.contact_line
 
 
 def _render_contacts(row: dict) -> None:
@@ -1238,134 +1031,29 @@ def _add_donor_dialog(*, suggest_mode: bool = False) -> None:
         st.rerun()
 
 
-def _donor_pdf(lines: list) -> bytes:
-    """Render the share summary to a branded PDF: the deploying org's logo +
-    name/team at the top, the donor intelligence body, and an RFPIS footer on
-    every page. reportlab base fonts are WinAnsi, so emoji/symbols are swapped
-    for ASCII and any other non-cp1252 glyph is dropped."""
-    import io
-    import re as _re
-    from datetime import date as _date
-    from xml.sax.saxutils import escape as _esc
-    from reportlab.lib import colors as _colors
-    from reportlab.lib.enums import TA_CENTER
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
-    from reportlab.lib.utils import ImageReader
-    from reportlab.platypus import (
-        HRFlowable, Image, Paragraph, SimpleDocTemplate, Spacer,
-    )
-
-    def _safe(s: str) -> str:
-        for a, b in (("✅", "[official]"), ("📇", ""), ("✉", "Email:"),
-                     ("☎", "Phone:")):
-            s = s.replace(a, b)
-        return s.encode("cp1252", "ignore").decode("cp1252")
-
-    def _inline(s: str) -> str:
-        parts = _re.split(r"\*\*(.+?)\*\*", s)
-        return "".join(f"<b>{_esc(_safe(p))}</b>" if i % 2 else _esc(_safe(p))
-                       for i, p in enumerate(parts))
-
-    base = getSampleStyleSheet()
-    h1 = ParagraphStyle("h1", parent=base["Title"], fontSize=16, spaceBefore=4, spaceAfter=12)
-    head = ParagraphStyle("head", parent=base["Heading4"], spaceBefore=8, spaceAfter=2)
-    body = ParagraphStyle("body", parent=base["BodyText"], fontSize=9.5, leading=13)
-    bullet = ParagraphStyle("bul", parent=body, leftIndent=12)
-    org_name_st = ParagraphStyle("orgname", parent=base["Normal"], alignment=TA_CENTER,
-                                 fontSize=12, leading=15, spaceAfter=1,
-                                 textColor=_colors.HexColor("#1e3a8a"))
-    org_team_st = ParagraphStyle("orgteam", parent=base["Normal"], alignment=TA_CENTER,
-                                 fontSize=9.5, leading=12, spaceAfter=8,
-                                 textColor=_colors.HexColor("#475569"))
-
-    # --- Org branding header (logo + name + team) ---
-    flow: list = []
-    try:
-        from core import settings as _s
-        _org = _s.get_org()
-        _logo_bytes, _ = _s.get_org_logo()
-    except Exception:
-        _org, _logo_bytes = {}, None
-    if _logo_bytes:
-        try:
-            _ir = ImageReader(io.BytesIO(_logo_bytes))
-            _iw, _ih = _ir.getSize()
-            _maxh = 46.0
-            _img = Image(io.BytesIO(_logo_bytes), width=_iw * (_maxh / _ih), height=_maxh)
-            _img.hAlign = "CENTER"
-            flow.append(_img)
-            flow.append(Spacer(1, 5))
-        except Exception:
-            pass  # unrenderable (e.g. SVG/WebP) — skip the logo gracefully
-    _oname = _safe(str(_org.get("org_name") or "")).strip()
-    if _oname and _oname.lower() != "your organization":
-        flow.append(Paragraph(f"<b>{_esc(_oname)}</b>", org_name_st))
-    # "Donor Intelligence" eyebrow under the org name (replaces the redundant
-    # team line — org_name already carries the team); the donor name then
-    # stands alone as the title below.
-    flow.append(Paragraph("Donor Intelligence", org_team_st))
-    flow.append(HRFlowable(width="100%", thickness=0.6,
-                           color=_colors.HexColor("#cbd5e1"), spaceAfter=8))
-
-    # --- Donor intelligence body (from the share markdown lines) ---
-    for ln in lines:
-        if not ln.strip():
-            flow.append(Spacer(1, 4))
-        elif ln.startswith("# "):
-            flow.append(Paragraph(_inline(ln[2:]), h1))
-        elif ln.startswith("- "):
-            flow.append(Paragraph("&bull;&nbsp;" + _inline(ln[2:]), bullet))
-        else:
-            flow.append(Paragraph(_inline(ln), head))
-
-    # --- RFPIS footer on every page ---
-    def _footer(canvas, doc):
-        canvas.saveState()
-        w, _h = A4
-        canvas.setStrokeColor(_colors.HexColor("#e2e8f0"))
-        canvas.setLineWidth(0.5)
-        canvas.line(1.8 * cm, 1.35 * cm, w - 1.8 * cm, 1.35 * cm)
-        canvas.setFont("Helvetica", 7.5)
-        canvas.setFillColor(_colors.HexColor("#94a3b8"))
-        canvas.drawCentredString(
-            w / 2.0, 1.0 * cm,
-            "RFP Intelligence System (RFPIS) · Version 1 · All Rights Reserved.")
-        canvas.drawString(1.8 * cm, 1.0 * cm, f"Generated {_date.today().isoformat()}")
-        canvas.drawRightString(w - 1.8 * cm, 1.0 * cm, f"Page {doc.page}")
-        canvas.restoreState()
-
-    buf = io.BytesIO()
-    SimpleDocTemplate(
-        buf, pagesize=A4, leftMargin=1.8 * cm, rightMargin=1.8 * cm,
-        topMargin=1.5 * cm, bottomMargin=1.9 * cm, title="Donor Intelligence",
-    ).build(flow, onFirstPage=_footer, onLaterPages=_footer)
-    return buf.getvalue()
+_donor_pdf = _ds.donor_pdf
 
 
 @st.dialog("Share donor", width="large")
 def _share_dialog(row: dict) -> None:
     st.markdown(f"### {row.get('donor')}")
-    lines = _summary_lines(row)
     _contacts = _load_contacts(row["canonical_key"], scope_key())
-    if not _contacts.empty:
-        lines.append("Contacts — focal persons")
-        for _, cr in _contacts.iterrows():
-            lines.append("- " + _contact_line(cr.to_dict()).replace("  \n", " — ").replace(r"\$", "$"))
-        lines.append("")
+    lines = _ds.share_lines(
+        row, _FLAG_GROUPS,
+        [] if _contacts.empty else [cr.to_dict() for _, cr in _contacts.iterrows()])
     md = "\n".join(lines)
     st.caption("Copy this summary, or download the full PDF.")
     st.code(md, language="markdown")
-    fname = (row.get("donor_short") or row.get("donor") or "donor").strip().replace(" ", "_")
     try:
         st.download_button(
             "⬇ Download PDF", _donor_pdf(lines),
-            file_name=f"{fname}.pdf", mime="application/pdf", type="primary",
+            file_name=_ds.share_filename(row, "pdf"), mime="application/pdf",
+            type="primary",
         )
     except Exception as e:  # reportlab missing / render error — fall back to .md
         st.download_button(
-            "⬇ Download (.md)", md, file_name=f"{fname}.md", mime="text/markdown",
+            "⬇ Download (.md)", md, file_name=_ds.share_filename(row, "md"),
+            mime="text/markdown",
         )
         st.caption(f"PDF unavailable ({e}); markdown offered instead.")
 
@@ -1645,16 +1333,17 @@ def _view_dialog(row: dict) -> None:
                         st.markdown(f"- {u.strip()}")
 
     st.divider()
-    fname = (row.get("donor_short") or row.get("donor") or "donor").strip().replace(" ", "_")
     lines = _summary_lines(row)
     st.caption("Download the full profile as a print-ready A4 portrait PDF.")
     try:
         st.download_button("⬇ Download / print (PDF)", _donor_pdf(lines),
-                           file_name=f"{fname}.pdf", mime="application/pdf",
+                           file_name=_ds.share_filename(row, "pdf"),
+                           mime="application/pdf",
                            key=f"view_dl_{row['canonical_key']}")
     except Exception:
         st.download_button("⬇ Download (.md)", "\n".join(lines),
-                           file_name=f"{fname}.md", mime="text/markdown",
+                           file_name=_ds.share_filename(row, "md"),
+                           mime="text/markdown",
                            key=f"view_dlmd_{row['canonical_key']}")
 
 
