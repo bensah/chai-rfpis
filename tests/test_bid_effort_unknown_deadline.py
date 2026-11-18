@@ -223,10 +223,15 @@ class DefaultResponseFallbackTests(unittest.TestCase):
         module's own docstring says what it wanted: unknown time is EXCLUDED, not failed.
 
         The owner had "Not sure" added to bid_effort's vocabulary, so the thing can now be
-        said directly. NOTHING SCORES DIFFERENTLY: `alignment_score` rates an unscored
-        criterion at _NOT_SURE_FLOAT (0.5) and a midpoint one at _SCORE_TO_FLOAT[1] (0.5),
-        so a row with everything unknown still totals 50.0 either way. Only the label a
-        reader sees changed, and it changed to the true one.
+        said directly. At the time nothing scored differently — `alignment_score` rated an
+        unscored criterion 0.5 and a midpoint one 0.5 — and only the label a reader sees
+        changed, to the true one.
+
+        THAT IS NO LONGER TRUE, and the difference is now the point. On 2026-11-18 an
+        undetermined criterion left the denominator entirely, so saying "Not sure" and
+        saying "Tight but doable, with a team" are worth very different things: the first
+        takes PREFER 9's 0.09 out of the model, the second spends it at half value on a
+        verdict nobody measured. Getting the label right stopped being cosmetic.
 
         The real invariant — never a 0-scoring verdict — is asserted for all nine in
         `test_an_unknown_value_never_resolves_to_a_zero_scoring_verdict` above, and still holds.
@@ -234,7 +239,7 @@ class DefaultResponseFallbackTests(unittest.TestCase):
         got = default_response("bid_effort", None)
         self.assertNotEqual(got, "Not enough time, no team")
         self.assertEqual(got, "Not sure")
-        self.assertIsNone(criterion_score(got))            # unscored, rated 0.5
+        self.assertIsNone(criterion_score(got))            # unscored → out of the model
 
     def test_criteria_with_not_sure_are_untouched(self):
         for key in ("qualification", "strategic_fit", "capacity", "geographic_fit",

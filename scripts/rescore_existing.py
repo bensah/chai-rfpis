@@ -149,17 +149,22 @@ write_with_retry = _write_with_retry
 def profile_signature(sb, tenant_id: str) -> tuple[dict, dict, list[dict], str]:
     """The inputs a re-score needs, plus the signature it was computed under.
 
-    Returns (org_profile, org_settings, donors, signature). The signature is built the same
-    way `views/screened_rfp.py` builds it — sha1 over the org profile and settings — because
-    it has to mean the same thing in both places: a profile edit changes it, and a stored
-    score whose signature no longer matches is known-stale without recomputing it.
+    Returns (org_profile, org_settings, donors, signature). The signature comes from
+    `core.score_stamp.profile_sig`, which the Streamlit screens call too, because it has
+    to mean the same thing everywhere: a profile edit changes it, a scoring-rule change
+    changes it, and a stored score whose signature no longer matches is known-stale
+    without recomputing it.
+
+    IT USED TO BE BUILT HERE, by hand, over the profile and settings only — and so did
+    the copies in `views/screened_rfp.py` and `views/rfp_records.py`. All three claimed
+    in their comments to cover a scoring-logic change and none of them did. See
+    `core/score_stamp` for what that cost.
 
     The caller must already be inside `set_tenant_override(tenant_id)`; `get_profile` and
     `get_org` read the ambient tenant, and silently returning another tenant's profile
     would score every row against the wrong organisation.
     """
-    import hashlib
-    import json as _json
+    from core.score_stamp import profile_sig
 
     org = orgp.get_profile()
     try:
@@ -168,11 +173,7 @@ def profile_signature(sb, tenant_id: str) -> tuple[dict, dict, list[dict], str]:
     except Exception:
         org_set = {}
     donors = (sb.table("donor_intel").select("*").limit(5000).execute().data or [])
-    sig = hashlib.sha1(
-        (_json.dumps(org, sort_keys=True, default=str)
-         + _json.dumps(org_set, sort_keys=True, default=str)).encode("utf-8")
-    ).hexdigest()[:12]
-    return org, org_set, donors, sig
+    return org, org_set, donors, profile_sig(org, org_set)
 
 
 def main(argv: list[str]) -> int:

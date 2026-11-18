@@ -118,15 +118,14 @@ df = drop_concluded(df)
 # when org profile / donor intel / scoring logic change; recompute fresh so the Screen
 # buckets + Score column match the Review gauge. Cached, busted by a profile signature.
 if not df.empty:
-    import json as _json_live
-    import hashlib as _hashlib_live
     from core import org_profile as _op_live, settings as _stg_live
     from core.assessment import assess_row as _assess_row
+    from core.score_stamp import profile_sig as _profile_sig
 
-    _prof_sig = _hashlib_live.sha1(
-        (_json_live.dumps(_op_live.get_profile(), sort_keys=True, default=str)
-         + _json_live.dumps(_stg_live.get_org(), sort_keys=True, default=str)).encode()
-    ).hexdigest()[:12]
+    # The hash was spelled out here, and in views/rfp_records.py, and in
+    # scripts/rescore_existing — three copies that all claimed to cover a SCORING LOGIC
+    # change and none of which did. One function owns it now; see core/score_stamp.
+    _prof_sig = _profile_sig(_op_live.get_profile(), _stg_live.get_org())
 
     # PER-ROW memo in session_state — only new/edited rows are scored, so navigation and
     # pagination don't re-run scoring (see core.live_scoring). Survives st.cache_data.clear().

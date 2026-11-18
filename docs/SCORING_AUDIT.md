@@ -16,7 +16,25 @@ can take.
 
 ---
 
+> **Status, 2026-11-18 (later the same day).** §1 is **fixed and shipped** —
+> an undetermined criterion now leaves the denominator, the page's three
+> disagreeing signals are one, and the floor §1 recommended is live. §2 was
+> **diagnosed wrongly** and is corrected below against a census of all 271 rows;
+> the guard it asked for exists as a test. §3 and most of §4 are still open.
+> Each section carries its own status line.
+
+---
+
 ## 1. What the screenshot is actually showing
+
+> **FIXED 2026-11-18.** Option B below is the rule now, with the floor.
+> `core/scorer.alignment_score` skips an undetermined criterion in both the
+> numerator and the denominator; `core/opportunity_scoring.analyse` makes
+> `scored`, `counted` and `points` one answer; the page prints "Scored on N of
+> 9" and "not counted" where it printed "7.5 / 15"; a Proceed suggested on
+> fewer than 5 criteria (or fewer than 3 MUSTs) is parked. Pinned by
+> `tests/test_unsure_leaves_the_denominator.py` and, for the TypeScript mirror,
+> by `web/scripts/parity/check-submit.mjs`.
 
 > "Note MUST 1, it shows 'Not sure' + not scored, but we note a bar read, and
 > 7.5 / 15. This is contradictory. if there is a score, then a component was scored."
@@ -94,9 +112,46 @@ So the picker is not mixed up — it is **reporting corrupt data faithfully**. T
 is whatever wrote `qualification = "Yes, comfortably"`. `criterion_score` maps it to
 2, so the row has been scoring MUST 1 as a full pass on a capacity answer.
 
-**Action:** find and fix the writer, then sweep `rfp_submissions` for any of the nine
-columns holding a value outside its own vocabulary. This is measurable and should be
-a parity check, not a one-off script.
+### That paragraph is wrong, and the measurement says so
+
+**CORRECTED 2026-11-18, after censusing the live table.** The sweep the
+paragraph above asked for was run over all **271 `rfp_submissions` rows** and
+every one of the nine criterion columns. Result:
+
+| Finding | Rows |
+|---|---|
+| `qualification` holding a `capacity` answer | **0** |
+| Any cross-criterion value, any column | **0** |
+| `cofinancing` = `"Yes, none required"` | 5 |
+| `cofinancing` = `"Yes/none required"` | 1 |
+
+The six `cofinancing` rows are that criterion's **own retired spellings**,
+kept in `_SCORE_MAP` deliberately so an old row goes on scoring
+(`core/scorer.py:57-58`). They are not corruption.
+
+So the stored data is clean, and **"because the row stores it" was a guess
+presented as a finding.** The label on the Opportunity page is never the
+stored column — `core/criteria_review.py`'s module docstring is emphatic
+about that — so the editor dropdown and the page label have different
+sources and only one of them was looked at.
+
+Where a cross-criterion label genuinely *could* come from is the **label
+path**: nine `ROLL_UP_RULES` and the `criteria_derive` functions, each of
+which writes its answers out as string literals. A literal copied from the
+criterion above it is invisible to the type system and to every existing
+test.
+
+**Done instead:** `tests/test_a_criterion_only_speaks_its_own_vocabulary.py`
+drives all nine roll-up rules over every combination of component scores (one
+to four components, the rules being monotone) and asserts each answer is in
+that criterion's own `CRITERION_RESPONSES`; it also asserts no rich answer is
+shared between two criteria except the deliberate `"Moderate"`. All nine are
+clean today, so this is a guard rather than a repair. 20 assertions.
+
+**Still open:** the original symptom has no confirmed cause. If it reappears,
+the thing to capture is the URL and whether the six options show in the
+**editor** or on the **decision aid** — they are different code paths and the
+screenshot did not say which.
 
 ### A correction to the owner's recollection
 
@@ -109,7 +164,7 @@ The adopted values are **2 / 1 / 0 / None**, and for MUST 1 they are:
 | Yes, fully | 2 |
 | Mostly, one item unclear | 1 |
 | No, not eligible | **0** |
-| Not sure | None (today: treated as 0.5) |
+| Not sure | None — **not counted at all** since 2026-11-18 (was 0.5) |
 
 "No, not eligible" is 0, not 1 — it is the hard-fail that gates a MUST. And
 "Yes, comfortably" belongs to MUST 3, not MUST 1.
@@ -201,22 +256,57 @@ states no value scores on nothing when the donor could have supplied it.
 
 ## 5. Proposed plan, in order
 
-1. **Fix the corrupt stored values** (§2) and add a parity check that no criterion
-   column holds a value outside its own vocabulary. Cheap, measurable, stops the
-   misleading dropdown at source.
-2. **Decide §1.** If B, change `alignment_score` to drop unscorable criteria from
-   the denominator, show the denominator on the page, and suppress the suggestion
-   below the floor. This moves live numbers and needs the owner's word before it
-   lands.
+1. ~~**Fix the corrupt stored values** (§2)~~ — **DONE, differently.** There were
+   none; the census is in §2. The guard landed as a unit test over the label
+   path, which is where a cross-criterion answer could actually originate.
+2. ~~**Decide §1.**~~ — **DONE.** Option B shipped: `alignment_score` drops
+   unscorable criteria from the denominator, the page prints "Scored on N of 9",
+   and a Proceed below the floor (5 of 9, 3 of 5 MUSTs) is parked.
 3. **Make the other eight follow MUST 5's active-component pattern**, so "not
-   applicable" and "not known" stop being the same thing.
+   applicable" and "not known" stop being the same thing. ← **next, and the
+   biggest.** §1 fixed the *composite's* treatment of "we could not tell"; this
+   fixes it one level down, inside each criterion's components.
 4. **Wire the reconciliation panel** (§3) so a human submission and the engine can
-   disagree visibly.
+   disagree visibly. Independent of 3 and 5.
 5. **Revise PREFER 6 and PREFER 9** to read donor data, or merge 9 into 8.
 
-Steps 1 and 4 are independent of the others and can go first. Step 2 is the one that
-changes every score in the database and should be measured before and after, on the
-same before/after discipline the extraction work used.
+### What step 2 moved, and what has not been re-measured
+
+Renormalising changes `alignment_score` for every row carrying an undetermined
+criterion, and scores **spread away from 50** — a thin call that read as
+mediocre now reads as whatever its determinable criteria actually say.
+
+Two things follow that this change did **not** do:
+
+* **Stored scores are stale until a re-score runs.** The Opportunity page
+  computes live (`opportunity_scoring`'s own docstring), so what a reviewer
+  reads there is correct immediately. `rfp_submissions.alignment_score`, which
+  the Pipeline bands, the Dashboard tiles and the Report read, is not.
+
+  Measured 2026-11-18, over all 271 rows:
+
+  | | rows |
+  |---|---|
+  | stamped, and now correctly stale | 239 |
+  | unstamped (never scored by the job) | 32 |
+  | human-assessed in any state | 59 |
+  | **of the 239: the job will re-score and re-stamp** | **200** |
+  | **of the 239: the job skips for ever** | **39** |
+
+  `_rescore` skips a human-assessed row and clears its stamps, so those 39
+  leave `check-rescore`'s assertion and do not come back — they land in
+  "unverified", which reports as "the job has not run on them" when the truth
+  is "the job will never run on them". Different facts, and only one is
+  actionable. A third state there is worth having if the provenance work
+  (§3) goes ahead.
+
+  So the check's coverage goes 211 asserted dishonestly → 0 while nothing has
+  been re-scored → 200 asserted honestly. About eleven rows weaker than
+  today, and true.
+* **No before/after census was taken.** The extraction work set the discipline
+  — measure, change, measure — and this did not follow it. The distribution of
+  live scores before and after is worth having before the re-score runs, not
+  after.
 
 ---
 

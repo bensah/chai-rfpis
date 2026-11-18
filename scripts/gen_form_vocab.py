@@ -120,8 +120,9 @@ def main() -> None:
     # offered, and the TypeScript treats it as unscored rather than guessing — which is
     # what `criterion_score` does with an unrecognised string anyway.
     #
-    # null means UNSCORED ("Not sure"), which alignment_score rates 0.5 — the Park
-    # midpoint, not a zero. See core/scorer._NOT_SURE_FLOAT for why.
+    # null means UNSCORED ("Not sure"), which alignment_score drops from the denominator
+    # rather than rating — neither 0.5 nor 0 (owner, 2026-11-18). See the rule and its
+    # reasoning in core/scorer.alignment_score.
     # Keyed by the NORMALISED answer — `criterion_score`'s own first step, lifted so the
     # TypeScript looks a value up rather than re-deriving where the case and the dash
     # spellings go. "High" and "high" collapse to one key and score the same, which they
@@ -205,7 +206,8 @@ export const COUNTRIES: string[] = {js(list(COUNTRIES))};
  * as core/scorer.criterion_score resolves it. Covers every answer the forms offer and
  * every legacy spelling _SCORE_MAP recognises, so it is total for anything a dropdown can
  * send; a value absent from it is free text and scores as unscored, which is what
- * criterion_score does with one too. Unscored is rated 0.5 by alignment_score, NOT 0. */
+ * criterion_score does with one too. Unscored LEAVES THE DENOMINATOR in alignment_score
+ * (owner, 2026-11-18) — it is neither rated 0.5 nor rated 0. */
 export const CRITERION_SCORES: Record<string, Record<string, number | null>> = {js(scores)};
 
 /** config/scoring_weights.yaml — the nine weights alignment_score sums over. */
