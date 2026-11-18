@@ -24,7 +24,9 @@ Some modules talk to the shared Supabase instance, so concurrency is not provabl
 settings were verified green here, but if a module fails in a way that looks unrelated to
 your change, re-run it with `--jobs 1` before believing it.
 
-Exit code is 0 only when every module passes.
+Exit code is 0 only when every module passes — and a module that collects NO
+tests counts as a failure, because this runner cannot otherwise tell a module
+that passed from a module it could not collect. See `_ALLOWED_EMPTY`.
 """
 from __future__ import annotations
 
@@ -46,6 +48,29 @@ _CONFLICT = "sync-conflict"
 
 _RAN = re.compile(r"^Ran (\d+) tests? in ([\d.]+)s", re.M)
 _COUNT = re.compile(r"(failures|errors|skipped)=(\d+)")
+
+# A MODULE THAT COLLECTS NOTHING IS A FAILURE, and the reason is not that zero is
+# suspicious.
+#
+# `unittest discover` only collects `TestCase` subclasses. A module of bare
+# `def test_*` functions — pytest's idiom — raises nothing, prints OK and runs
+# none of its tests, so this runner could not tell a module that PASSED from a
+# module it could not COLLECT. Both arrived here as rc=0 with no failures.
+#
+# That is not hypothetical. Over 2026-11-18/19 eleven modules across two sessions
+# were in that state, about 190 tests, among them the guard against stored scores
+# falsely claiming to be current — the test protecting a defect that had just
+# shipped was itself running nowhere. Three sessions said "the suite is green"
+# while it was false, and the suite agreed with them every time.
+#
+# So: a module reporting 0 tests fails, and says "collected 0 tests" rather than
+# counting failures it never ran.
+#
+#: Modules that are legitimately empty. An explicit list HERE rather than a
+#: marker inside the file, because an empty module is rare enough to be worth
+#: naming in one place, and a per-file marker is one more thing that can be
+#: pasted into a file that should not have it.
+_ALLOWED_EMPTY: frozenset[str] = frozenset()
 
 
 def module_names(selected: list[str]) -> list[str]:
@@ -81,11 +106,34 @@ def run_module(name: str) -> dict:
     ran = _RAN.search(out)
     counts = {k: int(v) for k, v in _COUNT.findall(out)}
     bad = counts.get("failures", 0) + counts.get("errors", 0)
+    tests = int(ran.group(1)) if ran else 0
     detail = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "ok"
+    ok = rc == 0 and bad == 0
+    # See `_ALLOWED_EMPTY`. Keyed on the COUNT, not on the exit code, because the
+    # exit code for this case is a moving target: Python 3.12+ returns 5 for "no
+    # tests ran" while older interpreters return 0, so on one machine an empty
+    # module already failed — with `detail` reading "ok", which is its own small
+    # lie — and on another it passed outright. The count is the same everywhere.
+    #
+    # Skipped when the module reported real failures or errors: those already have
+    # a better explanation than this one, and relabelling an import traceback as
+    # "collected 0 tests" would bury the traceback.
+    if tests == 0 and bad == 0:
+        if name in _ALLOWED_EMPTY:
+            # Named as legitimately empty, so forgive the exit code too: Python
+            # 3.12+ returns 5 for "no tests ran", which would otherwise fail the
+            # module the list exists to permit.
+            ok = True
+            detail = "collected 0 tests (allowed)"
+        else:
+            ok = False
+            detail = ("collected 0 tests — unittest found no TestCase here. Bare "
+                      "`def test_*` functions and pytest fixtures are invisible to "
+                      "it; see the note above _ALLOWED_EMPTY in scripts/run_tests.py")
     return {
         "name": name,
-        "ok": rc == 0 and bad == 0,
-        "tests": int(ran.group(1)) if ran else 0,
+        "ok": ok,
+        "tests": tests,
         "detail": detail,
         "elapsed": time.time() - started,
         "output": out,
