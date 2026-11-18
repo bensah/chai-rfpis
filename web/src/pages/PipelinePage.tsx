@@ -19,6 +19,7 @@ import ReviewedStage from "../pipeline/ReviewedStage";
 import OutcomeStage from "../pipeline/OutcomeStage";
 import ScreenedStage from "../pipeline/ScreenedStage";
 import SubmittedStage from "../pipeline/SubmittedStage";
+import OpportunitiesPage from "./OpportunitiesPage";
 import { PageHeader, Select } from "../ui";
 
 /**
@@ -168,13 +169,70 @@ export default function PipelinePage({ user }: { user: User }) {
       />
 
       <div className="mt-6">
-        {stage === "screened" && <ScreenedStage week={week} weeks={weeks} onPickWeek={setWeek} />}
+        {stage === "screened" && (
+          <>
+            <ScreenedStage week={week} weeks={weeks} onPickWeek={setWeek} />
+            <TriageSection user={user} />
+          </>
+        )}
         {/* A stage's own "show the whole year" button is the reader choosing a period
             just as deliberately as the picker above, so it pins too. */}
         {stage === "reviewed" && <ReviewedStage period={period} onPickPeriod={pickPeriod} />}
         {stage === "bidding" && <BiddingStage period={period} />}
         {stage === "submitted" && <SubmittedStage period={period} onPickPeriod={pickPeriod} />}
         {stage === "outcome" && <OutcomeStage period={period} onPickPeriod={pickPeriod} />}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * TRIAGE, as a section of the Screened stage rather than a page (owner, 2026-11-18):
+ * "i don't think it needs to sit on a page of its own. it can sit under Pipeline >
+ * Screened ... sits own its own section as 'Triaged Calls - full list'".
+ *
+ * WHY IT BELONGS HERE. Screened is the stage where a call has been found and scored and
+ * nobody has decided yet, and triage is the act of deciding. The block above it is that
+ * work for the week the team is sitting down to; this is the same work with no week on it.
+ *
+ * THE SCOPE IS SAID TWICE, HERE AND IN THE BLOCK ABOVE, because the period picker at the
+ * top of the page governs only that block. An all-time list under a week-scoped control is
+ * exactly the arrangement a reader reports as a bug — "I set the week and the list below
+ * ignored me" — so each list carries its own scope in its own heading, and this one says
+ * what the control does not reach.
+ *
+ * It renders the SAME component the `/opportunities` key renders, with `embedded` to drop
+ * the page heading. One list, two mount points: a change to what triage means cannot land
+ * on one and miss the other.
+ */
+function TriageSection({ user }: { user: User }) {
+  // Deep links from the Dashboard carry ?bucket=<figure> and used to land on a page whose
+  // first element was the list. Here the list is below a stage, so an unscrolled landing
+  // shows the week's block and looks like the tile went to the wrong place. Scroll to the
+  // section when, and only when, the reader arrived by clicking a figure.
+  useEffect(() => {
+    try {
+      if (!new URLSearchParams(window.location.search).get("bucket")) return;
+    } catch {
+      return;
+    }
+    // After paint, so the section exists and the list has laid out its filters.
+    const id = window.setTimeout(() => {
+      document.getElementById("triage")?.scrollIntoView({ block: "start" });
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, []);
+
+  return (
+    <section id="triage" className="mt-10 border-t border-ink-100 pt-8">
+      <h2 className="text-lg font-bold text-brand-700">Triaged calls — full list</h2>
+      <p className="mt-1 text-sm text-ink-600">
+        Every call, whichever week it was found in — the period above applies to the
+        screened block, not to this one. Pick a Dashboard figure to see the rows behind
+        it, then narrow by funder, lead or text.
+      </p>
+      <div className="mt-2">
+        <OpportunitiesPage user={user} embedded />
       </div>
     </section>
   );

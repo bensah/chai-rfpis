@@ -269,9 +269,12 @@ export default function HomePage({ user }: { user: User }) {
             to — and that is the problem this card answers rather than duplicates. A
             number you can click looks like a number; nothing on this page said the rows
             behind it live somewhere you can also go on purpose, filter and work through.
-            Triage is in the sidebar now too; this is the doorway for somebody reading the
-            Dashboard top to bottom, which is the same argument the guide card below makes
-            for itself.
+            Triage lives in Pipeline > Screened as of 2026-11-18, under the week's own
+            block; this is the doorway for somebody reading the Dashboard top to bottom,
+            which is the same argument the guide card below makes for itself. The links
+            still point at the `opportunities` key rather than a /pipelines URL, because
+            that key resolves to the same place and every bookmark made while Triage was
+            a page keeps working — see router.tsx.
 
             It offers the two entries worth naming: everything, and the fortnight. Not a
             third copy of the fourteen figures — those are the tiles above. */}
@@ -281,7 +284,8 @@ export default function HomePage({ user }: { user: User }) {
             Work through the calls in Triage
           </h3>
           <p className="mt-1.5 text-sm text-ink-600">
-            Every figure above opens there. It is the same list behind all of them, with
+            Every figure above opens it, in <strong>Pipeline &rsaquo; Screened</strong>
+            {" "}under the week's own block. It is the same list behind all of them, with
             filters for funder, lead and text, and it is where a call gets a decision.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">

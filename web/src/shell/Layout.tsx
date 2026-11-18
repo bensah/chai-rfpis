@@ -39,13 +39,12 @@ const isAdmin = (u: User) => u.role === "admin" || u.role === "super_user";
  *  a section headed "Organisation" directly above an item called "My Organization" reads
  *  as a mistake even though both are only labels. */
 const GROUPS: { label: string; pages: PageKey[] }[] = [
-  // `opportunities` (Triage) sits SECOND, directly under Dashboard. It is the room behind
-  // every Dashboard figure — you arrive by clicking one — so the two are read together,
-  // and putting it anywhere else in this list would separate a number from the rows it
-  // opens. It joined the rail on 2026-11-18; before that it had no entry at all and could
-  // only be reached by clicking a figure, which made the app's busiest working screen
-  // invisible to anybody who did not already know it was there.
-  { label: "Workspace", pages: ["home", "opportunities", "pipelines", "grants", "actions", "report", "donors"] },
+  // `opportunities` (Triage) was in this list for a few hours on 2026-11-18 and is not
+  // any more: the owner put the list inside Pipeline > Screened rather than give it a
+  // rail entry of its own. A Dashboard figure still opens it, and Pipeline > Screened is
+  // where you reach it on purpose. Putting it back here would be the same list twice in
+  // one sidebar — see router.tsx for why the KEY still exists.
+  { label: "Workspace", pages: ["home", "pipelines", "grants", "actions", "report", "donors"] },
   // `settings` was listed here until it left the rail. `allowed()` filtered it out, so
   // the group named a page that could never render — harmless to run and misleading to
   // read, which is the kind of line that answers a future question wrongly. Settings is

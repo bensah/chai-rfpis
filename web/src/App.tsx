@@ -11,7 +11,6 @@ import DonorsPage from "./pages/DonorsPage";
 import AlertsPage from "./pages/AlertsPage";
 import HomePage from "./pages/HomePage";
 import OpportunityPage from "./pages/OpportunityPage";
-import OpportunitiesPage from "./pages/OpportunitiesPage";
 import PipelinePage from "./pages/PipelinePage";
 import SettingsPage from "./pages/SettingsPage";
 import SubmitPage from "./pages/SubmitPage";
@@ -97,7 +96,13 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
   } else if (shown === "opportunity") {
     body = <OpportunityPage uid={params.get("uid")?.trim() ?? ""} user={user} />;
   } else if (shown === "opportunities") {
-    body = <OpportunitiesPage user={user} />;
+    // TRIAGE MOVED INTO Pipeline > Screened (owner, 2026-11-18), so this key renders the
+    // Pipeline page and the list appears in its section there. The key is kept precisely
+    // so it does not 404: every Dashboard tile links hrefOf("opportunities", {bucket}),
+    // and `PipelinePage` opens on Screened by default and reads the same ?bucket= the
+    // list has always read. Changing those tiles to /pipelines links would work too, and
+    // would still leave every bookmark made while Triage was a page pointing at nothing.
+    body = <PipelinePage user={user} />;
   } else if (shown === "pipelines") {
     body = <PipelinePage user={user} />;
   } else if (shown === "alerts") {
