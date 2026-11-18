@@ -158,7 +158,22 @@ function BucketPicker({ buckets, groups, active, onPick }: {
   );
 }
 
-export default function OpportunitiesPage({ user }: { user: User }) {
+/**
+ * `embedded` — rendered as a SECTION of another screen rather than as the page itself.
+ *
+ * It drops the PageHeader and nothing else: the heading belongs to whatever is hosting it
+ * (Pipeline > Screened says "Triaged calls — full list"), and two headings stacked read as
+ * two screens. The filters, the bucket and the table are identical, deliberately — this is
+ * one list with two mount points, not a copy, so a change to the triage rules cannot reach
+ * one and miss the other.
+ *
+ * The bucket still lives in the URL, so a Dashboard tile remains an ordinary link however
+ * this is mounted, and `setParams` edits the query in place rather than replacing it —
+ * picking a figure inside the Pipeline page keeps `stage=screened` where it is.
+ */
+export default function OpportunitiesPage(
+  { user, embedded = false }: { user: User; embedded?: boolean },
+) {
   const { params } = useLocation();
   const [data, setData] = useState<OpportunityList | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -243,16 +258,18 @@ export default function OpportunitiesPage({ user }: { user: User }) {
 
   return (
     <>
-      <PageHeader
-        title="Triage"
-        lead={
-          <>
-            Every call in one place. The figure you pick is the Dashboard's own — choosing
-            one shows the rows behind that number, and nothing else; the filters beside it
-            narrow what it chose.
-          </>
-        }
-      />
+      {!embedded && (
+        <PageHeader
+          title="Triage"
+          lead={
+            <>
+              Every call in one place. The figure you pick is the Dashboard's own —
+              choosing one shows the rows behind that number, and nothing else; the
+              filters beside it narrow what it chose.
+            </>
+          }
+        />
+      )}
 
       {/* ONE ROW, because they are one decision taken in two steps: which figure, then
           which slice of it. Splitting them put the first above the page's heading and the
