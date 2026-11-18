@@ -22,7 +22,9 @@
  * than letting the reader think five went missing.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowUpDown, ExternalLink, Pencil, Search, X } from "lucide-react";
+import {
+  AlertTriangle, ArrowUpDown, CalendarClock, ExternalLink, Pencil, Search, X,
+} from "lucide-react";
 import {
   fetchOpportunityList,
   type OpportunityBucket, type OpportunityList, type OpportunityListRow, type User,
@@ -30,7 +32,7 @@ import {
 import RfpEditor from "../opportunity/RfpEditor";
 import { hrefOf, Link, setParams, useLocation } from "../router";
 import {
-  Badge, Card, EmptyState, Notice, PageHeader, Select, Spinner, fieldClass, type Tone,
+  Badge, Card, EmptyState, Notice, PageHeader, Select, Spinner, field, type Tone,
 } from "../ui";
 
 const DECISION_TONE: Record<string, Tone> = {
@@ -78,6 +80,50 @@ const SORTS: { key: SortKey; label: string }[] = [
  * The counts stay on every option, so the Dashboard's figures are still readable here —
  * they are just read inside the list rather than across the page.
  */
+/**
+ * The one figure that is a PROMPT rather than a lens, given its own control.
+ *
+ * Every other bucket answers "show me the calls that are X". This one answers "what runs
+ * out soon", and it is the only one on the page with a deadline attached to doing nothing
+ * about it — a live bid whose fortnight passes unnoticed is simply not submitted. Inside
+ * the dropdown it was a line of text you had to go looking for, which is the wrong shape
+ * for the question somebody opens this page to ask first.
+ *
+ * IT IS STILL IN THE DROPDOWN, under By deadline, and that is deliberate. The buckets are
+ * one selection; a shortcut that removed its own target from the list would leave the
+ * dropdown with nothing valid to show while the shortcut was active, and a native select
+ * with no matching option displays its FIRST one — the page would say "Calls found" while
+ * listing the fortnight's bids. Both controls show the same state because they set the
+ * same state.
+ *
+ * Pressing it while it is already on returns to Calls found, so it toggles rather than
+ * trapping the reader in a filter they have to go elsewhere to leave.
+ */
+function DueSoonButton({ bucket, active, onPick }: {
+  bucket: OpportunityBucket; active: boolean; onPick: (k: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onPick(active ? "found" : bucket.key)}
+      aria-pressed={active}
+      title={bucket.rule}
+      className={`inline-flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors ${
+        active
+          ? "border-accent-600 bg-accent-600 text-white hover:bg-accent-700"
+          : "border-accent-600/40 bg-accent-50 text-accent-800 hover:border-accent-600 hover:bg-accent-100"}`}
+    >
+      <CalendarClock className="h-4 w-4" strokeWidth={2} />
+      {bucket.label}
+      {/* The count is the point of the control: a 0 here is the reassurance, so it is
+          never hidden or greyed into invisibility. */}
+      <span className={`tabular-nums ${active ? "text-white" : "text-accent-700"}`}>
+        {bucket.count}
+      </span>
+    </button>
+  );
+}
+
 function BucketPicker({ buckets, groups, active, onPick }: {
   buckets: OpportunityBucket[]; groups: string[];
   active: string; onPick: (k: string) => void;
@@ -136,6 +182,10 @@ export default function OpportunitiesPage({ user }: { user: User }) {
   useEffect(load, [load]);
 
   const bucket = data?.buckets.find((b) => b.key === bucketKey) ?? null;
+  // Looked up rather than assumed: a deployment whose server does not ship this figure
+  // should lose the shortcut, not render a button that selects a bucket with no rows and
+  // no rule to explain itself.
+  const dueSoon = data?.buckets.find((b) => b.key === "due_in_14_days") ?? null;
 
   const inBucket = useMemo(
     () => (data?.rows ?? []).filter((r) => r.buckets.includes(bucketKey)),
@@ -206,8 +256,12 @@ export default function OpportunitiesPage({ user }: { user: User }) {
 
       {/* ONE ROW, because they are one decision taken in two steps: which figure, then
           which slice of it. Splitting them put the first above the page's heading and the
-          second below it, so they looked like different kinds of thing. The picker leads
-          because it is the only one that WIDENS — everything after it narrows.
+          second below it, so they looked like different kinds of thing.
+
+          TWO ROWS, SPLIT BY WHAT THEY DO. Row one chooses WHICH CALLS — the fortnight
+          shortcut, the figure, the funder, the lead, the order. Row two narrows them by
+          free text, which is the only filter with no fixed set of answers and the only
+          one you type, so it gets its own line and room to be read back.
 
           THE WIDTH IS ON THE WRAPPER, NOT THE CONTROL, and it has to be. `fieldClass`
           begins `w-full`, and Tailwind resolves two width utilities by stylesheet order
@@ -216,20 +270,17 @@ export default function OpportunitiesPage({ user }: { user: User }) {
           is why four filters occupied four lines. A fixed-width flex item with a w-full
           control inside it does what the class was asking for, without changing `Select`
           for the rest of the app (where other callers have the same silent problem). */}
-      <div className="mt-4 mb-3 flex flex-wrap items-center gap-2">
+      {/* ROW ONE — WHICH CALLS. Every control here changes the set. */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {dueSoon && (
+          <DueSoonButton
+            bucket={dueSoon} active={bucketKey === dueSoon.key} onPick={pick}
+          />
+        )}
         <div className="w-64">
           <BucketPicker
             buckets={data.buckets} groups={data.bucketGroups ?? []}
             active={bucketKey} onPick={pick}
-          />
-        </div>
-        <div className="relative w-56">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-ink-400" />
-          <input
-            value={q} onChange={(e) => setQ(e.target.value)}
-            aria-label="Filter these opportunities"
-            placeholder="Title, funder, lead or uid"
-            className={`${fieldClass} pl-8`}
           />
         </div>
         <div className="w-52">
@@ -251,6 +302,22 @@ export default function OpportunitiesPage({ user }: { user: User }) {
             value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
             {SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
           </Select>
+        </div>
+      </div>
+
+      {/* ROW TWO — WHICH OF THEM. Text search is the one filter with no fixed set of
+          answers, so it gets the room to be typed in rather than a slot between two
+          dropdowns. The tally sits with it because it is what all of row one and row two
+          together produced, and it reads last for the same reason. */}
+      <div className="mt-2 mb-3 flex flex-wrap items-center gap-2">
+        <div className="relative w-72">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-ink-400" />
+          <input
+            value={q} onChange={(e) => setQ(e.target.value)}
+            aria-label="Filter these opportunities"
+            placeholder="Title, funder, lead or uid"
+            className={field("pl-8")}
+          />
         </div>
         {narrowed && (
           <button
