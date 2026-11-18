@@ -469,6 +469,11 @@ def ingest_candidates(
     try:
         extraction.reset_scan_synthesis()
         extraction.reset_thin_rows()
+        try:
+            from core import scraper as _scraper
+            _scraper.reset_listing_failures()
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -1210,6 +1215,21 @@ def ingest_candidates(
                      "the schema%s", _thin, _scored, extraction._THIN_FLOOR * 100,
                      "" if not _thin else
                      "  (each one is logged above with the fields it is missing)")
+        # WHICH SOURCES CONTRIBUTED NOTHING BECAUSE THEY COULD NOT BE READ.
+        #
+        # A source whose bulk listing fetch fails returns zero candidates, which
+        # is indistinguishable in every other line of this summary from a source
+        # that simply had nothing new. Find a Tender — 356 rows, the second
+        # largest source in the catalogue — did exactly that on 2026-11-19 and the
+        # only trace was one warning in the middle of a long log.
+        from core import scraper as _scraper
+        _failed = _scraper.listing_failures()
+        if _failed:
+            log.warning("scan ingest: %d source(s) CONTRIBUTED NOTHING because their "
+                        "listing could not be read — this is not the same as having "
+                        "nothing new:", len(_failed))
+            for _src, _why in _failed:
+                log.warning("    %s — %s", _src, _why)
     except Exception:
         pass
     log.info(

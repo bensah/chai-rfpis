@@ -66,6 +66,48 @@ def last_scan_skipped() -> int:
 # Network defaults — keep per-request timeout aggressive so the orchestrator
 # doesn't hang on slow donor sites.
 HTTP_TIMEOUT = 15
+
+# …EXCEPT FOR A BULK LISTING, which is a different kind of request.
+#
+# The 15s above is right for the hundreds of per-page fetches in a crawl: one
+# slow donor page must not stall the scan, and losing it costs one candidate.
+# A listing fetch is the opposite trade. It is ONE request per source, it returns
+# the whole feed, and losing it costs the ENTIRE SOURCE for that scan — silently,
+# because a source that fails its listing and a source with nothing new both
+# return zero candidates.
+#
+# Observed 2026-11-19: Find a Tender (356 rows in the catalogue, the second
+# largest source) answered in under 15s on one attempt and timed out on the next.
+# The HTTP layer had already retried — the error was "Max retries exceeded" — so
+# the problem is not retries, it is the deadline. The same feed completed
+# comfortably at 60.
+#
+# `_listing_failures` makes the other half visible: see `listing_failures()`.
+LISTING_TIMEOUT = _http._f("RFPIS_LISTING_TIMEOUT", 60)
+
+#: (source name, reason) for every bulk listing that failed this scan. A source
+#: returning nothing because its feed broke must not read like a source with
+#: nothing to return.
+_listing_failures: list[tuple[str, str]] = []
+
+
+def listing_failures() -> list[tuple[str, str]]:
+    """Sources whose bulk listing fetch failed during this scan."""
+    return list(_listing_failures)
+
+
+def reset_listing_failures() -> None:
+    _listing_failures.clear()
+
+
+def note_listing_failure(name: str, exc: object) -> None:
+    """Record — and log loudly — that a source produced nothing because its feed
+    did not answer. Called by every bulk-listing handler's except branch."""
+    reason = f"{type(exc).__name__}: {exc}" if isinstance(exc, BaseException) else str(exc)
+    _listing_failures.append((name, reason[:300]))
+    log.warning("listing fetch FAILED for %s — this source contributes NOTHING to "
+                "this scan, which is not the same as having nothing new: %s",
+                name, reason[:300])
 # Defined in core.http (the layer that now applies it to every request by
 # default) and re-exported here, because ~30 call sites in this module pass it
 # explicitly and a second definition could drift from the one actually sent.
@@ -2224,12 +2266,12 @@ def _scan_worldbank(name: str, url: str) -> list[dict[str, Any]]:
         r = _http.get(
             url, params=params,
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-            timeout=HTTP_TIMEOUT,
+            timeout=LISTING_TIMEOUT,
         )
         r.raise_for_status()
         data = r.json() or {}
     except Exception as exc:
-        log.warning("World Bank query failed: %s", exc)
+        note_listing_failure("World Bank", exc)
         return []
     projects = (data.get("projects") or {})
     out: list[dict[str, Any]] = []
@@ -2418,11 +2460,11 @@ def _scan_eu_funding_tenders(name: str, url: str, *,
                 files={"query": ("query.json", json.dumps(q), "application/json"),
                        "languages": ("languages.json", json.dumps(["en"]),
                                      "application/json")},
-                headers={"User-Agent": USER_AGENT}, timeout=HTTP_TIMEOUT)
+                headers={"User-Agent": USER_AGENT}, timeout=LISTING_TIMEOUT)
             r.raise_for_status()
             results = (r.json() or {}).get("results") or []
         except Exception as exc:
-            log.warning("EU F&T page=%s failed: %s", page, exc)
+            note_listing_failure(f"EU F&T (page {page})", exc)
             break
         if not results:
             break
@@ -2551,11 +2593,11 @@ def _scan_worldbank_procurement(name: str, url: str) -> list[dict[str, Any]]:
         r = _http.get(
             url, params={"format": "json", "rows": 100},
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-            timeout=HTTP_TIMEOUT)
+            timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         notices = (r.json() or {}).get("procnotices") or []
     except Exception as exc:
-        log.warning("World Bank procurement failed: %s", exc)
+        note_listing_failure("World Bank procurement", exc)
         return []
     for n in notices:
         ntype = _clean(n.get("notice_type") or "")
@@ -2594,11 +2636,11 @@ def _scan_ocds(name: str, url: str, *, notice_base: str, geo: str
     try:
         r = _http.get(
             url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-            timeout=HTTP_TIMEOUT)
+            timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         releases = (r.json() or {}).get("releases") or []
     except Exception as exc:
-        log.warning("OCDS %s failed: %s", name, exc)
+        note_listing_failure(name, exc)
         return []
     for rel in releases[:80]:
         tags = {str(t).lower() for t in (rel.get("tag") or [])}
@@ -2764,11 +2806,11 @@ def _scan_ted(name: str, url: str) -> list[dict[str, Any]]:
         r = _http.post(
             url, json=body,
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-            timeout=HTTP_TIMEOUT)
+            timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         notices = (r.json() or {}).get("notices") or []
     except Exception as exc:
-        log.warning("TED failed: %s", exc)
+        note_listing_failure("TED", exc)
         return []
     for n in notices:
         ti = n.get("TI")
@@ -3083,10 +3125,10 @@ def _scan_ungm(name: str, url: str) -> list[dict[str, Any]]:
                 "SortField": "DatePublished", "SortAscending": False}
         try:
             r = _http.post(endpoint, data=json.dumps(body), headers=hdrs,
-                              timeout=HTTP_TIMEOUT)
+                              timeout=LISTING_TIMEOUT)
             r.raise_for_status()
         except Exception as exc:
-            log.warning("UNGM page=%s failed: %s", page, exc)
+            note_listing_failure(f"UNGM (page {page})", exc)
             break
         rows = BeautifulSoup(r.text, "html.parser").select("div.dataRow[data-noticeid]")
         if not rows:
@@ -3355,11 +3397,11 @@ def _scan_unops(name: str, url: str) -> list[dict[str, Any]]:
     try:
         r = _http.get(api, headers={"User-Agent": USER_AGENT,
                                        "Accept": "application/json"},
-                         timeout=HTTP_TIMEOUT)
+                         timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         recs = (r.json() or {}).get("records") or []
     except Exception as exc:
-        log.warning("UNOPS GrantPlus failed: %s", exc)
+        note_listing_failure("UNOPS GrantPlus", exc)
         return []
     for n in recs:
         if (n.get("stage") or "open").lower() != "open":   # keep only open calls
@@ -3398,11 +3440,11 @@ def _scan_chinnova(name: str, url: str) -> list[dict[str, Any]]:
     try:
         r = _http.get(listing, headers={"User-Agent": USER_AGENT,
                                            "Accept": "text/html"},
-                         timeout=HTTP_TIMEOUT)
+                         timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
     except Exception as exc:
-        log.warning("CHINNOVA failed: %s", exc)
+        note_listing_failure("CHINNOVA", exc)
         return []
     out: list[dict[str, Any]] = []
     for card in soup.select("div.gc-card-body"):
@@ -3450,11 +3492,11 @@ def _scan_grandchallenges_ca(name: str, url: str) -> list[dict[str, Any]]:
     instead: heading → title, card body → description, "by <date>" → deadline."""
     try:
         r = _http.get(url, headers={"User-Agent": USER_AGENT,
-                                       "Accept": "text/html"}, timeout=HTTP_TIMEOUT)
+                                       "Accept": "text/html"}, timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
     except Exception as exc:
-        log.warning("Grand Challenges Canada failed: %s", exc)
+        note_listing_failure("Grand Challenges Canada", exc)
         return []
     base = f"{urlsplit(url).scheme}://{urlsplit(url).netloc}"
     out: list[dict[str, Any]] = []
@@ -3742,11 +3784,11 @@ def _scan_packard(name: str, url: str) -> list[dict[str, Any]]:
     api = "https://www.packard.org/wp-json/wp/v2/funding-opportunity?per_page=30"
     try:
         r = _http.get(api, headers={"User-Agent": USER_AGENT,
-                                       "Accept": "application/json"}, timeout=HTTP_TIMEOUT)
+                                       "Accept": "application/json"}, timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         items = r.json() or []
     except Exception as exc:
-        log.warning("Packard WP REST failed: %s", exc)
+        note_listing_failure("Packard", exc)
         return []
     out: list[dict[str, Any]] = []
     for it in (items if isinstance(items, list) else []):
@@ -3782,11 +3824,11 @@ def _scan_rvo(name: str, url: str) -> list[dict[str, Any]]:
             r = _http.get(api, params=({"page": page} if page else None),
                              headers={"User-Agent": USER_AGENT,
                                       "Accept": "application/json"},
-                             timeout=HTTP_TIMEOUT)
+                             timeout=LISTING_TIMEOUT)
             r.raise_for_status()
             j = r.json() or {}
         except Exception as exc:
-            log.warning("RVO page=%s failed: %s", page, exc)
+            note_listing_failure(f"RVO (page {page})", exc)
             break
         results = j.get("searchResults") or []
         if not results:
