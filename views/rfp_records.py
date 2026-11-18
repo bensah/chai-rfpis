@@ -129,15 +129,14 @@ df = df.sort_values(["_entered_dt", "_submitted_dt", "uid"],
 # Probability filter, and the View modal never disagree with Review. Cached + busted by
 # a profile/settings signature so a profile edit refreshes every row.
 # -----------------------------------------------------------------------------
-import json as _json_live
-import hashlib as _hashlib_live
 from core import org_profile as _op_live, settings as _stg_live
 from core.assessment import assess_row as _assess_row
+from core.score_stamp import profile_sig as _profile_sig
 
-_prof_sig = _hashlib_live.sha1(
-    (_json_live.dumps(_op_live.get_profile(), sort_keys=True, default=str)
-     + _json_live.dumps(_stg_live.get_org(), sort_keys=True, default=str)).encode()
-).hexdigest()[:12]
+# The hash was spelled out here, and in views/screened_rfp.py, and in
+# scripts/rescore_existing — three copies that all claimed to cover a SCORING LOGIC
+# change and none of which did. One function owns it now; see core/score_stamp.
+_prof_sig = _profile_sig(_op_live.get_profile(), _stg_live.get_org())
 
 
 # PER-ROW memo in session_state so navigation / pagination / delete don't re-score every

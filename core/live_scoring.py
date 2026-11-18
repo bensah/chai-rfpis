@@ -38,6 +38,38 @@ from core.assessment import assess_row
 _SKIP_KEYS = ("_search_dt", "_prob", "alignment_score", "auto_recommendation")
 
 
+def profile_signature() -> str:
+    """The AMBIENT tenant's score signature — profile, settings and the scoring rule.
+
+    IT DID NOT EXIST UNTIL 2026-11-18, and two callers were already asking for it.
+    `web/scripts/parity/rescore_py.py:165` imports it inside a try/except that falls back
+    to `None`, so check-rescore has always been handed a null signature — and
+    `check-rescore.mjs:120` reads `if (sig && stored !== sig) stale++`, which with a null
+    `sig` never fires. Every stamped row therefore fell through to "claims to be current"
+    and was compared against a fresh computation, with nothing able to class it as merely
+    stale.
+
+    That was invisible while stored scores happened to agree. The moment the scoring rule
+    changed, 177 rows reported as current-but-wrong when the truthful answer was "stale,
+    the job has not caught up" — a failure the check could not have avoided, because the
+    one thing that distinguishes the two states was never reaching it.
+
+    The caller must already be inside `set_tenant_override(...)` where a specific tenant
+    is meant: `get_profile` and `get_org` read the ambient one, exactly as
+    `scripts/rescore_existing.profile_signature` requires.
+    """
+    from core import org_profile as _orgp
+    from core.score_stamp import profile_sig
+
+    org = _orgp.get_profile()
+    try:
+        from core import settings as _settings
+        org_set = _settings.get_org()
+    except Exception:
+        org_set = {}
+    return profile_sig(org, org_set)
+
+
 def _row_key(prof_sig: str, row: dict[str, Any]) -> str:
     payload = {k: v for k, v in row.items() if k not in _SKIP_KEYS}
     h = hashlib.sha1(
