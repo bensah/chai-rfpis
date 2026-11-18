@@ -50,7 +50,7 @@ import {
 import { awaitJob, JOB_STATUS_LABEL } from "../jobs";
 import { Button, IconButton, Notice, Spinner } from "../ui";
 // The form controls are shared with Submit New Notice — see ./controls.tsx.
-import { Choice, DateBox, Lbl, Multi, Num, Row, Text } from "./controls";
+import { Choice, ChoiceOrNew, DateBox, Lbl, Multi, Num, Row, Text } from "./controls";
 import {
   changedColumns, columnValue, dateText, numText, orNull, readRow, txt,
   type Form, type FormValue,
@@ -468,9 +468,19 @@ export default function RfpEditor({
               onChange={(x) => set("call_geographic_scope", x)} options={opts.geoOptions} />
             <Multi label="Program area(s)" value={l("call_domain_areas")}
               onChange={(x) => set("call_domain_areas", x)} options={opts.programAreas} />
+            {/* "Funding opportunity number" was here, next to "Opportunity ID" on the
+                first tab, and the two asked the same question twice. Measured over the
+                live table: 151 of 271 rows carry an opportunity_id, ONE carries a funding
+                opportunity number, and on that row the two strings are identical.
+                `core/opportunity_detail.py` had already reached the same conclusion from
+                the other end — it prints the number "only when it is genuinely a SECOND
+                reference".
+
+                The COLUMN stays. Extraction (`core/extract.py`), de-duplication
+                (`core/deduplicator.py`) and the shared pool all read it, and a funder's
+                own reference is worth keeping when a source supplies one. What goes is
+                the second box asking a human to type it. */}
             <Row>
-              <Text label="Funding opportunity number" value={v("funding_opportunity_number")}
-                onChange={(x) => set("funding_opportunity_number", x)} />
               <Text label="Apply URL (funder portal)" value={v("apply_url")}
                 onChange={(x) => set("apply_url", x)}
                 hint="Where applicants actually submit, if different from the opportunity link." />
@@ -599,13 +609,25 @@ export default function RfpEditor({
       case "Team":
         return (
           <>
-            <Choice label="Proposal lead" value={v("proposal_lead")}
-              onChange={(x) => set("proposal_lead", x)} options={opts.teamMembers} />
-            <Multi label="Contributors" value={l("contributors")}
-              onChange={(x) => set("contributors", x)} options={opts.teamMembers} />
-            <Multi label="Reviewers" value={l("reviewers")}
-              onChange={(x) => set("reviewers", x)} options={opts.teamMembers} />
-            <Multi label="Support" value={l("support_roles")}
+            {/* THE THREE PEOPLE FIELDS ACCEPT A NAME THE LIST DOES NOT HOLD. `teamMembers`
+                is the tenant's own structure from Settings, and a proposal is routinely
+                led or reviewed by somebody outside it — a CHAI Global Vaccines lead on a
+                Cameroon call, say. Refusing the name does not keep the data clean; it
+                leaves the field blank or fills it with the wrong person. People are not a
+                controlled vocabulary and nothing scores off them.
+
+                SUPPORT IS DIFFERENT and stays closed: it is a list of FUNCTIONS
+                (technical, finance, compliance), not of people. Its label now says so. */}
+            <ChoiceOrNew label="Proposal lead" value={v("proposal_lead")}
+              onChange={(x) => set("proposal_lead", x)} options={opts.teamMembers}
+              hint="Anyone on the team, or type a name from another team." />
+            <Multi label="Contributors" value={l("contributors")} allowNew
+              onChange={(x) => set("contributors", x)} options={opts.teamMembers}
+              hint="Type a name not listed to add it." />
+            <Multi label="Reviewers" value={l("reviewers")} allowNew
+              onChange={(x) => set("reviewers", x)} options={opts.teamMembers}
+              hint="Type a name not listed to add it." />
+            <Multi label="Type of support needed" value={l("support_roles")}
               onChange={(x) => set("support_roles", x)} options={d.support_roles ?? []}
               hint="Functions this proposal needs — technical, finance, compliance. Not people; name individuals under Contributors and Reviewers." />
           </>

@@ -453,6 +453,11 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
                 {d.funder}
                 {d.reference && <span className="text-ink-400"> · {d.reference}</span>}
               </p>
+              {/* The system's own id for this call. It was readable only inside the edit
+                  form, so somebody looking at the page could not quote the row they were
+                  looking at — which is exactly how a bug report stalls. `select-all` so
+                  one click takes the whole thing. */}
+              <p className="mt-1 font-mono text-xs text-ink-400 select-all">{uid}</p>
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-2">
               <Button variant="secondary" icon={<Pencil className="h-4 w-4" />}

@@ -59,6 +59,33 @@ const STAGES: {
     rule: "approved or not approved — what the Funding page calls applied funding" },
 ];
 
+/**
+ * What period a stage OPENS on, which is not the same question for all five.
+ *
+ * The owner's rhythm, in their words: "Screened and Review are the parts that gets the
+ * found rfps into the pipeline, the Bidding and Submitted are those that are actively
+ * being worked on to completion, then the Outcome is the one waiting Funder's feedback."
+ *
+ * So the first two are a WEEKLY intake — the meeting walks through the week just gone, one
+ * week at a time, and `periodOf("week")` already anchors on the previous week because the
+ * current one is a day old on the Monday the team sits down.
+ *
+ * The last three are not periods of intake at all; they are WORK IN FLIGHT. A bid decided
+ * in March is still a bid in March, and a proposal sent in April is still with the funder
+ * in November — the Submitted screen said so itself, "7 proposals are still with a funder
+ * from outside this period", and Bidding said "widen the period above to see bids from
+ * earlier". A week-shaped window over work that outlives the week shows an empty board and
+ * asks every reader to widen it by hand before the meeting can start. They open on the
+ * YEAR instead. What leaves those boards is a row being submitted, answered, discontinued
+ * or past its deadline — the stage rules already do that, and the period should not be
+ * doing it a second time by accident.
+ */
+function defaultPeriodFor(stage: StageKey): Period {
+  return stage === "screened" || stage === "reviewed"
+    ? periodOf("week")
+    : periodOf("year");
+}
+
 /** A deep link may name the stage to open and widen the period to reach it.
  *
  * The Dashboard's "Due in 14 days" counts across ALL time, while this page filters by when
@@ -88,7 +115,12 @@ export default function PipelinePage({ user }: { user: User }) {
     intent.wide
       // Wide enough to contain every row the Dashboard counted, whenever it was found.
       ? { kind: "custom", from: "1900-01-01", to: "2999-01-01" }
-      : periodOf("week"));
+      : defaultPeriodFor(intent.stage ?? "screened"));
+  // Once the reader moves the period themselves it is theirs, and changing stage stops
+  // resetting it. Without this the per-stage default would undo a deliberate choice every
+  // time somebody stepped along the line and back.
+  const [pinnedPeriod, setPinnedPeriod] = useState(intent.wide);
+  const pickPeriod = (p: Period) => { setPinnedPeriod(true); setPeriod(p); };
   const [weeks, setWeeks] = useState<Weeks | null>(null);
   const [week, setWeek] = useState<string | null>(null);
 
@@ -112,7 +144,8 @@ export default function PipelinePage({ user }: { user: User }) {
       {/* The common denominators, above the stages. The week picker only appears for the
           stage that is keyed by a review week; the period drives the date-ranged ones. */}
       <PeriodPicker
-        value={period} onChange={setPeriod}
+        value={period}
+        onChange={pickPeriod}
         right={stage === "screened" && weeks ? (
           <label className="flex items-center gap-2 text-sm text-ink-600">
             Review week
@@ -124,14 +157,24 @@ export default function PipelinePage({ user }: { user: User }) {
         ) : undefined}
       />
 
-      <StageLine stage={stage} onPick={setStage} />
+      <StageLine
+        stage={stage}
+        onPick={(s) => {
+          setStage(s);
+          // Follow the stage only while the period is still a default. A reader who has
+          // chosen one keeps it across the whole line.
+          if (!pinnedPeriod) setPeriod(defaultPeriodFor(s));
+        }}
+      />
 
       <div className="mt-6">
         {stage === "screened" && <ScreenedStage week={week} weeks={weeks} onPickWeek={setWeek} />}
-        {stage === "reviewed" && <ReviewedStage period={period} onPickPeriod={setPeriod} />}
+        {/* A stage's own "show the whole year" button is the reader choosing a period
+            just as deliberately as the picker above, so it pins too. */}
+        {stage === "reviewed" && <ReviewedStage period={period} onPickPeriod={pickPeriod} />}
         {stage === "bidding" && <BiddingStage period={period} />}
-        {stage === "submitted" && <SubmittedStage period={period} onPickPeriod={setPeriod} />}
-        {stage === "outcome" && <OutcomeStage period={period} onPickPeriod={setPeriod} />}
+        {stage === "submitted" && <SubmittedStage period={period} onPickPeriod={pickPeriod} />}
+        {stage === "outcome" && <OutcomeStage period={period} onPickPeriod={pickPeriod} />}
       </div>
     </section>
   );

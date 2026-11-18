@@ -13,9 +13,9 @@
  * already on the row that is no longer in the vocabulary STAYS selectable. Nothing is
  * silently rewritten just because somebody opened a form on it.
  */
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import MultiSelect from "../components/MultiSelect";
-import { Select, fieldClass } from "../ui";
+import { Select, field, fieldClass } from "../ui";
 
 export function Row({ children, cols = 2 }: { children: ReactNode; cols?: 2 | 3 | 4 }) {
   const c = cols === 4 ? "sm:grid-cols-4" : cols === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2";
@@ -115,17 +115,79 @@ export function Choice({
   );
 }
 
-export function Multi({ label, value, onChange, options, hint }: {
+export function Multi({ label, value, onChange, options, hint, allowNew = false }: {
   label: string; value: string[]; onChange: (v: string[]) => void;
   options: string[]; hint?: string;
+  /**
+   * Let the user type a name the list does not hold — `MultiSelect`'s own `allowNew`.
+   *
+   * OFF by default, and the default protects SCORING: a typed value stored against a
+   * controlled vocabulary matches nothing, and the criterion reads as unanswered.
+   *
+   * PEOPLE ARE NOT A CONTROLLED VOCABULARY, which is why the Team tab turns it on. A
+   * proposal lead from another CHAI team is a real answer that the tenant's own member
+   * list has never heard of, and refusing it does not keep the data clean — it just
+   * means the field is left blank or filled with the wrong person.
+   */
+  allowNew?: boolean;
 }) {
   // Same rule as Choice: stored values the vocabulary has since dropped stay selected.
   const opts = useMemo(
     () => [...new Set([...options, ...value])], [options, value]);
   return (
     <div className="mb-4">
-      <MultiSelect label={label} options={opts} value={value} onChange={onChange} help={hint} />
+      <MultiSelect label={label} options={opts} value={value} onChange={onChange} help={hint}
+        allowNew={allowNew} />
       {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
     </div>
   );
 }
+
+/**
+ * A single choice that also accepts a name the list does not hold.
+ *
+ * `Choice` is a native `<select>`, which cannot take a typed value at all, so a field
+ * whose list is a STARTING POINT rather than a closed set needs this instead: the list,
+ * plus "Someone else…", which reveals a text box. A stored value that is not in the list
+ * preselects that box with the text already in it, so re-opening the editor shows what is
+ * stored rather than silently resetting to blank.
+ */
+export function ChoiceOrNew({
+  label, value, onChange, options, hint, tip, blank = "—", addLabel = "Someone else…",
+}: {
+  label: string; value: string; onChange: (v: string) => void;
+  options: string[]; hint?: string; tip?: string; blank?: string; addLabel?: string;
+}) {
+  const list = useMemo(() => [...new Set(options)], [options]);
+  const known = !!value && list.includes(value);
+  const [typing, setTyping] = useState(!!value && !known);
+  return (
+    <div className="mb-4">
+      <Lbl hint={tip ?? hint}>{label}</Lbl>
+      <Select
+        value={typing ? ADD : value}
+        onChange={(e) => {
+          if (e.target.value === ADD) { setTyping(true); onChange(""); return; }
+          setTyping(false);
+          onChange(e.target.value);
+        }}
+      >
+        <option value="">{blank}</option>
+        {list.map((o) => <option key={o} value={o}>{o}</option>)}
+        <option value={ADD}>{addLabel}</option>
+      </Select>
+      {typing && (
+        <input
+          autoFocus value={value} onChange={(e) => onChange(e.target.value)}
+          placeholder="Type the person's name"
+          aria-label={`${label} — type a name`}
+          className={field("mt-2")}
+        />
+      )}
+      {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
+    </div>
+  );
+}
+
+/** Sentinel for the "type one" row. Not a storable value — it never reaches `onChange`. */
+const ADD = "__add_new__";
