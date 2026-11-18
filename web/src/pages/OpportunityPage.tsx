@@ -115,11 +115,14 @@ function Lines({ lines, missing }: { lines: string[]; missing: boolean }) {
 function Row({ label, value }: { label: string; value: string }) {
   const blank = isMissing(value);
   return (
-    <div className="flex items-baseline justify-between gap-4 py-1.5">
-      <dt className={`shrink-0 basis-5/12 text-sm ${blank ? "text-ink-400" : "text-ink-500"}`}>
-        {label}
-      </dt>
-      <dd className={`min-w-0 flex-1 text-right text-sm ${
+    // A GRID, AND THE VALUES ARE LEFT-ALIGNED. They used to be pushed to the right edge of
+    // the block, which on a page where most fields are silent produced a column of dashes
+    // floating against nothing and values that started at a different place on every line.
+    // Two aligned columns read as a table, which is what this is; the eye can run down
+    // either side.
+    <div className="grid grid-cols-[minmax(0,5fr)_minmax(0,7fr)] items-baseline gap-x-4 py-1.5">
+      <dt className={`text-sm ${blank ? "text-ink-400" : "text-ink-500"}`}>{label}</dt>
+      <dd className={`min-w-0 text-sm break-words ${
         blank ? "text-ink-300" : "font-medium text-ink-800"}`}>
         {blank ? MISSING : value}
       </dd>
@@ -146,14 +149,77 @@ function Filled({ rows }: { rows: [string, string][] }) {
   );
 }
 
-/** A fact block or a prose block from core/opportunity_detail.page_rows. */
-function BlockView({ block }: { block: Block }) {
+/**
+ * How much of the call we actually captured, said as a percentage first.
+ *
+ * A reader meeting a page of dashes asks "is this app broken?". The honest answer is
+ * "this call stated 12 of the 97 things we track", and it belongs where they ask it
+ * rather than in a tooltip. The bar is coloured by how thin the record is, because a thin
+ * record is a fact about whether the score further down can be trusted at all.
+ */
+export function CoverageAside({ cov }: { cov: { filled: number; total: number } }) {
+  if (!cov.total) return null;
+  const pct = Math.round((cov.filled / cov.total) * 100);
+  const text = pct >= 60 ? "text-good-700" : pct >= 30 ? "text-gold-700" : "text-bad-700";
+  const bar = pct >= 60 ? "bg-good-600" : pct >= 30 ? "bg-gold-500" : "bg-bad-600";
+  return (
+    <div className="min-w-[14rem] rounded-lg border border-ink-200 bg-ink-50/70 px-3 py-2">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-[0.7rem] font-semibold tracking-[0.06em] text-ink-500 uppercase">
+          Captured from the call
+        </span>
+        <span className={`text-sm font-bold tabular-nums ${text}`}>{pct}%</span>
+      </div>
+      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-ink-200">
+        <div className={`h-full rounded-full ${bar}`} style={{ width: `${pct}%` }} />
+      </div>
+      <p className="mt-1.5 text-xs text-ink-500">
+        <strong className="font-semibold text-ink-700 tabular-nums">
+          {cov.filled} of {cov.total}
+        </strong>{" "}
+        tracked fields are stated here. A dash is this call being silent, not a field we
+        stopped tracking.
+      </p>
+    </div>
+  );
+}
+
+/** The call's own summary, in the same card as every block under it. It used to be the
+ *  one bare section at the top of a page of cards, which read as a loose paragraph adrift
+ *  rather than as the call's opening statement. */
+export function OverviewCard({ heading, lines, missing, children }: {
+  heading: string; lines: string[]; missing: boolean; children?: React.ReactNode;
+}) {
+  return (
+    <Card className="mb-5 p-4">
+      <h3 className="mb-1.5 text-sm font-semibold text-brand-700">{heading}</h3>
+      <div className="max-w-3xl"><Lines lines={lines} missing={missing} /></div>
+      {children}
+    </Card>
+  );
+}
+
+/**
+ * A fact block or a prose block from core/opportunity_detail.page_rows.
+ *
+ * ONE SURFACE FOR ALL THREE KINDS, which is the whole point of this rewrite. A block was
+ * rendered three ways — `prose` as a bare section, `cards` as a bordered padded Card, and
+ * anything else as another bare section — and `page_rows` puts them SIDE BY SIDE in two
+ * columns. So a bordered card routinely sat next to a borderless one with a different
+ * vertical rhythm (`mb-5` against `mb-6`), which is the "cards distortedly placed against
+ * each other" the owner reported. The block's `kind` still decides what goes INSIDE it;
+ * it no longer decides whether the thing has edges.
+ *
+ * Spacing is the grid's now, not the block's: no `mb-*` here, so two columns cannot drift
+ * out of step with each other.
+ */
+export function BlockView({ block }: { block: Block }) {
   if (block.kind === "prose") {
     return (
-      <section className="mb-6">
-        <h3 className="mb-1.5 text-sm font-semibold text-ink-800">{block.title}</h3>
+      <Card className="h-full p-4">
+        <h3 className="mb-1.5 text-sm font-semibold text-brand-700">{block.title}</h3>
         <Lines lines={block.lines} missing={block.missing} />
-      </section>
+      </Card>
     );
   }
   const body = (
@@ -188,9 +254,7 @@ function BlockView({ block }: { block: Block }) {
       )}
     </>
   );
-  return block.kind === "cards"
-    ? <Card className="mb-5 p-4">{body}</Card>
-    : <section className="mb-6">{body}</section>;
+  return <Card className="h-full p-4">{body}</Card>;
 }
 
 // ── The decision aid ─────────────────────────────────────────────────────────
@@ -436,7 +500,7 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
 
   const d = data as OpportunityResult & { orgName?: string; link?: string };
   const cov = d.coverage;
-  const pct = cov && cov.total ? Math.round((cov.filled / cov.total) * 100) : null;
+  // `pct` moved into CoverageAside, which owns the whole figure now.
 
   return frame(
     <>
@@ -506,32 +570,14 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
       <Section
         step="1" title="The opportunity"
         lead="Every call is restated in the same shape, so two funders' calls can be compared line by line."
-        aside={pct !== null && (
-          <div className="text-right">
-            <div className="text-[0.7rem] font-semibold tracking-[0.06em] text-ink-500 uppercase">
-              Captured from the call
-            </div>
-            <div className="mt-1 flex items-center justify-end gap-2">
-              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-ink-100">
-                <div className="h-full rounded-full bg-accent-600" style={{ width: `${pct}%` }} />
-              </div>
-              <span className="text-sm font-semibold text-ink-700 tabular-nums">
-                {cov.filled}/{cov.total}
-              </span>
-            </div>
-            <p className="mt-1 max-w-[16rem] text-xs text-ink-400">
-              A dash below means this call is silent on that field, not that we stopped tracking it.
-            </p>
-          </div>
-        )}
+        aside={cov ? <CoverageAside cov={cov} /> : undefined}
       />
 
+      {/* The overview carries the same card as every block below it. It used to be the one
+          bare section at the top of a page of cards, which read as a loose paragraph that
+          had come adrift rather than as the call's own summary. */}
       {d.overview.map(([heading, lines, missing], i) => (
-        <section key={i} className="mb-6">
-          <h3 className="mb-1.5 text-sm font-semibold text-ink-800">{heading}</h3>
-          <div className="max-w-3xl">
-            <Lines lines={lines} missing={missing} />
-          </div>
+        <OverviewCard key={i} heading={heading} lines={lines} missing={missing}>
           {d.overviewTruncated && d.link && (
             <p className="mt-2 text-xs text-ink-500">
               Clipped to keep the page readable.{" "}
@@ -542,13 +588,27 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
               .
             </p>
           )}
-        </section>
+        </OverviewCard>
       ))}
 
+      {/* ONE GRID WITH ONE GAP, instead of a separate grid per row.
+
+          Each `page_rows` row used to be its own two-column grid, so a row whose columns
+          held different amounts of content left a ragged hole under the shorter one and
+          the next row began below the TALLER — cards stepped down the page out of
+          alignment with their neighbours. The server's pairing is still honoured (its
+          rows and columns are preserved in order), but the gap between blocks is now the
+          grid's single `gap-5` rather than each block's own margin, and `items-start`
+          keeps the two columns topped out together.
+
+          `h-full` on every block then makes the two cards in a row match height, so their
+          top AND bottom edges line up instead of only their tops. */}
       {d.pageRows.map((row, i) => (
-        <div key={i} className="grid gap-x-6 md:grid-cols-2">
+        <div key={i} className="mb-5 grid items-start gap-5 md:grid-cols-2">
           {row.map((col, j) => (
-            <div key={j}>{col.map((b, k) => <BlockView key={k} block={b} />)}</div>
+            <div key={j} className="grid gap-5">
+              {col.map((b, k) => <BlockView key={k} block={b} />)}
+            </div>
           ))}
         </div>
       ))}
