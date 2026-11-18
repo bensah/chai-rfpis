@@ -713,14 +713,29 @@ def synthesize_row(row: dict, *, html: str | None = None) -> dict:
         body=body[:_MAX_INPUT])
     try:
         _CALLS += 1
-        resp = _client().chat.completions.create(
-            model=_model(),
+        # THROUGH `chat_with_fallback`, NOT `create()` DIRECTLY — this call used to go
+        # straight to the SDK, which meant it had neither the model chain nor the PROVIDER
+        # chain behind it. When the configured endpoint began answering
+        # "402 — Add usage credits" the exception propagated to the `except` below, was
+        # logged at warning level and the row came back with nothing, while a funded
+        # second vendor sat unused in `RFPIS_LLM_PROVIDERS`.
+        #
+        # That mattered more here than anywhere else: this function writes
+        # `full_description`, `what_is_funded`, `applicant_fit_profile` and the rest of
+        # the LLM-only half of a call record — exactly the fields a reader sees missing
+        # when they open a thin opportunity, and the ones no regex can produce.
+        #
+        # `model_chain` reads LLM_SYNTH_MODEL's own fallback list; `chat_with_fallback`
+        # walks it and then `_provider_fallback` walks every other configured provider,
+        # skipping the endpoint that just failed.
+        from core.llm_client import chat_with_fallback, model_chain
+        raw, _used, _resp = chat_with_fallback(
+            _client(), model_chain("LLM_SYNTH_MODEL", _model()),
             messages=[{"role": "system", "content": _SYSTEM},
                       {"role": "user", "content": prompt}],
             # Low but not zero: the prose must vary per call rather than settling into one
             # template, while the factual keys stay anchored by the "never invent" rule.
             temperature=0.3, max_tokens=_MAX_OUTPUT_TOKENS)
-        raw = (resp.choices[0].message.content or "") if resp.choices else ""
     except Exception as exc:
         log.warning("catalog_synthesis failed for %s: %s: %s",
                     row.get("uid"), type(exc).__name__, exc)
