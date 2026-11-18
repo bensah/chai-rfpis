@@ -17,6 +17,7 @@ import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { fetchScreen, type ScreenRow, type Weeks } from "../api";
 import { hrefOf, Link } from "../router";
 import OpportunityCell from "../opportunity/OpportunityCell";
+import OpportunityPeek from "../opportunity/OpportunityPeek";
 import RfpEditor from "../opportunity/RfpEditor";
 import { Badge, Button, Card, EmptyState, Notice, Spinner, fieldClass } from "../ui";
 
@@ -48,6 +49,7 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState("");
   const [editUid, setEditUid] = useState<string | null>(null);
+  const [peekUid, setPeekUid] = useState<string | null>(null);
 
   const load = useCallback(() => {
     if (!week) return;
@@ -210,7 +212,15 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
               {queue.map((r) => {
                 const d = effective(r);
                 return (
-                  <tr key={r.uid} className="border-b border-ink-100 transition-colors last:border-0 hover:bg-ink-50">
+                  <tr key={r.uid} className="cursor-pointer border-b border-ink-100 transition-colors last:border-0 hover:bg-ink-50"
+                    onClick={(e) => {
+                      // A click that landed on a link, a button or a form control is
+                      // THAT control's — the title still opens the full record, the ↗
+                      // still leaves for the funder, and the decision select still works.
+                      // Only the rest of the row opens the summary.
+                      if ((e.target as HTMLElement).closest("a,button,select,input,textarea,label")) return;
+                      setPeekUid(r.uid);
+                    }}>
                     <td className="px-4 py-3">
                       <OpportunityCell uid={r.uid} title={r.opportunity_title}
                         link={r.opportunity_link} onEdit={setEditUid} />
@@ -240,6 +250,16 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
         within each. A decision nobody has made yet shows the engine's recommendation, marked{" "}
         <em>auto</em>; a decline is the engine's opinion, not a verdict, and can be changed.
       </p>
+      {/* The summary overlay. `onEdit` hands the row to the editor and closes this, so
+          there is one editor rather than a second set of controls in here. */}
+      {peekUid && (
+        <OpportunityPeek
+          uid={peekUid}
+          onClose={() => setPeekUid(null)}
+          onEdit={(u) => { setPeekUid(null); setEditUid(u); }}
+          onChanged={load}
+        />
+      )}
       {editUid && (
         <RfpEditor uid={editUid} onClose={() => setEditUid(null)} onSaved={load} />
       )}
