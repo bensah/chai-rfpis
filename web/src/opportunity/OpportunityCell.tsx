@@ -82,6 +82,16 @@ export default function OpportunityCell({
             <Pencil className="h-3.5 w-3.5" />
           </button>
         )}
+        {/* THE UID, WHICH WAS NOWHERE ON THE READING SIDE. It is the system's own name for
+            the call and the only thing that identifies one unambiguously — two funders run
+            calls with near-identical titles, and the filter boxes on these tables already
+            search it. Until now it appeared only inside the edit form, so somebody looking
+            at a row on screen could not say which row they meant without opening the
+            editor to find out. Selectable, small, and under the title rather than beside
+            it, so it never competes with the name. */}
+        <div className="font-mono text-[0.68rem] leading-tight text-ink-400 select-all">
+          {uid}
+        </div>
       </div>
     </div>
   );
