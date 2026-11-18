@@ -550,8 +550,22 @@ _SECTIONS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
         ("Posted", "date_posted", "date"),
         ("Status", "funding_status", "text"),
         ("Window", "funding_window", "text"),
-        ("Expected award date", "expected_award_date", "date"),
-        ("Time to award", "time_to_award", "text"),
+        # "Expected award date" and "Time to award" ARE NOT ROWS HERE (owner, 2026-11-18,
+        # restated after a first pass kept them): "from my experience [they have] never
+        # picked up any data ... those can be removed or hidden for now."
+        #
+        # I argued against it once on the measurement — 17.3% and 22.1% of
+        # `rfp_submissions` carry a value, almost all of them hand-typed in the editor —
+        # and the owner, who types them, repeated the instruction. The page he reads is
+        # the call's own terms; two rows that print a dash on every scanned call are two
+        # rows of noise in the card a reviewer opens first.
+        #
+        # HIDDEN, NOT DELETED. The columns stay, the editors still write them
+        # (`views/rfp_editor.py:143` and `web/src/opportunity/RfpEditor.tsx:429`), and the
+        # tracking and records views still show them, so nothing already typed is lost and
+        # the award-date pipeline keeps working. Only the opportunity page stops carrying
+        # them. They also came out of `_COVERAGE_FIELDS` below, so a call is no longer
+        # marked down for a fact its funder does not publish.
     )),
     ("Eligibility requirements", (
         # WHAT THE CALL ITSELF PUBLISHES about who qualifies — nothing derived from the
@@ -595,7 +609,13 @@ _SECTIONS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
         # call is published in, sometimes stated separately. It is a requirement, not a
         # property of our record, so it is labelled as the applicant's obligation.
         ("Application language", "solicitation_language", "text"),
-        ("Application steps", "application_checklist", "bullets"),
+        # "Application steps" (application_checklist) was dropped on the owner's
+        # instruction, 2026-11-18. It is a synthesis field — `core/llm_synthesis.py`
+        # writes it from the call text — and what it produced was a restatement of the
+        # deliverables already named in "Other conditions" and the compliance block, in a
+        # bullet list wide enough to dominate the card. The column and its writers are
+        # untouched; `views/tracking_rfp.py` and `views/rfp_records.py` still render it
+        # where a reviewer is actually assembling a bid.
         # Only when the funder publishes a SECOND reference distinct from the header id.
         ("Opportunity number", "_second_reference", "text"),
     )),
@@ -1182,7 +1202,11 @@ _COVERAGE_FIELDS = (
     # §4.5 money
     "grant_amount", "currency", "call_award_ceiling",
     # §4.6 dates & window
-    "date_posted", "deadline", "funding_window", "expected_award_date", "time_to_award",
+    # `expected_award_date` and `time_to_award` left this list on 2026-11-18 with the
+    # rows they fed (see the Timeline section above). Measured availability is 0.0% —
+    # no call in the catalogue publishes a decision date — so every scanned call was
+    # being marked down twice for a fact no funder states.
+    "date_posted", "deadline", "funding_window",
     "project_duration", "submission_format",
     # §4.7 classification
     "solicitation_type", "instrument_type", "opportunity_type", "focus_themes",

@@ -250,18 +250,18 @@ export function CoverageAside({ cov, confidence }: {
           call" figure invites the reading that the rest came from somewhere else; two
           figures say which, and a zero with a reason attached is information rather than
           an unexplained blank. */}
+      {/* THE NOTES ARE A FEW WORDS NOW (owner, 2026-11-18: "is a lot of text. reduce it
+          to a few words"). The first draft explained the zero in two sentences and then
+          added a third about what a dash means. A box beside the page heading is a glance
+          surface; three lines of prose in it is an essay the reader did not open. "No
+          matching donor record" says the whole of why the figure is 0, and the dash
+          sentence went entirely — the page says "—" and a reader knows what that is. */}
       {confidence && (
         <Meter
           label="From donor intelligence" pct={confidence.donorPct}
-          note={confidence.donorMatched
-            ? undefined
-            : "No donor in Donor Intelligence matches this funder, so nothing could be "
-              + "read from one — this is 0 for want of a record, not a thin one."}
+          note={confidence.donorMatched ? undefined : "No matching donor record."}
         />
       )}
-      <p className="text-xs text-ink-500">
-        A dash on this page is the source being silent, not a field we stopped tracking.
-      </p>
     </div>
   );
 }
@@ -273,9 +273,18 @@ export function OverviewCard({ heading, lines, missing, children }: {
   heading: string; lines: string[]; missing: boolean; children?: React.ReactNode;
 }) {
   return (
+    // THE TEXT FILLS THE CARD. It was capped at `max-w-3xl` — 48rem — inside a card that
+    // runs the full page width, so on any normal window the overview sat in a column with
+    // a third of the card empty to its right, which is the uneven padding the owner
+    // reported ("ensure the text occupies the full space of the card, same padding across
+    // all margins"). The cap was there for line length, but this block is already the one
+    // block on the page that EARNS the full width (isWide, >900 characters), and the
+    // other cards beside it are not capped — so the one card that was supposed to be the
+    // widest read as the narrowest. `p-4` on every side is the padding; nothing insets
+    // the body past it.
     <Card className="mb-5 p-4">
       <h3 className="mb-1.5 text-sm font-semibold text-brand-700">{heading}</h3>
-      <div className="max-w-3xl"><Lines lines={lines} missing={missing} /></div>
+      <Lines lines={lines} missing={missing} />
       {children}
     </Card>
   );
