@@ -44,11 +44,17 @@ export type Criterion = (typeof CRITERIA)[number];
 const _SCORE_TO_FLOAT: Record<number, number> = { 2: 1.0, 1: 0.5, 0: 0.0 };
 
 /**
- * "Not sure" / undetermined → 0.5, the Park midpoint, NOT 0 (owner, 2026-06-29).
- * An unknown criterion reads as "needs review"; a DETECTED failure scores 0 and still
- * gates through the MUST rule.
+ * "Not sure" / undetermined leaves the denominator entirely (owner, 2026-11-18) — it is
+ * NOT rated 0.5 any more, and it is not rated 0 either. See core/scorer.alignment_score
+ * for the reasoning; the short of it is that a half-weight for "we could not read this"
+ * was invisible on the page and printed as "7.5 / 15" beside the words "not scored".
+ *
+ * Kept as a named constant because the 0.5 is still what `_SCORE_TO_FLOAT` gives a
+ * PARTIAL answer, and a future reader deserves to find the retired rule rather than
+ * wonder whether it was ever there.
  */
-const NOT_SURE_FLOAT = 0.5;
+const NOT_SURE_FLOAT = 0.5;    // retired 2026-11-18; see alignmentScore below.
+void NOT_SURE_FLOAT;
 
 /** `criterion_score`'s own normalisation, which the generated keys are already in. */
 const norm = (v: unknown): string =>
@@ -75,17 +81,24 @@ export function criterionScore(criterion: string, value: unknown): number | null
 /**
  * core/scorer.alignment_score — 0-100, one decimal.
  *
- * ALL NINE count toward the denominator whether or not they were answered, so leaving a
- * criterion on "Not sure" moves the score toward 50 rather than dropping it.
+ * ONLY DETERMINED CRITERIA COUNT (owner, 2026-11-18). A criterion answered "Not sure",
+ * or carrying a value this criterion's own vocabulary does not recognise, leaves BOTH the
+ * numerator and the denominator — so the score is the weighted fit across what could
+ * actually be judged, not a number dragged toward 50 by everything that could not.
+ *
+ * It used to be the opposite: all nine counted and an unanswered one was rated 0.5. The
+ * mirror of this change is core/scorer.alignment_score; web/scripts/parity/check-submit
+ * runs the two against each other, so they move together or the gate goes red.
  */
 export function alignmentScore(values: Record<string, unknown>): number {
   let total = 0;
   let weightSum = 0;
   for (const c of CRITERIA) {
     const sc = criterionScore(c, values[c]);
+    if (sc === null) continue;
     const w = SCORING_WEIGHTS[c] ?? 0;
     weightSum += w;
-    total += w * (sc === null ? NOT_SURE_FLOAT : _SCORE_TO_FLOAT[sc]);
+    total += w * _SCORE_TO_FLOAT[sc];
   }
   if (weightSum <= 0) return 0;
   const score = (total / weightSum) * 100;

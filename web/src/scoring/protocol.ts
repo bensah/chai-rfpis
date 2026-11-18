@@ -62,7 +62,12 @@ export type Criterion = {
   /** 2 / 1 / 0, or null when the criterion could not be determined. */
   band: number | null;
   countText: string;
+  /** Is there an answer at all — `band !== null`. The three things the row used to call
+   *  "scored" are one thing now; see core/opportunity_scoring.analyse. */
   scored: boolean;
+  /** Does this criterion sit in the composite's denominator. Equal to `scored`: an
+   *  undetermined criterion contributes no points AND no weight (owner, 2026-11-18). */
+  counted: boolean;
   weight: number;
   points: number;
 };
@@ -82,6 +87,10 @@ export type Analysis = {
     band: string; pct: number; callPct: number; donorPct: number; donorMatched: boolean;
   };
   criteria: Criterion[];
+  /** How much of the model the composite was judged on. `alignment_score` renormalises
+   *  over the criteria that could be determined, so 100 off two of them and 100 off all
+   *  nine are the same number and a very different claim. */
+  scoredOn?: { weight: number | null; n: number | null; of: number | null };
   /** Set instead of everything above when scoring could not run at all. */
   error?: string;
 };

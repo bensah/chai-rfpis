@@ -250,18 +250,18 @@ export function CoverageAside({ cov, confidence }: {
           call" figure invites the reading that the rest came from somewhere else; two
           figures say which, and a zero with a reason attached is information rather than
           an unexplained blank. */}
+      {/* THE NOTES ARE A FEW WORDS NOW (owner, 2026-11-18: "is a lot of text. reduce it
+          to a few words"). The first draft explained the zero in two sentences and then
+          added a third about what a dash means. A box beside the page heading is a glance
+          surface; three lines of prose in it is an essay the reader did not open. "No
+          matching donor record" says the whole of why the figure is 0, and the dash
+          sentence went entirely — the page says "—" and a reader knows what that is. */}
       {confidence && (
         <Meter
           label="From donor intelligence" pct={confidence.donorPct}
-          note={confidence.donorMatched
-            ? undefined
-            : "No donor in Donor Intelligence matches this funder, so nothing could be "
-              + "read from one — this is 0 for want of a record, not a thin one."}
+          note={confidence.donorMatched ? undefined : "No matching donor record."}
         />
       )}
-      <p className="text-xs text-ink-500">
-        A dash on this page is the source being silent, not a field we stopped tracking.
-      </p>
     </div>
   );
 }
@@ -273,9 +273,18 @@ export function OverviewCard({ heading, lines, missing, children }: {
   heading: string; lines: string[]; missing: boolean; children?: React.ReactNode;
 }) {
   return (
+    // THE TEXT FILLS THE CARD. It was capped at `max-w-3xl` — 48rem — inside a card that
+    // runs the full page width, so on any normal window the overview sat in a column with
+    // a third of the card empty to its right, which is the uneven padding the owner
+    // reported ("ensure the text occupies the full space of the card, same padding across
+    // all margins"). The cap was there for line length, but this block is already the one
+    // block on the page that EARNS the full width (isWide, >900 characters), and the
+    // other cards beside it are not capped — so the one card that was supposed to be the
+    // widest read as the narrowest. `p-4` on every side is the padding; nothing insets
+    // the body past it.
     <Card className="mb-5 p-4">
       <h3 className="mb-1.5 text-sm font-semibold text-brand-700">{heading}</h3>
-      <div className="max-w-3xl"><Lines lines={lines} missing={missing} /></div>
+      <Lines lines={lines} missing={missing} />
       {children}
     </Card>
   );
@@ -389,17 +398,39 @@ function CriterionRow({ c }: { c: Criterion }) {
           {c.label ?? "Not sure"}
         </span>
         <span className="min-w-24 text-right text-xs text-ink-400">{c.countText}</span>
-        <span className="min-w-20 text-right text-xs font-semibold text-ink-700 tabular-nums">
-          {c.points.toFixed(1)}
-          <span className="font-normal text-ink-400"> / {max.toFixed(0)}</span>
-        </span>
+        {/* AN UNCOUNTED CRITERION PRINTS NO ARITHMETIC. This slot read "7.5 / 15" beside
+            a label of "Not sure" and a count of "not scored" — the owner's words, "if
+            there is a score, then a component is active". It is one statement now: either
+            the points it earned out of its weight, or that it is not in the denominator
+            at all. The weight is still named, because "which 15 points fell out of the
+            score" is the useful part of the sentence. */}
+        {c.counted
+          ? (
+            <span className="min-w-20 text-right text-xs font-semibold text-ink-700 tabular-nums">
+              {c.points.toFixed(1)}
+              <span className="font-normal text-ink-400"> / {max.toFixed(0)}</span>
+            </span>
+          )
+          : (
+            <span
+              className="min-w-20 text-right text-xs text-ink-400 italic"
+              title={`Undetermined, so its ${max.toFixed(0)} points are out of the score `
+                + "entirely — not counted as a failure."}
+            >
+              not counted
+            </span>
+          )}
       </div>
-      <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-ink-100">
-        <div
-          className={`h-full rounded-full ${BAND_BAR[String(c.band)] ?? "bg-ink-300"}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      {/* No bar where there is nothing to measure: an empty track said "zero of its
+          weight", which is the claim this change exists to stop making. */}
+      {c.counted && (
+        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-ink-100">
+          <div
+            className={`h-full rounded-full ${BAND_BAR[String(c.band)] ?? "bg-ink-300"}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -686,6 +717,21 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
             <strong className="font-semibold text-ink-600">Suggestion</strong>{" "}
             90+ proceed · 70–89 park · under 70 decline — a failed hard requirement
             declines whatever the score.
+            {/* AND WHAT IT WAS SCORED ON. Since 2026-11-18 an undetermined criterion
+                leaves the denominator rather than taking half its weight, so the score
+                is renormalised over whatever could be judged. That makes 88-on-nine and
+                88-on-three the same number, and only this line tells them apart. */}
+            {d.analysis.scoredOn?.n != null
+              && d.analysis.scoredOn.of != null
+              && d.analysis.scoredOn.n < d.analysis.scoredOn.of && (
+              <>
+                {" "}
+                <strong className="font-semibold text-ink-600">Scored on</strong>{" "}
+                {d.analysis.scoredOn.n} of {d.analysis.scoredOn.of} criteria — the rest
+                could not be determined from the call or the donor record, so they are out
+                of the score rather than counted against it.
+              </>
+            )}
           </div>
         )}
       </Card>

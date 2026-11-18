@@ -285,7 +285,10 @@ class TestTheStandardLayout(unittest.TestCase):
         # compare two calls by eye. A dash is a statement; a missing row is ambiguous.
         v = od.standard_view(od.KIND_PIPELINE, PIPELINE_ROW, None)
         flat = _flat(v)
-        self.assertEqual(flat["Expected award date"], od.MISSING)   # not on the row
+        # Was asked of "Expected award date", which left the layout on 2026-11-18 (owner:
+        # it "has never picked up any data"). The same question, asked of another row this
+        # fixture is silent on.
+        self.assertEqual(flat["Posted"], od.MISSING)                # not on the row
         self.assertEqual(flat["Institution types accepted"], od.MISSING)
         self.assertNotIn("Key risks", flat)      # tenant-specific, in the decision aid
 
@@ -881,7 +884,13 @@ class TestTheFullSchemaIsAlwaysOnScreen(unittest.TestCase):
         flat = _flat(self.THIN)
         for label in ("Total programme funding", "Expected number of awards",
                       "Posted", "Status", "Window",
-                      "Expected award date", "Time to award",
+                      # "Expected award date" and "Time to award" were here until
+                      # 2026-11-18. They are the exception this class's own docstring
+                      # allows for: a dash carries information only where the funder COULD
+                      # have stated the fact, and measured availability for a published
+                      # decision date across the catalogue is 0.0%. Two rows that print a
+                      # dash on every call are not comparability, they are furniture.
+                      # The columns and both editors are untouched.
                       # the call's OWN eligibility, in its own section
                       "Institution types accepted", "Eligible countries (applicants)",
                       "Other conditions",
@@ -890,7 +899,10 @@ class TestTheFullSchemaIsAlwaysOnScreen(unittest.TestCase):
                       # printed the same text twice.
                       "Ideal applicant",
                       "Geographic scope", "Sector", "Programme areas", "Project stages",
-                      "Submission format", "Application language", "Application steps"):
+                      # "Application steps" (application_checklist) left on 2026-11-18:
+                      # a synthesis field restating the deliverables already named under
+                      # "Other conditions" and in the compliance block.
+                      "Submission format", "Application language"):
             with self.subTest(label=label):
                 self.assertIn(label, flat)
 
@@ -1127,19 +1139,23 @@ class TestTheRowsLeaveNoHoles(unittest.TestCase):
             self.assertGreaterEqual(len(row), 1)
 
     def test_the_short_card_is_followed_by_another_in_the_same_column(self):
-        # THE FIX FOR THE HOLES. "Funding & awards" (3 rows) beside "Timeline" (5 rows) left
-        # dead space under the shorter one, and the next row began below BOTH. Stacking puts
-        # the next card directly under the short one.
+        # THE FIX FOR THE HOLES. A short card beside a tall one left dead space under the
+        # shorter, and the next row began below BOTH. Stacking puts the next card directly
+        # under the short one.
+        #
+        # Timeline leads since 2026-11-18 ("Swap, Timeline and Funding & Awards") — the
+        # swap is in LAYOUT, the tuple that decides the arrangement, not in _SECTIONS,
+        # which decides what a section CONTAINS.
         first = od.page_rows(self.V)[0]
         left = [b["title"] for b in first[0]]
         right = [b["title"] for b in first[1]]
-        self.assertEqual(left, ["Funding & awards", "Eligibility requirements"])
-        self.assertEqual(right, ["Timeline", "Type of opportunity"])
+        self.assertEqual(left, ["Timeline", "Eligibility requirements"])
+        self.assertEqual(right, ["Funding & awards", "Type of opportunity"])
 
     def test_the_paired_rows_are_actually_paired(self):
         rows = od.page_rows(self.V)
         beside = {tuple(c[0]["title"] for c in r) for r in rows if len(r) == 2}
-        self.assertIn(("Funding & awards", "Timeline"), beside)
+        self.assertIn(("Timeline", "Funding & awards"), beside)
         # The owner asked for these two beside each other.
         self.assertIn(("Who can apply", "How to apply"), beside)
 
