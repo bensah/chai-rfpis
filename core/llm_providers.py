@@ -39,8 +39,13 @@ bringing them would be a second system rather than a fix for this one.
 
 CONFIGURATION
 -------------
-    RFPIS_LLM_PROVIDERS=google,ollama,glm        # order; first configured wins
+    RFPIS_LLM_PROVIDERS=cerebras,ollama          # order; first configured wins
     RFPIS_LLM_<NAME>_BASE_URL / _API_KEY / _MODEL
+
+The chain is tried IN ORDER, so put the vendor that currently has credit first
+and leave the spent one behind it: when ollama is topped up again it resumes
+service the moment cerebras runs dry, with no edit. Only `_API_KEY` is needed
+for a name that appears in DEFAULTS — the URL and model come from there.
 
 Nothing is required. With `RFPIS_LLM_PROVIDERS` unset the chain is exactly
 today's single endpoint and today's behaviour: the `ollama` slot reads the
@@ -81,6 +86,17 @@ DEFAULTS: dict[str, dict[str, str]] = {
     "ollama": {
         "base_url": "https://ollama.com/v1",
         "model": "gpt-oss:120b",
+    },
+    "cerebras": {
+        # OpenAI chat-completions dialect, so no client of its own.
+        "base_url": "https://api.cerebras.ai/v1",
+        # THE SAME MODEL FAMILY THE OLLAMA SLOT ALREADY RUNS, spelled Cerebras's
+        # way: a hyphen where Ollama uses a colon. That is deliberate — the
+        # extraction prompts were written against gpt-oss-120b's behaviour and
+        # every coverage figure in docs/EXTRACTION_COVERAGE_REPORT.md was
+        # measured on it, so failing over to a different family would change the
+        # numbers as well as the vendor, and nobody would know which moved them.
+        "model": "gpt-oss-120b",
     },
     "glm": {
         "base_url": "https://api.z.ai/api/paas/v4",
