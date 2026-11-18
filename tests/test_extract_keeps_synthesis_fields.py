@@ -118,20 +118,38 @@ class TheStructuralExtractorStillWinsTests(unittest.TestCase):
 
 class NoSynthesisIsStillSafeTests(unittest.TestCase):
     """No LLM endpoint, a disabled pass, or a failed call must degrade quietly — the
-    record still stores everything the structural extraction found."""
+    record still stores everything the structural extraction found.
 
-    def test_synthesis_returning_none_leaves_the_fields_blank_not_broken(self):
+    FOUR OF THESE CHANGED ON 2026-11-19 and the change is the point of this note.
+
+    They used to assert that `call_domain_areas`, `submission_format` and
+    `eligibility_other` were NULL whenever synthesis produced nothing, because
+    synthesis was then their only writer. `build_record` now runs the
+    deterministic pass (`core/field_extract.py`) before it returns, so a
+    programme area the classifier can tag and a submission channel a pattern can
+    read are present WITHOUT a model — which is the behaviour the owner asked
+    for: rows complete on the way in, not repaired afterwards.
+
+    So the assertion that still matters is the one about degrading quietly — the
+    record survives, nothing is broken, and no placeholder or empty list is
+    stored. "This field is null" was never the property worth pinning; it was a
+    description of a gap.
+    """
+
+    def test_synthesis_returning_none_still_yields_a_usable_record(self):
         rec, reason = _record(synth=None)
         self.assertIsNotNone(rec, reason)
+        # The model's own fields stay blank — nothing invents prose.
         self.assertIsNone(rec["brief_description"])
-        self.assertIsNone(rec["call_domain_areas"])
-        self.assertIsNone(rec["eligibility_other"])
-        self.assertIsNone(rec["submission_format"])
+        # …and what a pattern can read is read anyway.
+        self.assertTrue(rec["call_domain_areas"],
+                        "the classifier runs without a model")
 
-    def test_use_llm_false_skips_synthesis_entirely(self):
+    def test_use_llm_false_skips_synthesis_but_not_extraction(self):
         rec, reason = _record(use_llm=False)
         self.assertIsNotNone(rec, reason)
-        self.assertIsNone(rec["call_domain_areas"])
+        self.assertIsNone(rec["brief_description"])
+        self.assertTrue(rec["call_domain_areas"])
 
     def test_a_synthesis_that_raises_does_not_lose_the_record(self):
         rec, reason = _record(side_effect=RuntimeError("LLM timeout"))
@@ -139,17 +157,24 @@ class NoSynthesisIsStillSafeTests(unittest.TestCase):
         self.assertIsNone(rec["brief_description"])
 
     def test_placeholder_answers_are_treated_as_blank(self):
+        """A model answering "None stated" must not reach a column. The
+        deterministic pass may still fill the same field from the page, which is
+        a real value and not a placeholder — so the assertion is on the
+        PLACEHOLDER never being stored, not on the field being empty."""
         rec, _ = _record(synth={"brief_description": "A summary.",
                                 "eligibility_specifics": "None stated",
                                 "compliance_requirements": "n/a",
                                 "how_to_apply": "  "})
         self.assertIsNone(rec["eligibility_other"])
-        self.assertIsNone(rec["submission_format"])
+        for field in ("eligibility_other", "submission_format"):
+            self.assertNotIn(str(rec[field]).strip().lower(),
+                             ("none stated", "n/a", ""), field)
 
-    def test_empty_programme_areas_store_null_not_an_empty_list(self):
+    def test_empty_programme_areas_never_store_an_empty_list(self):
         # "[]" in the column is what made the page render a literal empty list.
         rec, _ = _record(synth={"brief_description": "x", "call_domain_areas": []})
-        self.assertIsNone(rec["call_domain_areas"])
+        self.assertNotEqual(rec["call_domain_areas"], [])
+        self.assertNotIn("Unspecified", str(rec["call_domain_areas"]))
 
 
 class EveryWrittenKeyIsAStoreColumnTests(unittest.TestCase):

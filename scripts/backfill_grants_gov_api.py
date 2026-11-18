@@ -1,7 +1,25 @@
 """Re-read stored grants.gov rows from the funder's own API instead of its HTML.
 
-WHY
----
+RETIRED BEFORE IT EVER RAN — 2026-11-19. DO NOT `--apply`.
+----------------------------------------------------------
+The owner's rule from that date: "we are forward looking now. only new rfps
+should be completed following the updated crawler and extractor so we don't end
+up with extracted calls with low data." This script repairs stored rows, which is
+exactly what is no longer wanted. It was never applied; only its dry run ran.
+
+THE FIX IT PROVED IS IN THE CRAWLER INSTEAD. `scraper._scan_grants_gov` now puts
+the API synopsis (and the eligibility paragraph) on the candidate as `_page_text`,
+which is the field `extract.build_record` stores as `raw_text` and everything
+downstream reads — so a NEW grants.gov row carries the real call text rather than
+the rendered shell. `deep_read.enrich` no longer overwrites it with chrome.
+
+Kept, not deleted, for two reasons: its dry run is the cheapest way to see what
+the API holds for rows we already have, and `_updates_for` is the tested
+definition of "what an API answer should change", which the crawler-side fix is
+checked against.
+
+WHAT IT WAS FOR
+---------------
 `grants.gov/search-results-detail/<id>` is a JavaScript single-page app: the
 opportunity loads client-side, so a plain fetch gets the shell. Measured
 2026-11-19 over the 469 live grants.gov catalogue rows, 168 of them hold nothing

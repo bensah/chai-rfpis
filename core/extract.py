@@ -532,7 +532,97 @@ def build_record(candidate: dict[str, Any], policies: dict[str, Any], *,
         "field_provenance": prov,
         "solicitation_language": "English",
     }
+
+    # THE DETERMINISTIC PASS RUNS HERE, ON THE WAY IN.
+    #
+    # `core/field_extract.py` reads award range, programme envelope, award date,
+    # time to award, project duration, applicant types, exclusions, documents,
+    # submission format, programme areas and eligible countries off the call text
+    # with patterns — no model, no network, nothing to pay for.
+    #
+    # It was written with a backfill beside it and WAS NEVER WIRED INTO THIS
+    # FUNCTION. The backfill's own docstring claimed it "now runs inside
+    # extraction, so every NEW row arrives with these fields"; that was an
+    # intention stated as a fact, and it was wrong. Every row scanned between then
+    # and now arrived without any of it and depended on a repair pass to catch up.
+    #
+    # That is the wrong shape whatever the backfill policy, and it is untenable
+    # under the owner's rule of 2026-11-19: no more repairing old rows, so a row
+    # has to be complete when it is written or it stays incomplete. Hence here,
+    # before the record is returned, rather than in a script somebody remembers to
+    # run.
+    #
+    # It fills BLANKS ONLY, so everything above — handler values, regex amounts,
+    # the LLM's reading — still wins, and it cannot regress a field this function
+    # already decided. Best-effort: a pattern failure must never cost the scan the
+    # row it just extracted.
+    try:
+        from core import field_extract
+        derived = field_extract.derive_fields(rec, text=text)
+        if derived:
+            rec.update(derived)
+            log.info("extract: %d deterministic field(s) for %s",
+                     len(derived), rec.get("uid"))
+    except Exception as exc:                       # never cost the scan the row
+        log.warning("extract: deterministic pass skipped for %s: %s",
+                    rec.get("uid"), exc)
+    _note_completeness(rec)
     return rec, reason
+
+
+# ---------------------------------------------------------------------------
+# how complete was the row we just wrote?
+# ---------------------------------------------------------------------------
+# The owner's rule from 2026-11-19 is that rows are made right on the way in
+# rather than repaired afterwards. That only holds if a row landing thin is
+# VISIBLE when it lands. Until now nothing said so: a call extracted into four
+# populated fields and a call extracted into thirty were both just "stored", and
+# the gap only surfaced weeks later when somebody opened the page.
+#
+# This is a LOG AND A COUNTER, deliberately — not a gate and not a new column.
+#
+#   * Not a gate, because refusing a thin row loses a real call. A sparse record
+#     for a call that exists still beats no record: the deadline and the link are
+#     usually there, and a reviewer can open the page. Dropping it would be the
+#     pipeline deciding on the reviewer's behalf.
+#   * Not a column, because `extracted_solicitations` lives in a shared hosted
+#     database and a migration there applies to everybody immediately. A scan-log
+#     line costs nothing and answers the question that is actually being asked —
+#     "is the crawler producing complete rows now?"
+#
+# `scan_runner` reports the counters at the end of a scan, beside the synthesis
+# call count, so a run that quietly started producing thin rows says so.
+_THIN_FLOOR = float(os.environ.get("RFPIS_THIN_ROW_FLOOR", "0.4"))
+_thin_rows = 0
+_scored_rows = 0
+
+
+def thin_rows() -> tuple[int, int]:
+    """(rows below the completeness floor, rows extracted) for the scan log."""
+    return _thin_rows, _scored_rows
+
+
+def reset_thin_rows() -> None:
+    global _thin_rows, _scored_rows
+    _thin_rows = _scored_rows = 0
+
+
+def _note_completeness(rec: dict[str, Any]) -> None:
+    """Count and log a row that lands below the floor. Never raises."""
+    global _thin_rows, _scored_rows
+    try:
+        from core.opportunity_detail import coverage
+        filled, total, missing = coverage(rec)
+        _scored_rows += 1
+        if total and filled / total < _THIN_FLOOR:
+            _thin_rows += 1
+            log.warning(
+                "extract: THIN ROW %s — %d/%d schema fields (%.0f%%) from %d chars of "
+                "source text; missing %s", rec.get("uid"), filled, total,
+                filled / total * 100, len(str(rec.get("raw_text") or "")),
+                ", ".join(missing[:8]))
+    except Exception:
+        pass                                       # a log line is never worth a raise
 
 
 # ---------------------------------------------------------------------------

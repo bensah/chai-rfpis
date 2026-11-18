@@ -2018,6 +2018,28 @@ def _scan_grants_gov(name: str, url: str) -> list[dict[str, Any]]:
             desc = re.sub(r"<[^>]+>", " ", desc)
             desc = re.sub(r"\s+", " ", desc).strip()
             cand["brief_description"] = desc[:1800]
+            # …AND AS THE CANDIDATE'S SOURCE TEXT, which is the field everything
+            # downstream actually reads. `extract.build_record` takes `_page_text`
+            # first and stores it as `raw_text`, the text synthesis and the
+            # deterministic extractors both work from; `brief_description` on a
+            # candidate reaches neither.
+            #
+            # grants.gov is a single-page app, so without this the only `_page_text`
+            # a grants.gov row ever had was the rendered shell — nav menu, cookie
+            # notice, "Unsaved changes will be lost" — and the synopsis fetched from
+            # the funder's own API two lines above was never seen again. 168 of 469
+            # live rows hold that shell and nothing else.
+            #
+            # The eligibility paragraph rides along because it is part of the call a
+            # reader needs and is frequently the longest thing grants.gov publishes.
+            _api_text = desc
+            _elig = re.sub(r"\s+", " ",
+                           re.sub(r"<[^>]+>", " ",
+                                  _clean(syn.get("applicantEligibilityDesc") or ""))).strip()
+            if len(_elig) > 20:
+                _api_text = f"{desc}\n\nEligibility: {_elig}"
+            if len(_api_text) > len(cand.get("_page_text") or ""):
+                cand["_page_text"] = _api_text[:20000]
 
         # --- estimated_value: PRIMARY = total program funding, FALLBACK = per-award ceiling.
         # Both fields arrive as strings like "11165000" or "none"/None. ---
