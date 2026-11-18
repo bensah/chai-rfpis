@@ -959,8 +959,14 @@ AS_CARDS = frozenset({"Funding & awards", "Timeline", "Type of opportunity",
 # same column, which is what closes the gap.
 LAYOUT: tuple[tuple[tuple[str, ...], ...], ...] = (
     # left column stacks under itself; right column does the same, so the two even out
-    (("Funding & awards", "Eligibility requirements"),
-     ("Timeline", "Type of opportunity")),
+    #
+    # TIMELINE LEADS, then the money (owner, 2026-11-18: "Swap Timeline and Funding &
+    # awards"). The first question a reviewer asks of a call is whether there is still
+    # time to bid; what it pays only matters once the answer is yes. Swapped HERE rather
+    # than by reordering `_SECTIONS`, because this tuple is what decides the arrangement —
+    # `_SECTIONS` decides what a section CONTAINS, and reordering it moves nothing.
+    (("Timeline", "Eligibility requirements"),
+     ("Funding & awards", "Type of opportunity")),
     (("Who can apply",), ("How to apply",)),
     (("Scope & focus",),),                 # one column = full width
 )
