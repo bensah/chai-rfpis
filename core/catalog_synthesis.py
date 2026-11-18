@@ -353,8 +353,9 @@ def _kind_phrase(row: dict) -> str:
 
 
 def is_enabled() -> bool:
-    return bool(os.environ.get("LLM_SYNTH_BASE_URL")
-                or os.environ.get("LLM_JUDGE_BASE_URL"))
+    from core.llm_client import primary_endpoint
+    base, _key = primary_endpoint("LLM_SYNTH_BASE_URL", "LLM_JUDGE_BASE_URL")
+    return bool(base)
 
 
 def _model() -> str:
@@ -364,11 +365,11 @@ def _model() -> str:
 
 def _client():
     from openai import OpenAI
+    from core.llm_client import primary_endpoint
+    _base, _key = primary_endpoint("LLM_SYNTH_BASE_URL", "LLM_JUDGE_BASE_URL")
     return OpenAI(
-        base_url=(os.environ.get("LLM_SYNTH_BASE_URL")
-                  or os.environ.get("LLM_JUDGE_BASE_URL")),
-        api_key=(os.environ.get("LLM_SYNTH_API_KEY")
-                 or os.environ.get("LLM_JUDGE_API_KEY") or "ollama"),
+        base_url=_base,
+        api_key=(os.environ.get("LLM_SYNTH_API_KEY") or _key or "ollama"),
         timeout=float(os.environ.get("LLM_SYNTH_TIMEOUT")
                       or os.environ.get("LLM_JUDGE_TIMEOUT", "120") or 120),
         max_retries=1,

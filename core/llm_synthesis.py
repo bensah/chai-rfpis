@@ -81,7 +81,8 @@ def is_enabled() -> bool:
     # key env var was unset — the exact "the LLM didn't kick in" symptom. The key is
     # defaulted to a placeholder in the client below; a provider that truly needs one
     # (Ollama Cloud) will surface a visible auth error instead of going dark.
-    base = os.environ.get("LLM_SYNTH_BASE_URL") or os.environ.get("LLM_JUDGE_BASE_URL")
+    from core.llm_client import primary_endpoint
+    base, _key = primary_endpoint("LLM_SYNTH_BASE_URL", "LLM_JUDGE_BASE_URL")
     if not base:
         return False
     try:
@@ -487,13 +488,13 @@ def _synthesize_once(candidate: dict[str, Any], org: dict[str, Any],
     )
     try:
         from openai import OpenAI
+        from core.llm_client import primary_endpoint
+        _base, _key = primary_endpoint("LLM_SYNTH_BASE_URL", "LLM_JUDGE_BASE_URL")
         client = OpenAI(
-            base_url=(os.environ.get("LLM_SYNTH_BASE_URL")
-                      or os.environ.get("LLM_JUDGE_BASE_URL")),
+            base_url=_base,
             # Placeholder key for endpoints that ignore it (local Ollama); a provider
             # that requires a real key surfaces a visible auth error, never a silent skip.
-            api_key=(os.environ.get("LLM_SYNTH_API_KEY")
-                     or os.environ.get("LLM_JUDGE_API_KEY") or "ollama"),
+            api_key=(os.environ.get("LLM_SYNTH_API_KEY") or _key or "ollama"),
             # Synthesis reads up to 20k chars, so a very long RFP can exceed the judge's
             # 60s. Honour a synth-specific override first (raise it for the backfill of
             # long docs), else the shared judge timeout, else 60.
