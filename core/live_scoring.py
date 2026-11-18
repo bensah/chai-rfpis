@@ -54,6 +54,16 @@ def profile_signature() -> str:
     the job has not caught up" — a failure the check could not have avoided, because the
     one thing that distinguishes the two states was never reaching it.
 
+    IT FAILED STRICT, NOT SOFT, and the difference matters to anyone reading the history.
+    Skipping the stale bucket put MORE rows into the assertion than belonged there, so a
+    genuinely stale row would have surfaced as a false alarm and never as a false pass.
+    Every green run this check ever reported is worth exactly what it looked like; what
+    was broken was the classification, and the cost would have been a confusing failure.
+    Closing it therefore NARROWS what the check asserts, honestly: 211 rows leave on the
+    first rule change, 200 of them return after one re-score run, and the 39 that are
+    human-assessed never do — `_rescore` skips them and clears their stamps, so they land
+    in "unverified" rather than "stale". Measured 2026-11-18; see docs/SCORING_AUDIT.md.
+
     The caller must already be inside `set_tenant_override(...)` where a specific tenant
     is meant: `get_profile` and `get_org` read the ambient one, exactly as
     `scripts/rescore_existing.profile_signature` requires.

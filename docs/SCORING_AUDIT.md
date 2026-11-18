@@ -282,6 +282,27 @@ Two things follow that this change did **not** do:
   computes live (`opportunity_scoring`'s own docstring), so what a reviewer
   reads there is correct immediately. `rfp_submissions.alignment_score`, which
   the Pipeline bands, the Dashboard tiles and the Report read, is not.
+
+  Measured 2026-11-18, over all 271 rows:
+
+  | | rows |
+  |---|---|
+  | stamped, and now correctly stale | 239 |
+  | unstamped (never scored by the job) | 32 |
+  | human-assessed in any state | 59 |
+  | **of the 239: the job will re-score and re-stamp** | **200** |
+  | **of the 239: the job skips for ever** | **39** |
+
+  `_rescore` skips a human-assessed row and clears its stamps, so those 39
+  leave `check-rescore`'s assertion and do not come back — they land in
+  "unverified", which reports as "the job has not run on them" when the truth
+  is "the job will never run on them". Different facts, and only one is
+  actionable. A third state there is worth having if the provenance work
+  (§3) goes ahead.
+
+  So the check's coverage goes 211 asserted dishonestly → 0 while nothing has
+  been re-scored → 200 asserted honestly. About eleven rows weaker than
+  today, and true.
 * **No before/after census was taken.** The extraction work set the discipline
   — measure, change, measure — and this did not follow it. The distribution of
   live scores before and after is worth having before the re-score runs, not
