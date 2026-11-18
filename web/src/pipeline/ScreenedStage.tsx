@@ -74,17 +74,32 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
     return { proceed, parked, declined, total: filtered.length };
   }, [filtered]);
 
-  // The review queue is Proceed AND Parked: a parked call was surfaced this week and still
-  // needs a visible slot. Proceed first, then Park; highest score first within each.
+  // EVERY SCREENED CALL, DECLINES INCLUDED (owner, 2026-11-18).
   //
-  // AND ITS CALL MUST STILL BE OPEN (owner, 2026-11-10). A closed call cannot be acted on,
-  // so listing it as work is asking for a decision nobody can make. `expired` is the
-  // server's own `deadlinePassed` — the same rule the Archive and Bidding's rule 6 use —
-  // and is deliberately NOT applied to the KPIs above: what the scan found in a given week
-  // is history, and a count that shrank as deadlines passed would rewrite it.
+  // This list was Proceed and Park only. Decline was excluded because the hard gate used
+  // to leak false positives — calls that passed it and then scored as Decline — and a
+  // queue full of them was noise. The owner's reason for reversing it: "we've since
+  // hardened the hard gate i.e. theme mismatch, passed deadline, ineligible geo scope
+  // etc. this have been tested to prevent any rfps from leaking into a tenant's account
+  // before the scoring decides how to classify them."
+  //
+  // So the gate decides what a tenant SEES, and the score only classifies what got
+  // through. Once a call is in, hiding the engine's Decline hides a judgement the team is
+  // entitled to disagree with — "a decline could end up being upgraded to Proceed by user
+  // if they review and find them eligible". The meeting now reads the whole week.
+  //
+  // Order: Proceed, then Park, then Decline; highest score first within each. A decline
+  // still sorts last, because the list is work to do and that is the order to do it in.
+  //
+  // THE CALL MUST STILL BE OPEN (owner, 2026-11-10) — unchanged. A closed call cannot be
+  // acted on, so listing it as work asks for a decision nobody can make. `expired` is the
+  // server's own `deadlinePassed`, and is deliberately NOT applied to the KPIs above:
+  // what the scan found in a given week is history, and a count that shrank as deadlines
+  // passed would rewrite it.
+  const rank = (d: string) => (isProceed(d) ? 0 : d === "park" ? 1 : 2);
   const openQueue = useMemo(() => filtered
-    .filter((r) => { const d = effective(r); return isProceed(d) || d === "park"; })
-    .sort((a, b) => (isProceed(effective(a)) ? 0 : 1) - (isProceed(effective(b)) ? 0 : 1)
+    .filter((r) => { const d = effective(r); return isProceed(d) || d === "park" || d === "decline"; })
+    .sort((a, b) => rank(effective(a)) - rank(effective(b))
       || (b.alignment_score ?? 0) - (a.alignment_score ?? 0)), [filtered]);
   const queue = useMemo(() => openQueue.filter((r) => !r.expired), [openQueue]);
   const closedSince = openQueue.length - queue.length;
@@ -141,7 +156,7 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
       <div className="mt-6 mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-brand-700">
-            Proceed &amp; parked <span className="font-normal text-ink-500">({queue.length})</span>
+            Screened calls <span className="font-normal text-ink-500">({queue.length})</span>
           </h2>
           {closedSince > 0 && (
             <p className="mt-0.5 text-xs text-ink-500">
@@ -175,7 +190,7 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
             <tbody>
               {queue.length === 0 && (
                 <tr><td colSpan={7} className="px-4 py-12 text-center text-ink-500">
-                  Nothing to proceed with or park in this week.
+                  Nothing was screened in this week.
                 </td></tr>
               )}
               {queue.map((r) => {
@@ -193,7 +208,7 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
                       {r.alignment_score == null ? "—" : Math.round(r.alignment_score)}
                     </td>
                     <td className="px-4 py-3">
-                      <Badge tone={isProceed(d) ? "good" : d === "park" ? "warn" : "neutral"}>
+                      <Badge tone={isProceed(d) ? "good" : d === "park" ? "warn" : d === "decline" ? "bad" : "neutral"}>
                         {d ? d[0].toUpperCase() + d.slice(1) : "—"}
                       </Badge>
                       {!r.decision && <span className="ml-1.5 text-xs text-ink-400">auto</span>}
@@ -207,8 +222,9 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
         </div>
       </Card>
       <p className="mt-3 text-xs text-ink-500">
-        Proceed first, then parked; highest score first within each. A decision nobody has made yet
-        shows the engine's recommendation, marked <em>auto</em>.
+        Every call screened in this week — proceed, parked and declined — highest score first
+        within each. A decision nobody has made yet shows the engine's recommendation, marked{" "}
+        <em>auto</em>; a decline is the engine's opinion, not a verdict, and can be changed.
       </p>
       {editUid && (
         <RfpEditor uid={editUid} onClose={() => setEditUid(null)} onSaved={load} />
