@@ -108,6 +108,23 @@ def _amount_val(v) -> float | None:
     return f if f > 0 else None
 
 
+def _duration_months(value: Any) -> int | None:
+    """A handler's project duration as whole months, or None.
+
+    The column is an integer count of months. A handler computing it from two
+    contract dates can produce a float or a string depending on how it rounded, so
+    it is normalised here rather than trusting the caller. Outside one month to a
+    decade it is not a grant period and is dropped.
+    """
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        months = int(round(float(str(value).strip())))
+    except (TypeError, ValueError):
+        return None
+    return months if 1 <= months <= 120 else None
+
+
 def _expected_awards(candidate: dict[str, Any]) -> str | None:
     """`expected_awards` off a handler, as the TEXT the column stores.
 
@@ -483,7 +500,11 @@ def build_record(candidate: dict[str, Any], policies: dict[str, Any], *,
         "eligibility_countries": _listed or None,
         # Structural extraction first; the synthesis fills a blank, never overrides.
         "grant_amount": g_amt if g_amt else _syn_amount,
-        "project_duration": _syn_duration or None,
+        # A handler that read the contract dates knows the length exactly. OCDS
+        # publishes `contractPeriod` on 99 of 100 Contracts Finder releases, so
+        # there is nothing for a text pattern to infer on those rows.
+        "project_duration": _duration_months(candidate.get("project_duration"))
+                            or _syn_duration or None,
         "currency": g_cur,
         # A HANDLER-READ FIGURE WINS, as it already does for `call_award_value` above.
         #
@@ -525,7 +546,12 @@ def build_record(candidate: dict[str, Any], policies: dict[str, Any], *,
                               if str(candidate.get("eligibility_other") or "").strip()
                               else _syn_text("eligibility_specifics",
                                              "compliance_requirements")),
-        "submission_format": _syn_text("how_to_apply"),
+        # Handler first again: OCDS `submissionMethodDetails` names the portal and
+        # the registration step in the buyer's own words, which beats a model's
+        # paraphrase of the same sentence and a regex's guess at the channel.
+        "submission_format": (str(candidate.get("submission_format")).strip()
+                              if str(candidate.get("submission_format") or "").strip()
+                              else _syn_text("how_to_apply")),
         "raw_text": (text or None) and str(text)[:20000],
         "content_hash": hashlib.sha1(blob.encode("utf-8")).hexdigest(),
         "extraction_confidence": overall_conf,
