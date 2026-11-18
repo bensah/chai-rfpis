@@ -153,8 +153,52 @@ class TestTheDecisionRule(unittest.TestCase):
 
     def test_the_fit_label_is_not_the_decision(self):
         self.assertEqual(osc.fit_label(85), "Strong fit")
-        self.assertEqual(osc.fit_label(60), "Moderate fit")
-        self.assertEqual(osc.fit_label(50), "Low fit")
+        self.assertEqual(osc.fit_label(60), "Fair fit")
+        self.assertEqual(osc.fit_label(50), "Weak fit")
+
+    def test_the_bands_are_contiguous_and_leave_no_value_unnamed(self):
+        """THE REASON THE BOUNDARY MOVED (owner, 2026-11-18: "81+ strong · 51-80 fair ·
+        50 or less weak").
+
+        The old bands were ">= 80 strong, > 50 moderate" and the legend read "80+ strong
+        · 51-79 moderate". 80 was claimed by the first band and excluded from the second,
+        so the one value the wording could not place was also the boundary itself. This
+        walks every integer and asserts each lands in exactly the band the owner named.
+        """
+        for n in range(0, 101):
+            want = ("Strong fit" if n >= 81 else "Fair fit" if n >= 51 else "Weak fit")
+            with self.subTest(composite=n):
+                self.assertEqual(osc.fit_label(n), want)
+
+    def test_eighty_is_fair_now_and_eighty_one_is_strong(self):
+        """The boundary itself, named rather than left to the sweep above."""
+        self.assertEqual(osc.fit_label(80), "Fair fit")
+        self.assertEqual(osc.fit_label(81), "Strong fit")
+
+    def test_moderate_is_no_longer_a_fit_band(self):
+        """It names the midpoint of two CRITERION vocabularies — funding_quality and
+        competitiveness — so the same word meant a whole-opportunity band in one place
+        and one criterion's answer in another."""
+        labels = {osc.fit_label(n) for n in range(0, 101)}
+        self.assertNotIn("Moderate fit", labels)
+        self.assertEqual(labels, {"Strong fit", "Fair fit", "Weak fit"})
+
+    def test_the_analysis_publishes_the_bands_for_the_page(self):
+        """The legend used to retype the numbers and went stale the moment they moved."""
+        an = osc.analyse(CANDIDATE, ORG, None, {})
+        self.assertEqual(an["fit_bands"],
+                         {"strong_at": osc.FIT_STRONG_AT, "fair_at": osc.FIT_FAIR_AT})
+        self.assertEqual((osc.FIT_STRONG_AT, osc.FIT_FAIR_AT), (81, 51))
+
+    def test_the_review_screen_does_not_keep_its_own_copy_of_the_bands(self):
+        """`views/review_rfp.py` restated ">= 80 / > 50" inline. With the boundary moved
+        it would have gone on calling a call "Strong fit" that the Opportunity page calls
+        Fair, and nothing would have caught it."""
+        from pathlib import Path
+        src = (Path(__file__).resolve().parents[1] / "views" / "review_rfp.py").read_text(
+            encoding="utf-8")
+        self.assertNotIn('"Moderate fit"', src)
+        self.assertIn("fit_label", src)
 
 
 class TestConfidenceIsReported(unittest.TestCase):

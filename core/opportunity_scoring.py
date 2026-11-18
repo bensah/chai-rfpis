@@ -50,10 +50,32 @@ LABELS = {
 }
 
 
+#: The fit bands, as the owner stated them on 2026-11-18: "81+ strong · 51-80 fair ·
+#: 50 or less weak". Two changes from what preceded them, and both matter.
+#:
+#: THE BOUNDARY MOVED from 80 to 81. A composite of exactly 80 used to read "Strong fit";
+#: it is Fair now. 80 was the only value the old wording could not express — "80+ strong,
+#: 51-79 moderate" left 80 named by the first band and unnamed by the second, which is the
+#: ambiguity that prompted the question in the first place. The bands are now contiguous
+#: and exhaustive over the integers: 0-50, 51-80, 81-100.
+#:
+#: THE WORDS CHANGED. "Moderate" also names the midpoint of two CRITERION vocabularies
+#: (funding_quality and competitiveness), so the same word meant a whole-opportunity band
+#: in one place and a single criterion's answer in another. "Fair" is unused elsewhere.
+#: "Low" became "Weak" to match: low/high reads as a measurement, strong/weak as a verdict,
+#: and this is a verdict.
+#:
+#: These are NOT the suggestion bands. `decide` (and auto_scorer.recommend_from_composite)
+#: band the recommendation at 90 and 70, which is why a call can read "Strong fit" and
+#: still be suggested as Park. Both scales are printed under the tiles for that reason.
+FIT_STRONG_AT = 81
+FIT_FAIR_AT = 51
+
+
 def fit_label(composite: float) -> str:
     """Overall match strength only — it does NOT set the decision."""
-    return ("Strong fit" if composite >= 80
-            else "Moderate fit" if composite > 50 else "Low fit")
+    return ("Strong fit" if composite >= FIT_STRONG_AT
+            else "Fair fit" if composite >= FIT_FAIR_AT else "Weak fit")
 
 
 def decide(composite: float, *, fatal: bool = False,
@@ -250,4 +272,8 @@ def analyse(rfp: dict, org: dict | None, donor: dict | None,
             "n": _n_counted,
             "of": len(criteria),
         },
+        # The fit bands, so the page's legend states the rule rather than a copy of it.
+        # The legend used to carry the numbers as literal text and went stale the moment
+        # the owner moved the boundary from 80 to 81.
+        "fit_bands": {"strong_at": FIT_STRONG_AT, "fair_at": FIT_FAIR_AT},
     }

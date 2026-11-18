@@ -137,6 +137,12 @@ def _for_web(a):
             "n": (a.get("scored_on") or {}).get("n"),
             "of": (a.get("scored_on") or {}).get("of"),
         },
+        # So the legend under the tiles states core.opportunity_scoring's own bands
+        # instead of a copy that can drift from them.
+        "fitBands": {
+            "strongAt": (a.get("fit_bands") or {}).get("strong_at"),
+            "fairAt": (a.get("fit_bands") or {}).get("fair_at"),
+        },
         "criteria": [{
             "key": x.get("key"), "title": x.get("title"), "label": x.get("label"),
             "band": x.get("band"), "countText": x.get("count_text") or "",

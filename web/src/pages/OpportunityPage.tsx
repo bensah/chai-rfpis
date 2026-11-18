@@ -706,14 +706,27 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
             "what is the threshold for saying an opportunity is Strong fit? what are the
             other qualities?"
 
-            `opportunity_scoring.py:55` bands the fit at 80 and 50; `recommend_from_
-            composite` bands the suggestion at 90 and 70. So a call can read "Strong fit"
-            and still be suggested as Park — 88 does exactly that — and without the two
-            scales side by side that looks like the page contradicting itself. */}
+            `opportunity_scoring.fit_label` bands the fit at 81 and 51;
+            `recommend_from_composite` bands the suggestion at 90 and 70. So a call can
+            read "Strong fit" and still be suggested as Park — 88 does exactly that — and
+            without the two scales side by side that looks like the page contradicting
+            itself.
+
+            THE FIT BANDS MOVED on 2026-11-18, to the owner's words: "81+ strong · 51–80
+            fair · 50 or less weak". 80 was the one value the old wording could not place
+            — "80+ strong · 51–79 moderate" named it in the first band and left it out of
+            the second — and the three bands are contiguous over the integers now. The
+            numbers here are not retyped: they come from the Python constants through
+            `analysis.fitBands`, because a legend that can disagree with the rule it
+            describes is worse than no legend. */}
         {d.analysis && !d.analysis.error && (
           <div className="border-t border-ink-200 bg-ink-50/50 px-4 py-2 text-xs text-ink-500">
             <strong className="font-semibold text-ink-600">Bid strength</strong>{" "}
-            80+ strong · 51–79 moderate · 50 or less low.{" "}
+            {d.analysis.fitBands
+              ? `${d.analysis.fitBands.strongAt}+ strong · `
+                + `${d.analysis.fitBands.fairAt}–${d.analysis.fitBands.strongAt - 1} fair · `
+                + `${d.analysis.fitBands.fairAt - 1} or less weak.`
+              : "81+ strong · 51–80 fair · 50 or less weak."}{" "}
             <strong className="font-semibold text-ink-600">Suggestion</strong>{" "}
             90+ proceed · 70–89 park · under 70 decline — a failed hard requirement
             declines whatever the score.
