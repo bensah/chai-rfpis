@@ -102,11 +102,45 @@ function Lines({ lines, missing }: { lines: string[]; missing: boolean }) {
   }
   return (
     <>
-      {lines.map((l, i) => (
-        <p key={i} className="text-sm leading-relaxed text-ink-700">{l}</p>
+      {paragraphs(lines).map((l, i) => (
+        <p key={i} className="mb-2 text-sm leading-relaxed text-ink-700 last:mb-0">{l}</p>
       ))}
     </>
   );
+}
+
+/**
+ * Rejoin lines that a sentence was broken across, and separate the ones that are really
+ * paragraphs.
+ *
+ * The owner, reading the SRHR overview: "see after 'evidence' and jumps to another line
+ * that begins with Pillar 2 — unclear if this is a continuous sentence or a new
+ * paragraph. likely a continuous sentence." It was. The text arrives with newlines that
+ * are an artefact of how it was written down, not of how it should be read, and rendering
+ * each one as its own `<p>` turned a flowing passage into a column of orphaned fragments
+ * with no punctuation to explain the breaks.
+ *
+ * THE RULE IS THE PUNCTUATION, not the newline. A line that does not END in terminal
+ * punctuation has not finished its sentence, so the next line continues it. A line that
+ * does is a paragraph in its own right. That is a judgement about PRESENTATION only —
+ * nothing is added, removed or reworded, and a bulleted list (every line a complete item)
+ * is unaffected because each item ends cleanly or is short enough to stand alone.
+ */
+function paragraphs(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    const prev = out[out.length - 1];
+    // Continue the previous line when it stopped mid-sentence. `:` and `;` count as
+    // unfinished too — "The Centre will operate through two pillars:" is a lead-in.
+    if (prev && !/[.!?]["')\]]?$/.test(prev) && !/^[•\-–—*]/.test(line)) {
+      out[out.length - 1] = `${prev} ${line}`;
+    } else {
+      out.push(line);
+    }
+  }
+  return out;
 }
 
 /** A label/value pair. The whole design of this page lives in these six lines: a stated
@@ -126,10 +160,20 @@ function Row({ label, value }: { label: string; value: string }) {
     // the full cards display even if data is not available ... whether data is empty or
     // full, we have a fixed card view". A long value still wraps and still grows the row;
     // what no longer varies is the floor.
-    <div className="grid min-h-7 grid-cols-[minmax(0,5fr)_minmax(0,7fr)] items-baseline gap-x-4 py-1.5">
-      <dt className={`text-sm ${blank ? "text-ink-400" : "text-ink-500"}`}>{label}</dt>
-      <dd className={`min-w-0 text-sm break-words ${
-        blank ? "text-ink-300" : "font-medium text-ink-800"}`}>
+    // THE LABEL IS THE BOLD ONE, not the value. It was the other way round, which put
+    // semibold weight on every sentence of extracted prose — a whole card of emphasis,
+    // which is no emphasis at all — while the thing you scan for, the field's name, was
+    // the lighter of the two. The owner: "sub-section titles can be bolded but the main
+    // text shouldn't be. In fact reverse the font style throughout all the cards."
+    //
+    // 4fr/8fr, not 5fr/7fr: the labels are short and known, the values are extracted
+    // text of any length, so the room belongs to the side that needs it.
+    <div className="grid min-h-7 grid-cols-[minmax(0,4fr)_minmax(0,8fr)] items-baseline gap-x-4 py-1.5">
+      <dt className={`text-sm ${blank ? "text-ink-400" : "font-semibold text-ink-700"}`}>
+        {label}
+      </dt>
+      <dd className={`min-w-0 text-sm leading-relaxed break-words ${
+        blank ? "text-ink-300" : "text-ink-800"}`}>
         {blank ? MISSING : value}
       </dd>
     </div>
@@ -163,28 +207,60 @@ function Filled({ rows }: { rows: [string, string][] }) {
  * rather than in a tooltip. The bar is coloured by how thin the record is, because a thin
  * record is a fact about whether the score further down can be trusted at all.
  */
-export function CoverageAside({ cov }: { cov: { filled: number; total: number } }) {
-  if (!cov.total) return null;
-  const pct = Math.round((cov.filled / cov.total) * 100);
+function Meter({ label, pct, note }: { label: string; pct: number; note?: string }) {
   const text = pct >= 60 ? "text-good-700" : pct >= 30 ? "text-gold-700" : "text-bad-700";
   const bar = pct >= 60 ? "bg-good-600" : pct >= 30 ? "bg-gold-500" : "bg-bad-600";
   return (
-    <div className="min-w-[14rem] rounded-lg border border-ink-200 bg-ink-50/70 px-3 py-2">
+    <div>
       <div className="flex items-baseline justify-between gap-3">
         <span className="text-[0.7rem] font-semibold tracking-[0.06em] text-ink-500 uppercase">
-          Captured from the call
+          {label}
         </span>
         <span className={`text-sm font-bold tabular-nums ${text}`}>{pct}%</span>
       </div>
-      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-ink-200">
+      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-ink-200">
         <div className={`h-full rounded-full ${bar}`} style={{ width: `${pct}%` }} />
       </div>
-      <p className="mt-1.5 text-xs text-ink-500">
-        <strong className="font-semibold text-ink-700 tabular-nums">
-          {cov.filled} of {cov.total}
-        </strong>{" "}
-        tracked fields are stated here. A dash is this call being silent, not a field we
-        stopped tracking.
+      {note && <p className="mt-1 text-xs text-ink-500">{note}</p>}
+    </div>
+  );
+}
+
+export function CoverageAside({ cov, confidence }: {
+  cov: { filled: number; total: number };
+  /** `analysis.confidence` — the scoring side's own view of how much it had to read. */
+  confidence?: { callPct: number; donorPct: number; donorMatched: boolean } | null;
+}) {
+  if (!cov.total) return null;
+  const pct = Math.round((cov.filled / cov.total) * 100);
+  return (
+    <div className="min-w-[16rem] space-y-2 rounded-lg border border-ink-200 bg-ink-50/70 px-3 py-2">
+      <Meter
+        label="Captured from the call" pct={pct}
+        note={`${cov.filled} of ${cov.total} tracked fields are stated here.`}
+      />
+      {/* THE SECOND HALF OF THE ANSWER. The owner: "Stating 'Captured from the call', does
+          it mean part was not captured from the donor site ... perhaps use the other space
+          to show % captured from donor intel, which should be 0 with a flag at the bottom
+          no intel data available, so it is clear it is 0 because no donor matching the
+          opportunity is found."
+
+          Exactly so, and the number already existed — `core/data_quality.py` computes it
+          for the confidence band and the page threw it away. A lone "captured from the
+          call" figure invites the reading that the rest came from somewhere else; two
+          figures say which, and a zero with a reason attached is information rather than
+          an unexplained blank. */}
+      {confidence && (
+        <Meter
+          label="From donor intelligence" pct={confidence.donorPct}
+          note={confidence.donorMatched
+            ? undefined
+            : "No donor in Donor Intelligence matches this funder, so nothing could be "
+              + "read from one — this is 0 for want of a record, not a thin one."}
+        />
+      )}
+      <p className="text-xs text-ink-500">
+        A dash on this page is the source being silent, not a field we stopped tracking.
       </p>
     </div>
   );
@@ -232,7 +308,12 @@ export function OverviewCard({ heading, lines, missing, children }: {
  * characters is roughly where a value stops fitting on two lines at half width.
  */
 export function isWide(block: Block): boolean {
-  if (block.kind === "prose") return block.lines.join(" ").length > 220;
+  // PROSE PAIRS UP UNLESS IT IS GENUINELY LONG. At 220 characters "What is NOT funded"
+  // went full width while "What is funded" stayed narrow above it, splitting the one pair
+  // on the page that is meant to be read against itself — funded on the left, not funded
+  // on the right. A few hundred characters reads fine in half a page; only an overview-
+  // length passage needs the whole width, and `Project overview` clears 900 easily.
+  if (block.kind === "prose") return block.lines.join(" ").length > 900;
   return block.rows.some(([, v]) => v.length > 90);
 }
 
@@ -588,12 +669,38 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
               ? DECISION_TONE[d.analysis.suggestedDecision] : undefined}
           />
         </div>
+
+        {/* WHAT THE TWO WORDS ABOVE MEAN, because they are scored on DIFFERENT scales and
+            a reader comparing them has no way to know that. The owner asked outright:
+            "what is the threshold for saying an opportunity is Strong fit? what are the
+            other qualities?"
+
+            `opportunity_scoring.py:55` bands the fit at 80 and 50; `recommend_from_
+            composite` bands the suggestion at 90 and 70. So a call can read "Strong fit"
+            and still be suggested as Park — 88 does exactly that — and without the two
+            scales side by side that looks like the page contradicting itself. */}
+        {d.analysis && !d.analysis.error && (
+          <div className="border-t border-ink-200 bg-ink-50/50 px-4 py-2 text-xs text-ink-500">
+            <strong className="font-semibold text-ink-600">Bid strength</strong>{" "}
+            80+ strong · 51–79 moderate · 50 or less low.{" "}
+            <strong className="font-semibold text-ink-600">Suggestion</strong>{" "}
+            90+ proceed · 70–89 park · under 70 decline — a failed hard requirement
+            declines whatever the score.
+          </div>
+        )}
       </Card>
 
       <Section
         step="1" title="The opportunity"
         lead="Every call is restated in the same shape, so two funders' calls can be compared line by line."
-        aside={cov ? <CoverageAside cov={cov} /> : undefined}
+        aside={cov
+          ? (
+            <CoverageAside
+              cov={cov}
+              confidence={d.analysis && !d.analysis.error ? d.analysis.confidence : null}
+            />
+          )
+          : undefined}
       />
 
       {/* The overview carries the same card as every block below it. It used to be the one
