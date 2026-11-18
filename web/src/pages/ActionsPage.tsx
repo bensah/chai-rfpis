@@ -19,7 +19,7 @@ import {
   ApiError, createEngagement, createNote, fetchActions, patchEngagement, patchNote, putSchedule,
   type Actions, type MeetingNote, type RotaEntry, type User,
 } from "../api";
-import { Badge, Button, Card, EmptyState, Field, Notice, PageHeader, Select, Spinner, fieldClass } from "../ui";
+import { Badge, Button, Card, EmptyState, Field, Notice, PageHeader, Select, Spinner, field, fieldClass } from "../ui";
 import { DataTable, fmtInt, fmtPct, Tile, Tiles } from "../report/charts";
 
 const dash = "—";
@@ -571,7 +571,7 @@ function Schedule({ data, busy, run }: { data: Actions; busy: string | null; run
                 write a change into the wrong week. */}
             {draft.map((r, i) => (showPast || r.date >= mondayOf(today)) && (
               <tr key={`${r.date}-${i}`} className="border-b border-ink-100 last:border-0">
-                <td className="px-2 py-1.5"><input type="date" className={`${fieldClass} w-40`} value={r.date} onChange={edit(i, "date")} /></td>
+                <td className="px-2 py-1.5"><input type="date" className={field("w-40")} value={r.date} onChange={edit(i, "date")} /></td>
                 <td className="px-2 py-1.5"><input className={fieldClass} value={r.noteTaker} onChange={edit(i, "noteTaker")} /></td>
                 <td className="px-2 py-1.5"><input className={fieldClass} value={r.presenter} onChange={edit(i, "presenter")} /></td>
                 <td className="px-2 py-1.5"><input className={fieldClass} value={r.chair} onChange={edit(i, "chair")} /></td>

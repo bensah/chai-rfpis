@@ -42,7 +42,7 @@
 import { q, type Db } from "./db.ts";
 import { json, gzipped, str } from "./http.ts";
 import { ratesFor } from "./fx.ts";
-import { BUCKET, BUCKETS, measure, membership } from "./home_buckets.ts";
+import { BUCKET, BUCKET_GROUPS, BUCKETS, measure, membership } from "./home_buckets.ts";
 import {
   loadCurrencies, requestedCurrency, submissionWeight, usdValue,
 } from "./money.ts";
@@ -51,6 +51,7 @@ import type { Json } from "./jwt.ts";
 import { asToday, classify, featured } from "./opportunity_feed.ts";
 import { getPolicies, tenantPrefs } from "./policies.ts";
 import { isSuperUser, type PermUser } from "./permissions.ts";
+import { pyRound } from "./py_round.ts";
 import type { Ctx } from "./session.ts";
 
 /** views/opportunity_rail.py::_FIELDS, plus call_domain_areas.
@@ -290,8 +291,11 @@ export function createPhase1Routes(db: Db) {
       // Over DECIDED applications only - see above. Null rather than 0 when nothing has
       // been decided yet: "0%" reads as failure, an absent figure reads as "not yet".
       usd_requested_decided: requestedDecided,
+      // `pyRound`, not the scale-and-round idiom, for the reason py_round.ts gives: the
+      // multiplication can walk a value across a tie. No Python counterpart compares this
+      // one, which is precisely why it would never have been noticed here.
       pct_won_of_decided: requestedDecided > 0
-        ? Math.round((secured / requestedDecided) * 1000) / 10
+        ? pyRound((secured / requestedDecided) * 100, 1)
         : null,
     });
   }
@@ -479,8 +483,12 @@ export function createPhase1Routes(db: Db) {
 
     return gzipped(req, json({
       today: t,
+      // The headings, in the order they read. Sent rather than derived in the browser:
+      // the order is a decision, and first-appearance order in `buckets` below is the
+      // DASHBOARD's tile order, which groups differently on purpose.
+      bucketGroups: BUCKET_GROUPS,
       buckets: BUCKETS.map((b) => ({
-        key: b.key, label: b.label, kind: b.kind, rule: b.rule,
+        key: b.key, label: b.label, kind: b.kind, group: b.group, rule: b.rule,
         count: measure(b, rows, t),
       })),
       rows: out,

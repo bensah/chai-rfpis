@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, X } from "lucide-react";
+import { Check, ChevronDown, Plus, X } from "lucide-react";
 
 type Props = {
   label: string;
@@ -8,10 +8,25 @@ type Props = {
   onChange: (v: string[]) => void;
   help?: string;
   format?: (v: string) => string;
+  /**
+   * Allow a value that is not in the list — Streamlit's `accept_new_options`.
+   *
+   * OFF by default, and the default is the important half: everywhere this component
+   * filters or writes a CONTROLLED vocabulary, a typed value would be stored where
+   * nothing matches it and the criterion would quietly score as unanswered.
+   *
+   * On is for the lists the Settings → Setup editor deliberately leaves open — donors,
+   * portals, partners. Its own help text invites it ("type a name not listed to add it"),
+   * because the donor catalogue is a starting point rather than a closed set: an
+   * organisation that cannot record a funder it has actually won from loses PREFER-7.
+   */
+  allowNew?: boolean;
 };
 
 /** Searchable multi-select: selected values show as removable chips. */
-export default function MultiSelect({ label, options, value, onChange, help, format = (v) => v }: Props) {
+export default function MultiSelect({
+  label, options, value, onChange, help, format = (v) => v, allowNew = false,
+}: Props) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const box = useRef<HTMLDivElement>(null);
@@ -33,6 +48,19 @@ export default function MultiSelect({ label, options, value, onChange, help, for
   }, [options, q, format]);
 
   const toggle = (o: string) => onChange(value.includes(o) ? value.filter((v) => v !== o) : [...value, o]);
+
+  // What typing would add, or "" when it would add nothing. Compared case-insensitively
+  // against both the options and the current selection, so "gates foundation" does not
+  // become a second entry beside "Gates Foundation" — the catalogue is matched by name
+  // downstream, and two spellings of one donor match neither reliably.
+  const typed = q.trim();
+  const isNew = allowNew && !!typed
+    && ![...options, ...value].some((o) => o.toLowerCase() === typed.toLowerCase());
+  const addTyped = () => {
+    if (!isNew) return;
+    onChange([...value, typed]);
+    setQ("");
+  };
 
   return (
     <div ref={box} className="relative">
@@ -60,12 +88,26 @@ export default function MultiSelect({ label, options, value, onChange, help, for
       {open && (
         <div className="absolute z-40 mt-1.5 w-full overflow-hidden rounded-xl border border-ink-200 bg-white shadow-float">
           <input
-            autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Type to filter…"
+            autoFocus value={q} onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && isNew) { e.preventDefault(); addTyped(); } }}
+            placeholder={allowNew ? "Type to filter, or add a new one…" : "Type to filter…"}
             aria-label={`Filter ${label}`}
             className="w-full border-b border-ink-100 px-3 py-2.5 text-sm outline-none placeholder:text-ink-400"
           />
           <ul className="max-h-64 overflow-auto py-1">
-            {shown.length === 0 && <li className="px-3 py-2.5 text-sm text-ink-400">No matches</li>}
+            {isNew && (
+              <li>
+                <button
+                  type="button" onClick={addTyped}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm font-medium text-accent-700 transition-colors hover:bg-accent-50"
+                >
+                  <Plus className="h-4 w-4 shrink-0" strokeWidth={2.5} />
+                  Add “{typed}”
+                </button>
+              </li>
+            )}
+            {shown.length === 0 && !isNew
+              && <li className="px-3 py-2.5 text-sm text-ink-400">No matches</li>}
             {shown.map((o) => {
               const on = value.includes(o);
               return (

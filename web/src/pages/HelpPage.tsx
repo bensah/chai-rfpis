@@ -59,9 +59,14 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
 export default function HelpPage({ user, shell }: { user: User; shell: Shell | null }) {
   const admin = isAdmin(user);
   const sup = isSuper(user);
-  const contact = shell?.adminContactEmail ?? "an administrator";
+  // An UNCONFIGURED deployment gets words, not a dead address. The server sends the
+  // same placeholder both apps use, and says it is a placeholder; printing it here would
+  // invite somebody to email admin@example.org and hear nothing back.
+  const configured = shell?.adminContactConfigured !== false && !!shell?.adminContactEmail;
+  const contact = configured
+    ? (shell?.adminContactEmail as string) : "your administrator";
   const org = user.view?.name ?? user.tenant?.name ?? "your organization";
-  const mailto = contact.includes("@") ? `mailto:${contact}` : undefined;
+  const mailto = configured && contact.includes("@") ? `mailto:${contact}` : undefined;
   const Contact = () => mailto
     ? <a href={mailto} className="font-semibold text-accent-700 underline hover:text-accent-800">{contact}</a>
     : <strong>{contact}</strong>;

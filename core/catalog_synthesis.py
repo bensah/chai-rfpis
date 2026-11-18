@@ -353,8 +353,9 @@ def _kind_phrase(row: dict) -> str:
 
 
 def is_enabled() -> bool:
-    return bool(os.environ.get("LLM_SYNTH_BASE_URL")
-                or os.environ.get("LLM_JUDGE_BASE_URL"))
+    from core.llm_client import primary_endpoint
+    base, _key = primary_endpoint("LLM_SYNTH_BASE_URL", "LLM_JUDGE_BASE_URL")
+    return bool(base)
 
 
 def _model() -> str:
@@ -364,11 +365,11 @@ def _model() -> str:
 
 def _client():
     from openai import OpenAI
+    from core.llm_client import primary_endpoint
+    _base, _key = primary_endpoint("LLM_SYNTH_BASE_URL", "LLM_JUDGE_BASE_URL")
     return OpenAI(
-        base_url=(os.environ.get("LLM_SYNTH_BASE_URL")
-                  or os.environ.get("LLM_JUDGE_BASE_URL")),
-        api_key=(os.environ.get("LLM_SYNTH_API_KEY")
-                 or os.environ.get("LLM_JUDGE_API_KEY") or "ollama"),
+        base_url=_base,
+        api_key=(os.environ.get("LLM_SYNTH_API_KEY") or _key or "ollama"),
         timeout=float(os.environ.get("LLM_SYNTH_TIMEOUT")
                       or os.environ.get("LLM_JUDGE_TIMEOUT", "120") or 120),
         max_retries=1,
@@ -712,21 +713,70 @@ def synthesize_row(row: dict, *, html: str | None = None) -> dict:
         body=body[:_MAX_INPUT])
     try:
         _CALLS += 1
-        resp = _client().chat.completions.create(
-            model=_model(),
+        # THROUGH `chat_with_fallback`, NOT `create()` DIRECTLY — this call used to go
+        # straight to the SDK, which meant it had neither the model chain nor the PROVIDER
+        # chain behind it. When the configured endpoint began answering
+        # "402 — Add usage credits" the exception propagated to the `except` below, was
+        # logged at warning level and the row came back with nothing, while a funded
+        # second vendor sat unused in `RFPIS_LLM_PROVIDERS`.
+        #
+        # That mattered more here than anywhere else: this function writes
+        # `full_description`, `what_is_funded`, `applicant_fit_profile` and the rest of
+        # the LLM-only half of a call record — exactly the fields a reader sees missing
+        # when they open a thin opportunity, and the ones no regex can produce.
+        #
+        # `model_chain` reads LLM_SYNTH_MODEL's own fallback list; `chat_with_fallback`
+        # walks it and then `_provider_fallback` walks every other configured provider,
+        # skipping the endpoint that just failed.
+        from core.llm_client import chat_with_fallback, model_chain
+        raw, _used, _resp = chat_with_fallback(
+            _client(), model_chain("LLM_SYNTH_MODEL", _model()),
             messages=[{"role": "system", "content": _SYSTEM},
                       {"role": "user", "content": prompt}],
             # Low but not zero: the prose must vary per call rather than settling into one
             # template, while the factual keys stay anchored by the "never invent" rule.
             temperature=0.3, max_tokens=_MAX_OUTPUT_TOKENS)
-        raw = (resp.choices[0].message.content or "") if resp.choices else ""
     except Exception as exc:
         log.warning("catalog_synthesis failed for %s: %s: %s",
                     row.get("uid"), type(exc).__name__, exc)
         return out
     parsed = _parse_json(raw)
     if not parsed:
-        log.info("catalog_synthesis non-JSON for %s: %r", row.get("uid"), raw[:200])
+        # ONE RETRY, because a dropped answer is now permanent.
+        #
+        # A reply that does not parse used to cost the row its synthesis silently
+        # — logged at INFO, which nothing watches — and a later backfill picked it
+        # up. Under the owner's rule of 2026-11-19 there is no later: the row is
+        # written once and never revisited, so a single flaky reply means that
+        # call has no overview for good.
+        #
+        # Seen on a live TED notice: the same row, the same prompt, the same model
+        # produced an unusable reply on one attempt and five clean fields on the
+        # next. That is the whole case for retrying — not a model that cannot do
+        # the job, a reply that happened to come back malformed.
+        #
+        # Exactly one retry, at temperature 0. The first attempt runs warm so the
+        # prose varies between calls; if that produced something unparseable, the
+        # variation is not what is wanted on the way back.
+        log.info("catalog_synthesis non-JSON for %s, retrying once: %r",
+                 row.get("uid"), raw[:200])
+        try:
+            _CALLS += 1
+            resp = _client().chat.completions.create(
+                model=_model(),
+                messages=[{"role": "system", "content": _SYSTEM},
+                          {"role": "user", "content": prompt}],
+                temperature=0, max_tokens=_MAX_OUTPUT_TOKENS)
+            raw = (resp.choices[0].message.content or "") if resp.choices else ""
+        except Exception as exc:
+            log.warning("catalog_synthesis retry failed for %s: %s: %s",
+                        row.get("uid"), type(exc).__name__, exc)
+            return out
+        parsed = _parse_json(raw)
+    if not parsed:
+        log.warning("catalog_synthesis got no usable answer for %s after a retry — "
+                    "that row has no overview and nothing will revisit it",
+                    row.get("uid"))
         return out
 
     # Field by field, so a partial answer is still worth writing — the point of making a

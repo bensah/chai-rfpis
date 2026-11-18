@@ -122,7 +122,7 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
     body = <DonorsPage />;
   } else if (shown === "settings") {
     body = user.role === "admin" || user.role === "super_user"
-      ? <SettingsPage user={user} classicUrl={classicUrl} />
+      ? <SettingsPage user={user} classicUrl={classicUrl} shell={shell} />
       : <EmptyState title="Settings is for administrators">Ask an administrator if you need something changed here.</EmptyState>;
   } else {
     body = <ClassicPage page={shown} classicUrl={classicUrl} />;

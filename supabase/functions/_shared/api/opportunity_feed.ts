@@ -13,6 +13,7 @@
  */
 import { geographicExclusionReject } from "./geo_gate.ts";
 import { detectOpportunityType, OPPORTUNITY_TYPE_EXCLUSIONS } from "./type_detect.ts";
+import { pyRound } from "./py_round.ts";
 
 type Json = Record<string, unknown>;
 
@@ -349,7 +350,10 @@ export function featured(catalogRows: Json[], prefs: Prefs, seen: Set<string>,
   const deferred: [number, string, Json][] = [];
   const build = (sc: number, why: string, r: Json): FeedItem => {
     const it = catalogItem(r, today);
-    it._score = Math.round(sc * 1000) / 1000;
+    // `round(sc, 3)`, not `Math.round(sc * 1000) / 1000` — the multiplication moves a
+    // value that sits just below a tie onto it. See py_round.ts; this is the line that
+    // turned check-scoring red on a real row.
+    it._score = pyRound(sc, 3);
     it._why = why;
     return it;
   };

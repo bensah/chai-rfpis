@@ -57,3 +57,98 @@ export const RATING_WORD: Record<string, string> = {"0": "None", "1": "Very low"
  * be readable; an unknown prefix falls back to itself, as `category_full` does.
  */
 export const CATEGORY_FULL: Record<string, string> = {"AGRI": "Agriculture & Food Systems", "Cross-cutting": "Cross-cutting (Health)", "ECON": "Economic Development & Livelihoods", "EDU": "Education & Learning", "ENV": "Climate, Energy & Environment", "GES": "Gender, Equity & Inclusion", "GOV": "Governance, Peace & Rights", "HSS": "Health System Strengthening", "HUM": "Humanitarian & Resilience", "IDs": "Infectious Diseases", "NCDs": "Non-Communicable Diseases", "WASH": "Water, Sanitation & Hygiene (WASH)", "WCH": "Women & Children's Health"};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE EDITOR'S OWN OPTION LISTS — Settings → Setup, `views/org_setup.py`.
+//
+// Everything above describes how a STORED profile is read. Everything below is what the
+// four tabs OFFER, and the distinction matters: a reader shown a stale default sees a
+// wrong number, while a writer offered a stale option list STORES one. The profile is
+// read by the scoring engine, so a value outside the vocabulary does not fail, it just
+// stops matching — the criterion quietly scores as if the organisation had answered
+// nothing. That is the failure this whole file exists to prevent, on the write side.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** core/org_profile.COFINANCING_LEVELS — MUST-5, none / limited / strong. */
+export const COFINANCING_LEVELS: string[] = ["none", "limited", "strong"];
+
+/**
+ * core/criteria_derive.ROUTE_OPTIONS — [stored token, label on screen].
+ *
+ * The editor shows the LABELS and stores the TOKENS, so both halves are needed: a label
+ * stored where a token belongs matches no call's offered routes, and the MUST-5
+ * funding-route gate then scores 0 for an organisation that can in fact be funded.
+ */
+export const ROUTE_OPTIONS: [string, string][] = [["grant", "Grants"], ["procurement", "Procurement / contracts"], ["loan", "Loans / concessional finance"], ["subrecipient", "As a subrecipient / partner"], ["govt_ccm", "Government / CCM channel"], ["direct", "Direct (local entity)"]];
+
+/** The six legal types the editor offers (`_legal_opts`), in its own order. */
+export const LEGAL_TYPES: string[] = ["nonprofit", "government", "higher_ed", "for_profit", "individual", "tribal"];
+
+/**
+ * The entity types offered when the legal type is NOT "individual" (`_entity_opts`).
+ *
+ * The editor's rule is a data-validation one and belongs with the list: legal type
+ * "individual" forces entity type to "individual" and offers nothing else; every other
+ * legal type offers these three and hides "individual". See `entityOptions` in
+ * org_setup.ts, which is the rule itself rather than this table.
+ */
+export const ENTITY_TYPES: string[] = ["", "grassroot_local", "multi_country"];
+
+/** `_stage_opts` — some funders fund early-stage organisations only. */
+export const ORG_STAGES: string[] = ["established", "early-stage"];
+
+/**
+ * `_board_opts` — label on screen -> the value stored in `org_has_local_board`.
+ *
+ * "" is not a missing answer, it is the answer that LEAVES THE GATE OFF: "no" makes a
+ * donor requiring a local board a hard MUST-4 disqualifier, and "" means unknown, so a
+ * blank and a "no" are opposite instructions to the scorer.
+ *
+ * PAIRS, not an object, because the ORDER is load-bearing and a Record would lose it.
+ * The editor's selectbox falls back to index 0 when the stored value matches nothing, so
+ * whichever entry comes first is what an unrecognised value is shown as — and here that
+ * entry is the one carrying "". Sorted alphabetically, "No — we don't have one" would
+ * come first instead, and a profile with a damaged value would read as a hard no.
+ */
+export const BOARD_OPTIONS: [string, string][] = [["Unknown — don't apply this gate", ""], ["Yes — we have a local board", "yes"], ["No — we don't have one", "no"]];
+
+/** `_LANGS` — languages a competitive bid can be written in (bid effort). */
+export const PROPOSAL_LANGUAGES: string[] = ["English", "French", "Portuguese", "Spanish", "Arabic", "Swahili"];
+
+/** `_PARTNER_TYPES` — the partner table's Type column. */
+export const PARTNER_TYPES: string[] = ["Nonprofit / NGO", "Academic / research institutions", "For-profit / private", "Government", "Multilateral / UN", "Bilateral / development agency", "Philanthropy / foundation"];
+
+/** `_STATUS_OPTS` — the partner table's Status column; a partner may hold several. */
+export const PARTNER_STATUS: string[] = ["Donor", "Implementing Partner", "Collaborator"];
+
+/**
+ * `_crit_labels` — the nine criteria as the Scan Preferences tab names them.
+ *
+ * A lookup, not an order: the page iterates `CRITERIA` from scorer.ts, which is the
+ * scorer's own sequence, and reads a label out of here. Two orders of the same nine
+ * things is one of them waiting to go stale.
+ */
+export const CRITERION_LABELS: Record<string, string> = {"bid_effort": "PREFER 9 — Bid effort", "capacity": "MUST 3 — Implementation capacity", "cofinancing": "MUST 5 — Cofinancing & compliance", "competitiveness": "PREFER 8 — Competitiveness", "funder_relationship": "PREFER 7 — Donor relationship", "funding_quality": "PREFER 6 — Funding quality", "geographic_fit": "MUST 4 — Geographic fit", "qualification": "MUST 1 — Legal status & qualification", "strategic_fit": "MUST 2 — Strategic fit"};
+
+/**
+ * core/partners.DONOR_PORTALS, cleaned to bare hosts by `clean_portal_url`.
+ *
+ * The SEED for "Donor portal registration active". The editor unions it with the hosts
+ * on the live donor_intel rows, which the route adds — this half is the repo constant,
+ * that half is per-deployment data, the same split the rest of this file keeps.
+ */
+export const DONOR_PORTAL_SEED: string[] = ["afd.fr", "afdb.org", "cdc.gov", "ec.europa.eu", "fcdo.gov.uk", "gatesfoundation.org", "gavi.org", "gcgh.grandchallenges.org", "grants.gov", "grants.nih.gov", "sam.gov", "theglobalfund.org", "ungm.org", "unitaid.org", "wellcome.org", "workwithusaid.gov"];
+
+/**
+ * The program-area taxonomy as the matrix editor walks it: [category, canonical keys].
+ *
+ * THE KEYS ARE NOT COMPOSED HERE AND MUST NOT BE COMPOSED IN THE BROWSER. A stored area
+ * looks like "IDs - Malaria & NTDs" — a short category code, a spaced hyphen and a
+ * sub-area — and that string is what `core.program_area_classifier.expand` matches an
+ * organisation's areas against a call's and a donor's. Rebuilding it from the category
+ * NAME ("Infectious Diseases") or from CATEGORY_FULL's mapping would produce a key that
+ * looks right and matches nothing, costing MUST-2 and competitiveness at once. So every
+ * key comes from the Python's own `key_for`, and a pair it declines is dropped rather
+ * than guessed.
+ */
+export const AREA_TAXONOMY: [string, string[]][] = [["Women & Children's Health", ["WCH - Vaccines", "WCH - SRH", "WCH - Nutrition", "WCH - MNCH"]], ["Non-Communicable Diseases", ["NCDs - Mental Health", "NCDs - Diabetes", "NCDs - Cardiovascular Diseases", "NCDs - Cancer"]], ["Infectious Diseases", ["IDs - Tuberculosis", "IDs - Pandemic Response", "IDs - Malaria & NTDs", "IDs - HIV/AIDS", "IDs - Hepatitis", "IDs - Antimicrobial Resistance (AMR)"]], ["Health System Strengthening", ["HSS - Health Workforce", "HSS - Health Financing"]], ["Cross-cutting (Health)", ["Cross-cutting - Market Shaping", "Cross-cutting - Digital Health (+AI)", "Cross-cutting - Diagnostics", "Cross-cutting - Climate & Health", "Cross-cutting - Assistive Technology", "Cross-cutting - Research"]], ["Education & Learning", ["EDU - Early Childhood Development", "EDU - Basic Education", "EDU - Higher Education & TVET", "EDU - Literacy & Numeracy", "EDU - Education Technology"]], ["Economic Development & Livelihoods", ["ECON - Financial Inclusion", "ECON - MSME & Entrepreneurship", "ECON - Jobs & Skills", "ECON - Social Protection", "ECON - Trade & Markets"]], ["Agriculture & Food Systems", ["AGRI - Smallholder Productivity", "AGRI - Food Security & Resilience", "AGRI - Climate-Smart Agriculture", "AGRI - Livestock & Fisheries"]], ["Water, Sanitation & Hygiene (WASH)", ["WASH - Safe Water", "WASH - Sanitation", "WASH - Hygiene"]], ["Climate, Energy & Environment", ["ENV - Climate Adaptation & Resilience", "ENV - Clean & Renewable Energy", "ENV - Biodiversity & Conservation", "ENV - Pollution & Waste"]], ["Governance, Peace & Rights", ["GOV - Democracy & Civic Participation", "GOV - Anti-corruption & Accountability", "GOV - Human Rights & Justice", "GOV - Peace & Conflict"]], ["Gender, Equity & Inclusion", ["GES - Gender Equality & GBV", "GES - Disability Inclusion", "GES - Youth Empowerment", "GES - Migration & Displacement"]], ["Humanitarian & Resilience", ["HUM - Emergency Response", "HUM - Food Assistance", "HUM - Shelter & Settlements"]]];

@@ -31,6 +31,7 @@
 import {
   CRITERION_SCORES, SCORING_THRESHOLDS, SCORING_WEIGHTS,
 } from "./form_vocab.ts";
+import { pyRound } from "./py_round.ts";
 
 /** core/scorer.CRITERIA, in the order the weights and the MUST/PREFER split assume. */
 export const CRITERIA = [
@@ -88,13 +89,14 @@ export function alignmentScore(values: Record<string, unknown>): number {
   }
   if (weightSum <= 0) return 0;
   const score = (total / weightSum) * 100;
-  // Python rounds to one decimal and THEN clamps. Order matters only at the extremes, but
-  // `Math.round(x * 10) / 10` is not `round()` for a tie — JavaScript rounds a .05 half up
-  // and Python rounds it half to even. The weights are hundredths over a /1.0 denominator,
-  // so a tie at the first decimal is reachable (0.15+0.15 = 30.0 exactly), and ties land
-  // on values where both agree. Where they would not, the difference is 0.1 on a display
-  // number the job overwrites.
-  return Math.max(0, Math.min(100, Math.round(score * 10) / 10));
+  // Python rounds to one decimal and THEN clamps; order matters only at the extremes.
+  //
+  // This used to be `Math.round(score * 10) / 10` with a note arguing the half-up/half-even
+  // difference was unreachable here. The note was about the wrong half of the problem: the
+  // MULTIPLICATION is what moves a value across a tie, and the same idiom in
+  // opportunity_feed.ts duly turned check-scoring red on a real row. `pyRound` is
+  // `round()` outright — the exact value, ties to even — so neither half can bite.
+  return Math.max(0, Math.min(100, pyRound(score, 1)));
 }
 
 /**

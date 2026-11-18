@@ -291,9 +291,11 @@ class TestTheStandardLayout(unittest.TestCase):
 
     def test_a_serialised_empty_collection_still_counts_as_blank(self):
         # The jsonb columns arrive as the literal "[]" — which must read as a dash, never as
-        # a value. That detection is what this test has always been about.
+        # a value. That detection is what this test has always been about. It used to be
+        # asked of "Funding tiers"; that row left the layout on 2026-11-18, so the same
+        # question is asked of another jsonb row that is still on the page.
         v = od.standard_view(od.KIND_CATALOG, CATALOG_ROW, CATALOG_ROW)
-        self.assertEqual(_flat(v)["Funding tiers"], od.MISSING)
+        self.assertEqual(_flat(v)["Project stages"], od.MISSING)
 
     def test_placeholder_strings_count_as_blank(self):
         v = {"funder_name": "Not stated", "instrument_type": "n/a",
@@ -758,8 +760,40 @@ class TestCoverageDoesNotFollowTheLayout(unittest.TestCase):
         _f, _t, missing = od.coverage({"opportunity_name": "T"})
         # full_description has NO writer anywhere in the codebase — it must show as a gap.
         for f in ("full_description", "what_is_funded", "eligibility_countries",
-                  "applicant_fit_profile", "attachments", "apply_url"):
+                  "applicant_fit_profile", "attachments"):
             self.assertIn(f, missing)
+
+    def test_a_fact_the_sources_do_not_publish_is_not_counted_against_us(self):
+        """The 2026-11-18 removal. Coverage measures EXTRACTION, and a fact that is not
+        published cannot be extracted by anyone — measured at under 6% of catalogue
+        rows that have source text to judge by, `apply_url` at none at all. Counting
+        them capped the measurement near 83% before any extractor ran."""
+        for f in od._REMOVED_FROM_COVERAGE:
+            with self.subTest(field=f):
+                self.assertNotIn(f, od._COVERAGE_FIELDS)
+
+    def test_removing_a_field_from_coverage_does_not_hide_its_value(self):
+        """Five of the seven still render, and two of those are typed by hand in the RFP
+        editor — hiding them would let a reviewer enter a figure the page refuses to
+        show back. Rare is a reason not to GRADE the pipeline on a field."""
+        labels = {label for _title, rows in od._SECTIONS for label, _f, _k in rows}
+        self.assertIn("Total programme funding", labels)
+        self.assertIn("Expected number of awards", labels)
+        # The award range still shows the floor when a call publishes one, which is
+        # what keeps `call_award_floor` worth extracting after it left the measurement.
+        self.assertIn("Award range (per award)", labels)
+        v = {"call_award_floor": 100000, "call_award_ceiling": 500000, "currency": "USD"}
+        self.assertEqual(od.award_range_bounds(v), (100000.0, 500000.0))
+        self.assertIn("100,000", od.format_money_range(100000, 500000, "USD"))
+
+    def test_the_two_fields_nobody_can_type_left_the_layout_too(self):
+        """`funding_tiers` (0.1% populated, LLM-only) and `agency_code` (never populated,
+        a super_user row that could only print a dash). Where tiers ARE found,
+        `extract.tiers_to_bounds` turns them into the award range, which still renders."""
+        labels = {label for _t, rows in od._SECTIONS for label, _f, _k in rows}
+        labels |= {label for _t, rows in od._TECHNICAL_SECTIONS for label, _f, _k in rows}
+        self.assertNotIn("Funding tiers", labels)
+        self.assertNotIn("Agency code", labels)
 
     def test_no_layout_only_pseudo_field_leaks_into_the_count(self):
         for f in od._COVERAGE_FIELDS:
@@ -846,7 +880,7 @@ class TestTheFullSchemaIsAlwaysOnScreen(unittest.TestCase):
     def test_every_tracked_field_appears(self):
         flat = _flat(self.THIN)
         for label in ("Total programme funding", "Expected number of awards",
-                      "Funding tiers", "Posted", "Status", "Window",
+                      "Posted", "Status", "Window",
                       "Expected award date", "Time to award",
                       # the call's OWN eligibility, in its own section
                       "Institution types accepted", "Eligible countries (applicants)",

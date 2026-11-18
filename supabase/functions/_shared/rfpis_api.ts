@@ -25,6 +25,7 @@ import { createDb, q } from "./api/db.ts";
 import { createMailer } from "./api/email.ts";
 import { createFormOptions } from "./api/form_options.ts";
 import { corsHeaders, gzipped, HttpError, json, withCors } from "./api/http.ts";
+import { isAdmin, isSuperUser, type PermUser } from "./api/permissions.ts";
 import { createAuthRoutes, type AuthDeps } from "./api/routes_auth.ts";
 import { createJobRoutes, type Dispatch } from "./api/routes_jobs.ts";
 import { createPhase1Routes } from "./api/routes_phase1.ts";
@@ -36,6 +37,17 @@ import { createActionRoutes } from "./api/routes_actions.ts";
 import { loadOrgIdentity } from "./api/report_section2.ts";
 import { createShellRoutes } from "./api/routes_shell.ts";
 import { createOrgRoutes } from "./api/routes_org.ts";
+import { createOrgSetupRoutes } from "./api/routes_org_setup.ts";
+import { createUserRoutes } from "./api/routes_users.ts";
+import { createRecordRoutes } from "./api/routes_records.ts";
+import {
+  MATCH_RUN_LABEL, systemDiscoveryStats, tenantActivity, userStats,
+} from "./api/analytics.ts";
+import { runSummary, splitHistory } from "./api/scan_history.ts";
+import { createDonorWriteRoutes } from "./api/routes_donors.ts";
+import { createPlatformRoutes } from "./api/routes_platform.ts";
+import { secretRows, verdicts } from "./api/env_diag.ts";
+import { createScanPrefRoutes } from "./api/routes_scan_prefs.ts";
 import { createProfileRoutes } from "./api/routes_profile.ts";
 import { createSearchRoutes } from "./api/routes_search.ts";
 import { createSubmitRoutes } from "./api/routes_submit.ts";
@@ -93,6 +105,24 @@ export function createApi(env: Env, deps: Deps) {
   const siteSearch = createSearchRoutes(db, jobs.enqueue);
   // My Organization: one read, no writes — the editor is Settings, not this page.
   const organization = createOrgRoutes(db);
+  // Settings → Setup: that editor. Admin-gated per route, since an Edge Function has no
+  // nav to omit the page from.
+  const orgSetup = createOrgSetupRoutes(db);
+  // Settings → Accounts → Users. It resets a password through auth's OWN `issueToken`,
+  // not a second minting path: that function retires any live token on the account first,
+  // and a duplicate would be a second place to forget that step.
+  const users = createUserRoutes(db, auth.issueToken, mailer, env.allowedOrigins ?? [],
+    jobs.enqueue);
+  // Settings → Records: one route over several tables, and the TABLE IS NAMED BY THE
+  // CLIENT — so it names a spec key, never a table. See api/routes_records.ts.
+  const records = createRecordRoutes(db);
+  // Settings → Sources, Learning data and Suggestions: the three surfaces whose
+  // resources belong to every tenant, so none is scoped to the viewer's own.
+  const platform = createPlatformRoutes(db, jobs.enqueue);
+  const donorWrites = createDonorWriteRoutes(db, jobs.enqueue);
+  // Settings → Setup → Scan Preferences. Three stores, because the policy is
+  // tenant-scoped and the search terms and currency table are not.
+  const scanPrefs = createScanPrefRoutes(db);
   // Profile: self-service only, and every route keyed on the session's own id.
   const profile = createProfileRoutes(db, deps);
 
@@ -193,6 +223,144 @@ export function createApi(env: Env, deps: Deps) {
     // missing. Read-only by the page's own design — see api/routes_org.ts.
     if (path === "/organization" && m === "GET") return organization.read(req, ctx);
 
+    // Settings → Setup. Three saves, not one: the Streamlit page has three buttons
+    // writing three places, and a single PUT would let a half-filled Bid Fitness tab
+    // overwrite a complete identity. See api/routes_org_setup.ts.
+    if (path === "/settings/setup" && m === "GET") return orgSetup.read(req, ctx);
+    if (path === "/settings/setup/identity" && m === "PUT") return orgSetup.putIdentity(req, ctx);
+    if (path === "/settings/setup/profile" && m === "PUT") return orgSetup.putProfile(req, ctx);
+    if (path === "/settings/setup/team" && m === "PUT") return orgSetup.putTeam(req, ctx);
+    if (path === "/settings/setup/logo" && m === "PUT") return orgSetup.putLogo(req, ctx);
+
+    /**
+     * Settings → Analytics — the cross-tenant platform rollups.
+     *
+     * SUPER_USER ONLY, and the gate is the whole of the access control: every figure
+     * crosses tenant boundaries and every query runs on the service role. Inline rather
+     * than in a routes module because it is three reads and no rules — api/analytics.ts
+     * holds what little arithmetic there is, pinned by check-analytics.
+     */
+    if (path === "/settings/analytics" && m === "GET") {
+      if (!isSuperUser(ctx.user as PermUser)) {
+        return json({ error: "App analytics are visible to the Super User only." }, 403);
+      }
+      const [discovery, tenantRows, users] = await Promise.all([
+        systemDiscoveryStats(db), tenantActivity(db), userStats(db),
+      ]);
+      return json({ discovery, tenants: tenantRows, users });
+    }
+
+    /**
+     * `GET /settings/scan-history` — what the last runs found.
+     *
+     * Admin-gated, tenant-scoped, and SPLIT: a screening run and a crawl answer different
+     * questions, and one list reports one as the other. The split is on `source`, whose
+     * screening value is MATCH_RUN_LABEL — owned by api/analytics.ts so the two readers
+     * of that constant stay one.
+     *
+     * 500 rows, newest first, as the Streamlit page reads: scan_logs is one row per
+     * SOURCE per run, so a few hundred rows is a handful of runs.
+     */
+    if (path === "/settings/scan-history" && m === "GET") {
+      if (!isAdmin(ctx.user as PermUser)) {
+        return json({ error: "Scan history is for administrators." }, 403);
+      }
+      const rows = await db.as(ctx.scope).get(
+        "scan_logs", "select=*&order=scan_date.desc&limit=500").catch(() => []);
+      const { screening, extraction } = splitHistory(rows, MATCH_RUN_LABEL);
+      return json({
+        screening: { last: runSummary(screening), recent: screening.slice(0, 50) },
+        extraction: { last: runSummary(extraction), recent: extraction.slice(0, 50) },
+        matchLabel: MATCH_RUN_LABEL,
+      });
+    }
+
+    if (path === "/settings/scan-prefs" && m === "GET") return scanPrefs.read(req, ctx);
+    if (path === "/settings/scan-prefs/policies" && m === "PUT") return scanPrefs.putPolicies(req, ctx);
+    if (path === "/settings/scan-prefs/search-terms" && m === "PUT") return scanPrefs.putSearchTerms(req, ctx);
+    if (path === "/settings/scan-prefs/currencies" && m === "PUT") return scanPrefs.putCurrencies(req, ctx);
+
+    if (path === "/settings/sources" && m === "GET") return platform.sources(req, ctx);
+    if (path === "/settings/sources/blocked" && m === "PUT") return platform.putBlocked(req, ctx);
+    if (path === "/settings/sources/registry" && m === "GET") return platform.registry(req, ctx);
+    if (path === "/settings/sources/registry" && m === "POST") return platform.registryAction(req, ctx);
+    /**
+     * `GET /settings/deployment` — what THIS runtime is configured with.
+     *
+     * SUPER_USER ONLY, because it describes the keys the whole deployment runs on. It
+     * reveals no secret: lengths, fingerprints and a key CLASS, which is what makes two
+     * panels comparable without either of them holding anything worth stealing.
+     *
+     * It is the half Streamlit cannot see. `core/env_diag.py` describes the Python
+     * process; this describes the Edge Function that serves React, and when the two
+     * disagree about the data, the difference between them is the answer.
+     */
+    if (path === "/settings/deployment" && m === "GET") {
+      if (!isSuperUser(ctx.user as PermUser)) {
+        return json({ error: "Deployment diagnostics are for the Super User." }, 403);
+      }
+      const rows = await secretRows({
+        supabaseUrl: env.supabaseUrl, supabaseKey: env.supabaseKey,
+        jwtSecret: env.jwtSecret,
+      });
+      const extras = {
+        // Whether a queued job can actually reach a runner. `dispatchJob` is the
+        // injected dispatcher; absent, every job sits at "queued" for ever — which is
+        // the single most confusing failure this product has, because nothing errors.
+        dispatchConfigured: !!deps.dispatchJob,
+        mailerConfigured: !!(env.resendApiKey && env.resendFrom),
+        adminContact: !!(env.adminContactEmail ?? "").trim(),
+      };
+      return json({
+        runtime: "Edge Function",
+        secrets: rows,
+        verdicts: verdicts(rows, extras),
+        extras,
+        allowedOrigins: env.allowedOrigins ?? [],
+        note: "This describes the function that serves this app. The classic Settings "
+          + "page describes the Python process, and the two are meant to be compared — "
+          + "a fingerprint that differs is two environments holding different secrets.",
+      });
+    }
+
+    if (path === "/settings/tenants" && m === "GET") return platform.tenants(req, ctx);
+    if (path === "/settings/tenants" && m === "POST") return platform.tenantAction(req, ctx);
+    if (path === "/settings/learning" && m === "GET") return platform.learning(req, ctx);
+    if (path === "/settings/suggestions" && m === "GET") return platform.suggestions(req, ctx);
+    {
+      // /settings/suggestions/<id>/(approve|reject) — matched on segments, as the users
+      // routes are, so an id is never confused with the action that follows it.
+      const seg = path.startsWith("/settings/suggestions/")
+        ? path.slice("/settings/suggestions/".length).split("/") : [];
+      if (seg.length === 2 && m === "POST"
+          && (seg[1] === "approve" || seg[1] === "reject")) {
+        return platform.review(req, ctx, decodeURIComponent(seg[0]), seg[1]);
+      }
+    }
+
+    if (path === "/settings/records" && m === "GET") return records.read(req, ctx);
+    if (path === "/settings/records" && m === "PATCH") return records.update(req, ctx);
+    if (path === "/settings/records" && m === "DELETE") return records.remove(req, ctx);
+
+    // Settings → Accounts → Users. Admin to reach the surface, canManageUser per TARGET
+    // on every write — two different questions, both asked. See api/routes_users.ts.
+    if (path === "/settings/users" && m === "GET") return users.list(req, ctx);
+    if (path === "/settings/users" && m === "POST") return users.create(req, ctx);
+    if (path === "/settings/users/bulk" && m === "POST") return users.createBulk(req, ctx);
+    {
+      // Matched on the SEGMENTS rather than a prefix: `/settings/users/<id>` is the
+      // account and `/settings/users/<id>/reset` is an action on it, and a prefix test
+      // would hand "<id>/reset" to the patch route as an id — which then matches no row
+      // and answers "No such user" for a request that was perfectly well formed.
+      const seg = path.startsWith("/settings/users/")
+        ? path.slice("/settings/users/".length).split("/") : [];
+      const id = seg[0] ? decodeURIComponent(seg[0]) : "";
+      if (id && seg.length === 1 && m === "PATCH") return users.patch(req, ctx, id);
+      if (id && seg.length === 2 && seg[1] === "reset" && m === "POST") {
+        return users.resetPassword(req, ctx, id);
+      }
+    }
+
     // Nothing here takes a user id from the request — see api/routes_profile.ts.
     if (path === "/profile" && m === "GET") return profile.read(req, ctx);
     if (path === "/profile" && m === "PATCH") return profile.patch(req, ctx);
@@ -251,6 +419,19 @@ export function createApi(env: Env, deps: Deps) {
       // app_pages/donors.py::_load. ~1.3 MB of JSON for 190 donors; gzip takes it to ~100 KB.
       const rows = await db.as(ctx.scope).get("donor_intel", "select=*&order=donor.asc");
       return gzipped(req, json({ donors: rows }, 200, { "Cache-Control": "private, max-age=30" }));
+    }
+    if (path === "/donors" && m === "POST") return donorWrites.create(req, ctx);
+    if (path === "/donors/delete" && m === "POST") {
+      return donorWrites.remove(req, ctx, null);
+    }
+    // Queues a READ, not a write — the reportlab PDF, which cannot render in Deno.
+    if (path === "/donors/pdf" && m === "POST") return donorWrites.pdf(req, ctx);
+    const donorKey = path.match(/^\/donors\/([^/]+)$/);
+    if (donorKey && m === "PATCH") {
+      return donorWrites.update(req, ctx, decodeURIComponent(donorKey[1]));
+    }
+    if (donorKey && m === "DELETE") {
+      return donorWrites.remove(req, ctx, decodeURIComponent(donorKey[1]));
     }
     const contacts = path.match(/^\/donors\/([^/]+)\/contacts$/);
     if (contacts && m === "GET") {

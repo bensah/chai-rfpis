@@ -11,7 +11,9 @@
 import { q, type Db } from "./db.ts";
 import { body, HttpError, json, str } from "./http.ts";
 import type { Json } from "./jwt.ts";
-import { isAdmin, isSuperUser, type PermUser } from "./permissions.ts";
+import {
+  isAdmin, isDeveloperAdmin, isDeveloperSuper, isSuperUser, type PermUser,
+} from "./permissions.ts";
 import type { Ctx } from "./session.ts";
 
 export type Dispatch = (jobId: string, group: string) => Promise<void>;
@@ -198,6 +200,181 @@ const KINDS: Record<string, JobKind> = {
   search_action: {
     allowed: () => true,
     group: (_c, id) => `search-action-${id}`,
+  },
+
+  /**
+   * Settings → Manual Scan → Eligibility Scan. Screens the shared extracted store
+   * against THIS organisation's eligibility — fast, no crawl.
+   *
+   * A job not because it is slow but because it is PYTHON: `core/scan_pipeline` is the
+   * geography gate, the nine MUST/PREFER criteria and the donor-intel joins, which is
+   * the engine this whole port exists not to re-implement.
+   *
+   * GROUPED PER TENANT, so a second press while one is running joins the run in flight
+   * instead of starting another. Two concurrent screens of the same store into the same
+   * pipeline race on the rows they insert.
+   */
+  scan_screen: {
+    allowed: (u) => isAdmin(u),
+    group: (ctx) => `scan-screen-${tenantOf(ctx)}`,
+  },
+
+  /**
+   * Settings → Manual Scan → Extraction. Crawls every catalogued source into the SHARED
+   * global store: 25-40 minutes with LLM enrichment, and the slowest thing the product
+   * does.
+   *
+   * DEVELOPER-TENANT ADMINS ONLY, which is the Streamlit page's own gate and not a
+   * tightening: the store it writes belongs to every tenant, so one organisation's admin
+   * triggering a platform-wide crawl is the thing being prevented.
+   *
+   * ONE GROUP FOR EVERYBODY — not per tenant — because there is one store and one crawl.
+   * A per-tenant group would let two tenants start two simultaneous full crawls of the
+   * same sources, which is how a polite scraper becomes a rude one.
+   */
+  scan_extract: {
+    allowed: async (u, ctx) => isDeveloperAdmin(u, await ctx.homeIsDeveloper()),
+    group: () => "scan-extract",
+  },
+
+  /**
+   * Settings → Manual Scan → Excel Sync. Imports the master workbook into THIS tenant's
+   * pipeline, stamping every row with the tenant — without which they land with a null
+   * tenant and appear in nobody's pipeline.
+   */
+  excel_sync: {
+    allowed: (u) => isAdmin(u),
+    group: (ctx) => `excel-sync-${tenantOf(ctx)}`,
+  },
+
+  /**
+   * Settings → Suggestions: applying one proposal to a SHARED catalogue.
+   *
+   * `core/suggestions.approve` intersects the diff with a per-resource column allow-list
+   * and writes into donor_intel or donor_sources — tables every tenant's scan reads. A
+   * TypeScript version of those rules would be a second set of opinions about shared
+   * data, where the first cannot see it.
+   *
+   * DEVELOPER-TENANT SUPER ONLY, and the runner re-establishes that from the users table
+   * rather than trusting the params: by the time a job runs, the only record of who
+   * asked is what was written down.
+   *
+   * GROUPED PER SUGGESTION, so a double-click cannot apply one proposal twice.
+   */
+  suggestion_review: {
+    allowed: async (u, ctx) => isDeveloperSuper(u, await ctx.homeIsDeveloper()),
+    group: (_c, _id, params) => `suggestion-${str(params?.suggestion_id)}`,
+  },
+
+  /**
+   * Settings → Accounts → Users: one invited account.
+   *
+   * `_create_user_account` inserts the user with a hash nobody knows, resolves where the
+   * account goes — the admin's own tenant, an existing one, or a NEW tenant it CREATES —
+   * writes the membership, mints the activation token and sends the welcome email. It
+   * decides who exists on this deployment, which is not a rule to hold twice.
+   *
+   * GROUPED PER EMAIL ADDRESS, so a double-click cannot race two inserts for the same
+   * person. Two half-created accounts for one address is the failure that is hardest to
+   * see afterwards: the second insert fails on the unique index and leaves the first
+   * without its membership.
+   */
+  create_user: {
+    allowed: (u) => isAdmin(u),
+    group: (_c, _id, params) =>
+      `create-user-${str(params?.email).trim().toLowerCase()}`,
+  },
+
+  /**
+   * Settings → Sources → Verify Registry: one write to the shared source registry.
+   *
+   * DEVELOPER-TENANT ADMIN ONLY. The registry feeds `donor_sources`, the catalogue every
+   * tenant's scan crawls, so a client tenant's admin classifying a host — or pushing one
+   * into the scan list — changes what every other organisation sees.
+   *
+   * ONE GROUP FOR THE WHOLE REGISTRY, not one per host. The writes are upserts over a
+   * small shared table and `push_primaries` reads the WHOLE registry to dedupe by host;
+   * two of those running at once would each decide, from different snapshots, which
+   * catalogue row a host already owns.
+   */
+  registry_action: {
+    allowed: async (u, ctx) => isDeveloperAdmin(u, await ctx.homeIsDeveloper()),
+    group: () => "source-registry",
+  },
+
+  /**
+   * Settings → Accounts → Tenants: one write to the platform's organisation list.
+   *
+   * SUPER_USER ONLY. These controls decide which organisations exist, which may reach
+   * cross-tenant developer tasks, and whose profile may be read to score somebody else's
+   * call. An ordinary admin administers their own organisation and none of this.
+   *
+   * ONE GROUP FOR THE WHOLE LIST. Two of these writes clear `core.applicant_graph`'s
+   * cache as a side effect, and the parent link leans on a database cycle-guard that
+   * reasons over the whole chain; concurrent writes would each decide from a different
+   * view of it.
+   */
+  tenant_action: {
+    allowed: (u) => isSuperUser(u),
+    group: () => "tenant-admin",
+  },
+
+  /**
+   * Donor Intelligence: every write to the shared donor catalogue.
+   *
+   * ANY SIGNED-IN USER MAY QUEUE IT, which is deliberate and is NOT a missing check. The
+   * surface has two audiences by design: a developer-tenant Super User edits
+   * `donor_intel` directly, and everyone else — client-tenant admins included — PROPOSES
+   * a change for review. Both arrive as this kind, so gating the queue on
+   * `isDeveloperSuper` here would block the suggestion path, which is the one most
+   * people actually use.
+   *
+   * The split is enforced where it can be enforced properly: `_donor_action` reads the
+   * actor from the users table and refuses `save`/`add`/`delete` for a non-developer —
+   * and refuses `suggest` for a developer-Super, who would otherwise file a proposal
+   * only they could approve. Doing it there rather than here also means the Streamlit
+   * page and the job answer the same question of the same record.
+   *
+   * GROUPED PER DONOR for edits, and as ONE catalogue for add and delete. Two saves of
+   * the same donor must serialise — each reads the row, cleans a payload against the
+   * live columns and writes the whole thing back, so concurrent ones would last-write-
+   * win over each other's fields. `add` needs the stronger group because `slug_key`
+   * reads every existing key to de-duplicate: two concurrent adds would read the same
+   * snapshot and choose the same canonical_key, and the second upsert would land on top
+   * of the first donor instead of creating a second.
+   */
+  donor_action: {
+    allowed: (u) => !!u,
+    group: (_c, _id, params) => {
+      const action = str(params?.action).trim();
+      if (action === "save" || action === "suggest") {
+        const key = str(params?.canonical_key).trim();
+        if (key) return `donor-${key}`;
+      }
+      return "donor-catalogue";
+    },
+  },
+
+  /**
+   * The donor profile PDF — reportlab, so it cannot render here. See
+   * `scripts/run_web_job.py::_donor_pdf`.
+   *
+   * Anyone signed in may ask for one, matching the Streamlit download button, which sits
+   * on a page open to everybody: the PDF prints the fields the reader is already looking
+   * at in the detail dialog, so it reveals nothing the page does not. This is NOT the
+   * donor_action gate — that one guards WRITES to a shared catalogue, and a read is not
+   * a write however similar the parameters look.
+   *
+   * ONE GROUP PER REQUESTER, not per donor and not one global. GitHub keeps a single
+   * pending run per group and CANCELS a third, so a global group would mean one reader's
+   * second click silently killed another reader's export. Per donor would let one person
+   * start a dozen renders by clicking through the catalogue — which is the cost this
+   * group exists to bound. Per requester: your own double-click collapses into one run,
+   * and nobody else waits on you.
+   */
+  donor_pdf: {
+    allowed: (u) => !!u,
+    group: (ctx) => `donor-pdf-${str(ctx.user.email).trim().toLowerCase() || "anon"}`,
   },
 };
 

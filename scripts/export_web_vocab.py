@@ -31,9 +31,22 @@ def main() -> None:
             # canonical key -> [full category, sub-area label]
             "keys": {k: [pa.category_full(k), pa.subarea_label(k)] for k in keys},
             "categories": list(pa.CATEGORIES),
+            # The PREFIX expansion, 'IDs' -> 'Infectious Diseases'. The `keys` map above
+            # covers only the classifier's OWN keys, and a donor's priority list is free
+            # text — 'Cross-cutting - Artificial Intelligence' is a real stored value and
+            # is not one of them. Without this table the browser fell back to the bare
+            # prefix and printed 'Artificial Intelligence (Cross-cutting)' in a shared
+            # profile where Streamlit prints '(Cross-cutting (Health))'.
+            "categoryFull": dict(pa.CATEGORY_FULL),
         },
         "geo": {
             "options": list(geo.GEO_OPTIONS),
+            # GEO_OPTIONS is broad regions THEN countries, and the donor form
+            # needs them apart: HQ country offers countries only, while
+            # registration region offers both. Splitting it in the browser would
+            # mean knowing where the boundary falls.
+            "countries": list(geo.COUNTRIES),
+            "broad": list(getattr(geo, "BROAD_GEOGRAPHIES", []) or []),
             # lowercased region label -> lowercased member countries (geo.expand's table)
             "regionMembers": {k: [c.lower() for c in v] for k, v in geo._REGION_MEMBERS.items()},
         },

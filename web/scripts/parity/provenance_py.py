@@ -70,6 +70,23 @@ CASES: list[tuple[dict, dict]] = [
     ({"capacity": "Yes, comfortably", COLUMN: "{not json"}, {"capacity": "No, beyond us"}),
     # A non-criterion key in `values` is ignored.
     ({"qualification": "Yes, fully"}, {"decision": "Proceed", "remarks": "x"}),
+
+    # THE FALLBACK BRANCH, which bid_effort gaining "Not sure" on 2026-11-17 quietly
+    # retired: no live vocabulary lacks the option any more, so a baseline of `opts[0]` —
+    # a REAL best answer rather than a non-answer — is now unexercised on real data. An
+    # unexercised rule is one that breaks unnoticed, and the next criterion anybody adds
+    # could be the one without a "Not sure".
+    #
+    # The property that must survive: a criterion whose baseline IS a real answer records
+    # nothing when the submitter leaves it there. Written against bid_effort's own first
+    # option, which is what such a baseline looks like.
+    ({"bid_effort": "Ample time, sufficient resources"},
+     {"bid_effort": "Ample time, sufficient resources"}),
+    # ...and still records when they move off it.
+    ({"bid_effort": "Ample time, sufficient resources"},
+     {"bid_effort": "Not enough time, no team"}),
+    # Moving to "Not sure" FROM a real answer is a change the submitter made.
+    ({"bid_effort": "Ample time, sufficient resources"}, {"bid_effort": "Not sure"}),
 ]
 
 

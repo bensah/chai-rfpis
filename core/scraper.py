@@ -2018,6 +2018,28 @@ def _scan_grants_gov(name: str, url: str) -> list[dict[str, Any]]:
             desc = re.sub(r"<[^>]+>", " ", desc)
             desc = re.sub(r"\s+", " ", desc).strip()
             cand["brief_description"] = desc[:1800]
+            # …AND AS THE CANDIDATE'S SOURCE TEXT, which is the field everything
+            # downstream actually reads. `extract.build_record` takes `_page_text`
+            # first and stores it as `raw_text`, the text synthesis and the
+            # deterministic extractors both work from; `brief_description` on a
+            # candidate reaches neither.
+            #
+            # grants.gov is a single-page app, so without this the only `_page_text`
+            # a grants.gov row ever had was the rendered shell — nav menu, cookie
+            # notice, "Unsaved changes will be lost" — and the synopsis fetched from
+            # the funder's own API two lines above was never seen again. 168 of 469
+            # live rows hold that shell and nothing else.
+            #
+            # The eligibility paragraph rides along because it is part of the call a
+            # reader needs and is frequently the longest thing grants.gov publishes.
+            _api_text = desc
+            _elig = re.sub(r"\s+", " ",
+                           re.sub(r"<[^>]+>", " ",
+                                  _clean(syn.get("applicantEligibilityDesc") or ""))).strip()
+            if len(_elig) > 20:
+                _api_text = f"{desc}\n\nEligibility: {_elig}"
+            if len(_api_text) > len(cand.get("_page_text") or ""):
+                cand["_page_text"] = _api_text[:20000]
 
         # --- estimated_value: PRIMARY = total program funding, FALLBACK = per-award ceiling.
         # Both fields arrive as strings like "11165000" or "none"/None. ---
@@ -2106,6 +2128,13 @@ def _scan_grants_gov(name: str, url: str) -> list[dict[str, Any]]:
             elig_text = re.sub(r"<[^>]+>", " ", elig_text)
             elig_text = re.sub(r"\s+", " ", elig_text).strip()
             notes_parts.append("Eligibility detail: " + elig_text)
+            # …and into the SCHEMA field it belongs to. `notes` is free text nothing
+            # reads structurally, so the funder's own statement of who may apply —
+            # the single most useful eligibility sentence grants.gov publishes —
+            # reached no column and the opportunity page's "Other conditions" row
+            # sat empty beside it. `extract.build_record` prefers a handler value
+            # here over the synthesised one, because this IS the funder's wording.
+            cand["eligibility_other"] = elig_text[:2000]
             # SAFE US-only drop: only when the eligibility text EXPLICITLY
             # restricts to US/domestic applicants (and doesn't also welcome
             # foreign/international ones). Cuts the HRSA/CDC-domestic noise
@@ -2605,10 +2634,23 @@ def _scan_ted(name: str, url: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     # Recent + newest-first (scope=ACTIVE alone returned stale 2016 notices).
     since = (datetime.now() - timedelta(days=120)).strftime("%Y%m%d")
+    # ASK FOR THE NOTICE BODY. This field list used to stop at the title, the
+    # dates and the country, and the handler then set `brief_description: None`
+    # explicitly — so every TED row reached the store with NO source text at all.
+    # Measured 2026-11-19: all 50 live TED rows hold under 400 characters, median
+    # zero, and nothing downstream could read a call out of that.
+    #
+    # It was never a crawling problem. Probing the same endpoint, 25 of 25 health
+    # notices return `description-proc`; we had simply never asked for it.
+    #
+    # `description-lot` rides along because a multi-lot tender puts the substance
+    # per lot and leaves the procurement-level description a single line.
     body = {"query": f"classification-cpv=85* AND publication-date>={since} "
                      "SORT BY publication-date DESC",
             "fields": ["ND", "TI", "PD", "links", "CY", "publication-number",
-                       "deadline-receipt-tender-date-lot"],
+                       "deadline-receipt-tender-date-lot",
+                       "description-proc", "description-lot", "buyer-name",
+                       "total-value", "estimated-value-cur-proc"],
             "limit": 50}
     try:
         r = _http.post(
@@ -2638,18 +2680,123 @@ def _scan_ted(name: str, url: str) -> list[dict[str, Any]]:
         else:
             deadline = None
         cy = n.get("CY")
+        text, lang = _ted_text(n)
+        buyer = _ted_first_text(n.get("buyer-name"))
+        amount, currency = _ted_value(n)
         out.append({
             "opportunity_title": title,
             "opportunity_link": link,
             "opportunity_id": num,
-            "funding_agency": "EU public procurement (TED)",
-            "brief_description": None,
+            # The BUYER is the body actually letting the contract. "EU public
+            # procurement (TED)" names the portal we read it from, which told a
+            # reviewer nothing and made every TED row look like one funder.
+            "funding_agency": buyer or "EU public procurement (TED)",
+            "brief_description": (text or None) and text[:1800],
+            # `_page_text` is what `extract.build_record` stores as `raw_text` and
+            # what every extractor and the synthesis read. A candidate's
+            # `brief_description` reaches neither, which is the same trap the
+            # grants.gov handler fell into.
+            "_page_text": (text or None) and text[:20000],
+            # NOT "English". TED auto-translates TITLES into every EU language but
+            # leaves the DESCRIPTION in the language it was published in: of 25
+            # health notices probed, 25 had a description and ONE had an English
+            # one. `extract.build_record` used to stamp every row "English"
+            # regardless, so a German tender was filed as an English call and a
+            # reader had no warning before opening it.
+            "solicitation_language": lang,
             "date_posted": _parse_iso_date(str(n.get("PD") or "")[:10]),
             "call_submission_deadline": deadline,
+            "call_award_value": amount,
+            "currency": currency,
             "call_geographic_scope": cy if isinstance(cy, list) else ([cy] if cy else None),
             "_source_origin": name,
         })
     return _dedup_by_link_or_title(out)
+
+
+# TED returns every multilingual value as {iso639-2 code: value}, where the value
+# is a string for a procurement-level field and a LIST for a per-lot one.
+_TED_LANGS = {
+    "eng": "English", "fra": "French", "deu": "German", "ita": "Italian",
+    "spa": "Spanish", "nld": "Dutch", "por": "Portuguese", "pol": "Polish",
+    "swe": "Swedish", "fin": "Finnish", "dan": "Danish", "ron": "Romanian",
+    "ell": "Greek", "ces": "Czech", "hun": "Hungarian", "bul": "Bulgarian",
+    "hrv": "Croatian", "slk": "Slovak", "slv": "Slovenian", "est": "Estonian",
+    "lav": "Latvian", "lit": "Lithuanian", "gle": "Irish", "mlt": "Maltese",
+}
+
+
+def _ted_first_text(value: Any) -> str:
+    """The first usable string out of a TED multilingual value, English first."""
+    if isinstance(value, str):
+        return _clean(value)
+    if not isinstance(value, dict):
+        return ""
+    for key in ["eng"] + [k for k in value if k != "eng"]:
+        v = value.get(key)
+        if isinstance(v, list):
+            v = " ".join(str(x) for x in v if x)
+        v = _clean(str(v or ""))
+        if v:
+            return v
+    return ""
+
+
+def _ted_text(notice: dict[str, Any]) -> tuple[str, str]:
+    """(notice body, the language it is in) — English where TED has it.
+
+    Returns ("", "") when the notice carries no description at all, so the caller
+    stores nothing rather than an empty string that reads as a real value.
+
+    English is preferred and is usually absent: TED translates titles, not
+    bodies. When it is absent the ORIGINAL text is kept and named, because a
+    German tender described in German is a true record of that tender — and far
+    more use to the gate, the scorer and a reader than the blank we stored
+    before. Translating it is a separate question and not this handler's.
+    """
+    best_lang = ""
+    parts: list[str] = []
+    for field in ("description-proc", "description-lot"):
+        value = notice.get(field)
+        if not isinstance(value, dict) or not value:
+            if isinstance(value, str) and _clean(value):
+                parts.append(_clean(value))
+            continue
+        lang = "eng" if "eng" in value else next(iter(value))
+        raw = value.get(lang)
+        if isinstance(raw, list):
+            raw = "\n".join(str(x) for x in raw if x)
+        raw = _clean(str(raw or ""))
+        if not raw:
+            continue
+        # The procurement description decides the language; a lot description in
+        # another language is still worth keeping as text.
+        best_lang = best_lang or lang
+        if raw not in parts:
+            parts.append(raw)
+    text = "\n\n".join(parts).strip()
+    if not text:
+        return "", ""
+    return text, _TED_LANGS.get(best_lang, best_lang or "")
+
+
+def _ted_value(notice: dict[str, Any]) -> tuple[float | None, str | None]:
+    """(total contract value, currency) — both as published, or (None, None).
+
+    This is the value of the CONTRACT, which for a tender is the figure a bidder
+    sizes their response against, so it maps to `call_award_value` the same way a
+    grant's award ceiling does.
+    """
+    amount = _coerce_money(notice.get("total-value"))
+    if amount is None:
+        return None, None
+    currency = notice.get("estimated-value-cur-proc")
+    if isinstance(currency, dict):
+        currency = next(iter(currency.values()), None)
+    if isinstance(currency, list):
+        currency = currency[0] if currency else None
+    currency = _clean(str(currency or "")) or None
+    return amount, currency
 
 
 # ── UNGM notice-detail enrichment ────────────────────────────────────────────

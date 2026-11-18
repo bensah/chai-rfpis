@@ -11,7 +11,7 @@
  * notifications with an unread count, the account menu, the tenant identity,
  * the super_user view-as banner, breadcrumbs and the version footer.
  */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import {
   Bell, ChevronsLeft, ChevronsRight, Eye, HelpCircle, LogOut, Menu, Search, Settings, User as UserIcon, X,
 } from "lucide-react";
@@ -23,7 +23,7 @@ import { NAV_ICON } from "./navIcons";
 import Popover from "./Popover";
 import HowToUse from "./HowToUse";
 import { fmtDay, fmtScan, nextScheduledScan, relativeTime } from "./time";
-import { Badge, Button, IconButton, Notice, fieldClass } from "../ui";
+import { Badge, Button, IconButton, Notice, field, fieldClass } from "../ui";
 
 export const APP_NAME = "RFP Intelligence System";
 export const APP_SHORT = "RFPIS";
@@ -39,7 +39,13 @@ const isAdmin = (u: User) => u.role === "admin" || u.role === "super_user";
  *  a section headed "Organisation" directly above an item called "My Organization" reads
  *  as a mistake even though both are only labels. */
 const GROUPS: { label: string; pages: PageKey[] }[] = [
-  { label: "Workspace", pages: ["home", "pipelines", "grants", "actions", "report", "donors"] },
+  // `opportunities` (Triage) sits SECOND, directly under Dashboard. It is the room behind
+  // every Dashboard figure — you arrive by clicking one — so the two are read together,
+  // and putting it anywhere else in this list would separate a number from the rows it
+  // opens. It joined the rail on 2026-11-18; before that it had no entry at all and could
+  // only be reached by clicking a figure, which made the app's busiest working screen
+  // invisible to anybody who did not already know it was there.
+  { label: "Workspace", pages: ["home", "opportunities", "pipelines", "grants", "actions", "report", "donors"] },
   // `settings` was listed here until it left the rail. `allowed()` filtered it out, so
   // the group named a page that could never render — harmless to run and misleading to
   // read, which is the kind of line that answers a future question wrongly. Settings is
@@ -422,7 +428,7 @@ function QuickSearch() {
         <input
           value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search"
           placeholder="Search pages, opportunities, donors…"
-          className={`${fieldClass} h-9 w-56 bg-ink-50 py-0 pl-9 lg:w-72`}
+          className={field("h-9 w-56 bg-ink-50 py-0 pl-9 lg:w-72")}
         />
       </form>
       <div className="md:hidden">

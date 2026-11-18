@@ -457,6 +457,8 @@ export type Shell = {
   /** The app owner to contact for account and data requests. Falls back to a visibly
    *  unconfigured placeholder when ADMIN_CONTACT_EMAIL is not set, in both apps. */
   adminContactEmail: string;
+  /** False when it is the unset placeholder — do not print it at somebody. */
+  adminContactConfigured?: boolean;
   /** The parts of the chrome that could not be READ, as opposed to being empty: any of
    *  "feed", "seen", "meeting", "org", "classicUrl". The shell renders either way — it is
    *  on every page — so this is how a panel says "unavailable" instead of drawing an empty
@@ -532,6 +534,8 @@ export type OpportunityBucket = {
   key: string;
   label: string;
   kind: "rows" | "applications";
+  /** The heading this figure files under on Triage — see `bucketGroups` for the order. */
+  group: string;
   /** One line a reader can check the selection against. */
   rule: string;
   count: number;
@@ -568,6 +572,9 @@ export type OpportunityListRow = {
 
 export type OpportunityList = {
   today: string;
+  /** The bucket headings, in the order they read. The server decides it: first-appearance
+   *  order in `buckets` is the DASHBOARD's tile order, which groups differently. */
+  bucketGroups: string[];
   buckets: OpportunityBucket[];
   rows: OpportunityListRow[];
 };
@@ -699,6 +706,65 @@ export const deleteRfp = (uid: string) =>
     `/pipelines/rfp/${encodeURIComponent(uid)}`);
 
 // ── Donors ───────────────────────────────────────────────────────────────────
+/**
+ * Donor writes. Every one QUEUES a job and returns its id — none of them changes a donor
+ * before the caller polls it (`awaitJob`). The rules live in core/donor_write.py so the
+ * runner and the Streamlit page apply the same ones to this shared, cross-tenant table.
+ *
+ * `suggest: true` files a proposal for review instead of writing. Which of the two a
+ * given user is allowed to do is decided in the job, against the users table — not here,
+ * and not by hiding a button.
+ */
+export type DonorJob = { job_id: string; dispatched: boolean; detail: string };
+
+export const createDonor = (
+  name: string, opts: { edited?: Record<string, unknown>; suggest?: boolean; rationale?: string } = {},
+) => call<DonorJob>("/donors", { method: "POST", body: JSON.stringify({ name, ...opts }) });
+
+export const updateDonor = (
+  key: string,
+  opts: {
+    edited: Record<string, unknown>;
+    /** OMIT to leave contacts alone. Sending [] DELETES every contact this donor has. */
+    contacts?: Record<string, unknown>[];
+    suggest?: boolean;
+    rationale?: string;
+  },
+) => call<DonorJob>(`/donors/${encodeURIComponent(key)}`,
+  { method: "PATCH", body: JSON.stringify(opts) });
+
+export const deleteDonor = (key: string) =>
+  call<DonorJob>(`/donors/${encodeURIComponent(key)}`, { method: "DELETE" });
+
+export const deleteDonors = (keys: string[]) =>
+  call<DonorJob>("/donors/delete", { method: "POST", body: JSON.stringify({ keys }) });
+
+/**
+ * The branded donor PDF. A JOB, not a download, and the only donor job that READS.
+ *
+ * It is reportlab — font metrics, an image reader, a page-break engine — so no amount of
+ * work in the browser or the Edge Function would produce the same document. Drawing a
+ * second PDF here instead would mean two layouts for one profile: different fonts, no org
+ * logo, no footer, and a drift that nobody sees because a PDF is read by the person it was
+ * sent to.
+ *
+ * Poll with `awaitJob`; a finished one carries `DonorPdfResult` with a SHORT-LIVED signed
+ * URL. `expiresInS` is worth telling the user, because the natural thing to do with a
+ * download link is paste it into a chat thread.
+ */
+export type DonorPdfResult = {
+  ok: boolean; url: string; filename: string; bytes: number; expiresInS: number;
+  donors: number;
+  /** Selected keys that no longer exist — named rather than silently dropped. */
+  missing: string[];
+  pruned: number; runner: string; summary: string;
+};
+
+export const requestDonorPdf = (
+  keys: string[], opts: { filename?: string; contacts?: boolean } = {},
+) => call<DonorJob>("/donors/pdf",
+  { method: "POST", body: JSON.stringify({ keys, ...opts }) });
+
 export const fetchDonors = () => call<{ donors: Donor[] }>("/donors").then((r) => {
   try {
     localStorage.setItem(DONOR_CACHE_KEY, JSON.stringify(r.donors));
@@ -1233,6 +1299,403 @@ export type Organization = {
 };
 
 export const fetchOrganization = () => call<Organization>("/organization");
+
+// ── Settings → Setup ─────────────────────────────────────────────────────────
+//
+// The EDITOR for the two blobs `/organization` displays. Three saves, not one, because
+// the Streamlit page has three buttons writing three places — see
+// supabase/functions/_shared/api/routes_org_setup.ts. Folding them together would let a
+// half-filled Bid Fitness tab overwrite a complete identity.
+
+export type OrgPartner = { name: string; type: string; status: string[]; country: string };
+
+export type SetupOptions = {
+  legalTypes: string[];
+  entityTypes: string[];
+  stages: string[];
+  cofinancing: string[];
+  /** [label on screen, stored value]. Order matters — the first leaves MUST-4 off. */
+  boards: [string, string][];
+  /** [stored token, label on screen]. The editor shows the label and stores the token. */
+  routes: [string, string][];
+  languages: string[];
+  partnerTypes: string[];
+  partnerStatus: string[];
+  countries: string[];
+  /**
+   * [category, canonical area keys] for the two rating matrices.
+   *
+   * The KEYS travel whole and are never composed in the browser: a stored area is
+   * "IDs - Malaria & NTDs", and that exact string is what the classifier matches an
+   * organisation's areas against a call's and a donor's.
+   */
+  areaTaxonomy: [string, string[]][];
+  /** Key prefix → the category's full name, for display only. */
+  categoryNames: Record<string, string>;
+  /** Stored code → the sentence the editor shows. Display only; the value is the code. */
+  legalTypeLabels: Record<string, string>;
+  entityTypeLabels: Record<string, string>;
+  /** The live donor_intel catalogue, for both relationship pickers. */
+  donors: string[];
+  /** The generated seed unioned with the catalogue's own hosts, cleaned the same way. */
+  portals: string[];
+};
+
+export type OrgSetup = {
+  identity: Record<string, string>;
+  profile: Record<string, unknown>;
+  logo: string | null;
+  /** Structured partners PLUS the legacy flat lists, which the save writes FROM. */
+  partners: OrgPartner[];
+  team: string[];
+  options: SetupOptions;
+  /** The fields a save re-reads, and the only ones a failed write is reported for. */
+  verifiedFields: string[];
+  /**
+   * What the logo uploader will accept.
+   *
+   * The cap is TIGHTER than Streamlit's, deliberately: the image lives on the
+   * organisation record, which the header reads on every page render, so an oversized
+   * one is paid for by everybody in that organisation on every page.
+   */
+  logo_limits: { maxBytes: number; types: string[] };
+};
+
+export type SetupSaved = {
+  identity?: Record<string, string>;
+  profile?: Record<string, unknown>;
+  partners?: OrgPartner[];
+  team?: string[];
+  /** A rename that did not go through. The other fields ARE saved — see the route. */
+  warnings?: Warning[];
+};
+
+const put = <T>(path: string, data: unknown = {}) =>
+  call<T>(path, { method: "PUT", body: JSON.stringify(data) });
+
+// ── Settings → Accounts → Users ──────────────────────────────────────────────
+
+export type UserRights = {
+  profile: boolean; role: boolean; overrides: boolean; reset: boolean; remove: boolean;
+};
+
+export type AdminUser = {
+  id: string; email: string; name: string | null; role: string;
+  is_active: boolean; must_change_password: boolean;
+  department: string | null; program: string | null; job_title: string | null;
+  phone: string | null;
+  last_login_at: string | null; password_changed_at: string | null; created_at: string | null;
+  access_overrides: Record<string, string>;
+  /** The tenants this account belongs to, "(pending)" marked. */
+  tenant: string | null;
+  /** core/user_lifecycle's label, resolved server-side — emoji included. */
+  status: string;
+  /**
+   * What THIS actor may do to THIS account, decided by the server.
+   *
+   * The page could work it out from the role, and then a permission rule would have two
+   * implementations, one of them in a browser where it decides only what is drawn. These
+   * are the same answers the write routes enforce.
+   */
+  rights: UserRights;
+  /**
+   * One row per access surface: what the target's ROLE already grants there, the options
+   * THIS actor may assign, and what is currently stored. Resolved server-side for the
+   * same reason as `rights` — the ceiling and the role matrix are permission logic.
+   */
+  overrides: {
+    surface: string; roleDefault: string; roleDefaultLabel: string;
+    options: string[]; current: string;
+  }[];
+  /** The roles this actor may put on this account, the current one always included. */
+  roles: string[];
+};
+
+export type AdminUsers = {
+  users: AdminUser[];
+  canAdd: boolean;
+  /** The roles this actor may hand out, so the form offers nothing the route refuses. */
+  assignableRoles: string[];
+  /** Only a super_user may choose WHOSE tenant a new account lands in. */
+  canChooseTenant: boolean;
+  addNote: string;
+};
+
+/** Creating an account is QUEUED: the Python inserts the row and creates the tenant. */
+export type InviteQueued = {
+  job_id: string; dispatched: boolean; email: string; detail: string;
+};
+
+export type ResetResult = {
+  sent: boolean;
+  /** The short code, handed back ONLY when no email went. Never the token. */
+  code: string | null;
+  detail: string;
+};
+
+export const fetchUsers = () => call<AdminUsers>("/settings/users");
+export const saveUser = (id: string, form: Record<string, unknown>) =>
+  patch<{ saved: boolean; warnings?: Warning[] }>(
+    `/settings/users/${encodeURIComponent(id)}`, form);
+export const inviteUser = (form: Record<string, unknown>) =>
+  post<InviteQueued>("/settings/users", form);
+
+export type BulkRow = {
+  email: string; name: string; role: string; department: string; areas: string[];
+};
+export type BulkQueued = {
+  queued: { email: string; job_id: string | null; dispatched: boolean }[];
+  detail: string;
+};
+/**
+ * Validated as a batch, queued as rows.
+ *
+ * Every problem across every row comes back BEFORE anything is created — a batch with
+ * one bad row creates nobody. After that each row is its own job, so one that fails at
+ * runtime fails alone.
+ */
+export const inviteUsers = (rows: BulkRow[], form: Record<string, unknown> = {}) =>
+  post<BulkQueued>("/settings/users/bulk", { ...form, rows });
+export const resetUserPassword = (id: string) =>
+  post<ResetResult>(`/settings/users/${encodeURIComponent(id)}/reset`);
+
+// ── Settings → Records ───────────────────────────────────────────────────────
+//
+// One route over several tables. The client names a SPEC KEY ("Meeting Logs"), never a
+// table — see supabase/functions/_shared/api/routes_records.ts for why that distinction
+// is the whole security of the surface.
+
+export type RecordSpec = {
+  table: string;
+  orderCol: string;
+  tableCols: string[];
+  colLabels: Record<string, string>;
+  dateCols: string[];
+  searchCols: string[];
+  advancedFilters: string[];
+  /** [column, kind, label]; kind is date | text | area | bool. */
+  editFields: [string, string, string][];
+  caption: string;
+};
+
+export type RecordsPage = {
+  table: string;
+  /** "aux" is an editable table; "extracted" is the read-only global store. */
+  kind: "aux" | "extracted" | "screened";
+  rows: Record<string, unknown>[];
+  total: number;
+  truncated?: boolean;
+  spec?: RecordSpec;
+  columns?: string[];
+  note?: string;
+  /** The picker's options, from the generated list — carried with every answer. */
+  options?: string[];
+};
+
+export const fetchRecords = (table: string) =>
+  call<RecordsPage>(`/settings/records?table=${encodeURIComponent(table)}`);
+export const saveRecord = (table: string, id: string, values: Record<string, unknown>) =>
+  patch<{ saved: Record<string, unknown> }>("/settings/records", { table, id, values });
+export const deleteRecord = (table: string, id: string) =>
+  del<{ deleted: string }>(
+    `/settings/records?table=${encodeURIComponent(table)}&id=${encodeURIComponent(id)}`);
+
+// ── Settings → Analytics ─────────────────────────────────────────────────────
+
+export type PlatformAnalytics = {
+  /** Deployment-wide discovery. A "system run" excludes every tenant's own screening. */
+  discovery: {
+    runs: number; found: number; rejected: number; catalog: number; last_run: string | null;
+  };
+  tenants: {
+    id: string; name: string | null; status: string; is_platform: boolean;
+    members: number; pending: number; rfps: number;
+    last_screen: string | null; created: string;
+  }[];
+  users: { total: number; active: number; inactive: number; by_role: Record<string, number> };
+};
+
+export const fetchAnalytics = () => call<PlatformAnalytics>("/settings/analytics");
+
+// ── Settings → Manual Scan → history ─────────────────────────────────────────
+
+export type RunSummary = {
+  ts: string; trigger: string; found: number; new: number;
+  /** Null when NO row of the run recorded one — "did not count", not "counted zero". */
+  added: number | null;
+  rejected: number;
+  /** The source rows the run wrote, which is what the sums are over. */
+  sources: number;
+};
+
+export type ScanHistory = {
+  /** This organisation's own screening runs. */
+  screening: { last: RunSummary | null; recent: Record<string, unknown>[] };
+  /** Crawls of the shared store, which belong to no organisation. */
+  extraction: { last: RunSummary | null; recent: Record<string, unknown>[] };
+  matchLabel: string;
+};
+
+export const fetchScanHistory = () => call<ScanHistory>("/settings/scan-history");
+
+// ── Settings → Sources, Learning data, Suggestions ───────────────────────────
+//
+// The three DEVELOPER surfaces. What they have in common is what puts them together:
+// everything on them belongs to every tenant, not to the organisation whose Settings
+// page is open, so each is gated on developer-tenant membership rather than a role.
+
+export type SourcesData = {
+  catalog: Record<string, unknown>[];
+  blocked: { pattern: string; reason: string | null }[];
+  canEditCatalog: boolean;
+  canEditBlocked: boolean;
+  /** Why the catalogue is read-only for this viewer, when it is. */
+  note: string | null;
+};
+
+export type LearningData = {
+  /** Exact over the whole table, NOT derived from `recent` — see the route. */
+  total: number;
+  counts: Record<string, number>;
+  reasons: Record<string, number>;
+  recent: Record<string, unknown>[];
+  windowSize: number;
+  note: string;
+};
+
+export type SuggestionsData = {
+  pending: Record<string, unknown>[];
+  /** False for anybody but a developer-tenant super_user; `pending` is then empty. */
+  canReview: boolean;
+  count: number;
+};
+
+/** A review is QUEUED, never applied in the request — the runner holds the rules. */
+export type ReviewQueued = { job_id: string; dispatched: boolean; detail: string };
+
+export type TenantRow = {
+  id: string; name: string; slug: string | null; kind: string; status: string;
+  is_platform: boolean; is_developer: boolean; share_for_consortium_scoring: boolean;
+  parent_tenant_id: string | null;
+  /** Resolved server-side: a non-super cannot see every organization to look it up. */
+  parent_name: string | null;
+  blacklisted_at: string | null; blacklisted_by: string | null;
+  blacklist_reason: string | null; created_at: string | null;
+  members: number; pending: number;
+};
+
+export type TenantsData = {
+  tenants: TenantRow[];
+  /** Readable by any admin, editable by a super_user only. */
+  canManage: boolean;
+  note: string | null;
+};
+
+export type DeploymentSecret = {
+  name: string; present: boolean; length: number;
+  /** First 8 hex of sha256 — comparable between runtimes, not reversible. */
+  fingerprint?: string | null;
+  project_ref?: string | null;
+  kind?: string;
+  is_service_role?: boolean | null;
+};
+
+export type DeploymentInfo = {
+  runtime: string;
+  secrets: DeploymentSecret[];
+  verdicts: { level: "bad" | "warn" | "good"; text: string }[];
+  extras: { dispatchConfigured: boolean; mailerConfigured: boolean; adminContact: boolean };
+  allowedOrigins: string[];
+  note: string;
+};
+
+/** What the runtime SERVING React is configured with — the half Streamlit cannot see. */
+export const fetchDeployment = () => call<DeploymentInfo>("/settings/deployment");
+
+export const fetchTenants = () => call<TenantsData>("/settings/tenants");
+/** Queued: two of these writes clear a cache a TypeScript write would leave stale. */
+export const tenantAction = (body: Record<string, unknown>) =>
+  post<{ job_id: string; dispatched: boolean; detail: string }>("/settings/tenants", body);
+
+export const fetchSources = () => call<SourcesData>("/settings/sources");
+
+export type RegistryData = {
+  rows: Record<string, unknown>[];
+  canEdit: boolean;
+  counts: { total: number; unclassified: number; confirmed: number; inCatalogue: number };
+  /** What push_primaries will accept, said so the page does not have to guess. */
+  pushRule: string;
+};
+
+/** Every registry WRITE is queued: core/source_registry.py owns the rules. */
+export const fetchRegistry = () => call<RegistryData>("/settings/sources/registry");
+export const registryAction = (body: Record<string, unknown>) =>
+  post<{ job_id: string; dispatched: boolean; detail: string }>(
+    "/settings/sources/registry", body);
+export const saveBlockedTokens = (rows: { pattern: string; reason: string }[]) =>
+  put<{ rows: { pattern: string; reason: string | null }[]; removed: number }>(
+    "/settings/sources/blocked", { rows });
+export const fetchLearning = () => call<LearningData>("/settings/learning");
+export const fetchSuggestions = () => call<SuggestionsData>("/settings/suggestions");
+export const approveSuggestion = (id: string) =>
+  post<ReviewQueued>(`/settings/suggestions/${encodeURIComponent(id)}/approve`);
+export const rejectSuggestion = (id: string, note?: string) =>
+  post<ReviewQueued>(`/settings/suggestions/${encodeURIComponent(id)}/reject`, { note });
+
+// ── Settings → Setup → Scan Preferences ──────────────────────────────────────
+//
+// Three stores, because that is where the data lives: the policy is TENANT-scoped and
+// the search terms and the currency table are deployment-wide. That split is
+// core/settings._TENANT_SCOPED_KEYS, not a choice made in the client.
+
+export type CurrencyRow = {
+  code: string; label: string; symbol: string | null;
+  /** How "£" or "FCFA" in a call's text is matched to a rate. Dropping them kills that. */
+  aliases: string[];
+  usd_rate: number;
+};
+
+export type ScanPrefs = {
+  /** The stored document — what the editor edits. An empty scope stays visibly empty. */
+  stored: Record<string, unknown>;
+  /** What the scan gates on TODAY, profile seeding included. */
+  effective: { countries: { eligible: string[]; broad_terms: string[] };
+               themes: { required_any: string[] } };
+  /** True where the effective scope came from the profile rather than the document. */
+  seeded: { countries: boolean; themes: boolean };
+  searchTerms: string[];
+  currencies: CurrencyRow[];
+  options: {
+    countries: string[]; geoOptions: string[];
+    criteria: string[]; criterionLabels: Record<string, string>;
+  };
+  /** A stored policy that would not parse — the scan is running on no rules at all. */
+  policyParseError: boolean;
+  globalKeys: string[];
+};
+
+export const fetchScanPrefs = () => call<ScanPrefs>("/settings/scan-prefs");
+export const saveScanPolicies = (form: Record<string, unknown>) =>
+  put<{ policy: Record<string, unknown>; seeded: boolean; detail: string }>(
+    "/settings/scan-prefs/policies", form);
+export const saveSearchTerms = (terms: string[]) =>
+  put<{ terms: string[]; detail: string }>("/settings/scan-prefs/search-terms", { terms });
+export const saveCurrencies = (rows: CurrencyRow[]) =>
+  put<{ rows: CurrencyRow[]; dropped: number; detail: string }>(
+    "/settings/scan-prefs/currencies", { rows });
+
+export const fetchSetup = () => call<OrgSetup>("/settings/setup");
+export const saveSetupIdentity = (form: Record<string, unknown>) =>
+  put<SetupSaved>("/settings/setup/identity", form);
+export const saveSetupProfile = (form: Record<string, unknown>) =>
+  put<SetupSaved>("/settings/setup/profile", form);
+export const saveSetupTeam = (names: string[]) =>
+  put<SetupSaved>("/settings/setup/team", { names });
+/** Base64 in JSON, because the image is STORED as base64 either way. */
+export const saveSetupLogo = (data: string, mime: string) =>
+  put<{ logo: string | null; detail: string }>("/settings/setup/logo", { data, mime });
+export const clearSetupLogo = () =>
+  put<{ logo: string | null; detail: string }>("/settings/setup/logo", { clear: true });
 
 // ── Profile ──────────────────────────────────────────────────────────────────
 //

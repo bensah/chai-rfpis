@@ -184,6 +184,89 @@ def _generate_auto_uid(serial: int, ts: datetime | None = None) -> str:
     return f"AS-{ts.strftime('%y%m%d')}-{ts.strftime('%H%M')}{serial:02d}"
 
 
+
+def _apply_call_compliance(row: dict, cand: dict, syn_flags: dict | None = None) -> None:
+    """Fold the requirements THE CALL states into MUST-1 / MUST-3 / MUST-5, and
+    re-score the row if any of them moved.
+
+    Lifted out of the synthesis block it used to sit inside. The logic is
+    unchanged; what changed is WHEN it runs. Inside `if _syn:` it ran only when a
+    model answered, so a provider outage silently reverted every scanned row to
+    "decide co-financing from donor intel alone" — which is the opposite of the
+    stated rule that the CALL wins where it speaks.
+
+    `field_extract.call_compliance_flags` supplies the base reading with patterns;
+    `syn_flags` (the model's, when there was one) is layered over it, because a
+    model reads phrasings a pattern cannot and should win where it has an answer.
+    A requirement neither of them finds yields NO KEY at all, which leaves the
+    donor record standing — distinct from False, which clears it.
+    """
+    from core import org_profile as _orgp
+    try:
+        from core import field_extract as _fx
+        _det_flags = _fx.call_compliance_flags(
+            cand.get("_page_text") or row.get("raw_text")
+            or row.get("brief_description") or "")
+    except Exception:
+        _det_flags = {}
+    _flags = {**_det_flags, **(syn_flags or {})}
+    if _flags:
+        import json as _json
+        row["call_compliance_flags"] = _json.dumps(_flags)   # persist for Review re-merge
+        from core import criteria_derive as _cdv, matching as _mm
+        from core import settings as _settings
+        from core.scorer import CRITERIA as _CR
+        from core.auto_scorer import recommend_from_composite as _rec
+        _prof = _orgp.get_profile()
+        _dn = None
+        try:
+            _fa = (row.get("funding_agency") or "").strip()
+            if _fa:
+                # Robust resolution (acronym / short / full name) so a
+                # call whose funder string differs from the stored donor
+                # name (e.g. "Grand Challenges" → "Bill & Melinda Gates
+                # Foundation") still joins its donor intel — an exact
+                # ilike missed these, starving the donor-fallback.
+                from core.donor_intel import match_donor as _match_donor
+                _dn = _match_donor(_fa, fuzzy=False)
+        except Exception:
+            _dn = None
+        # Re-derive BOTH call-flag-sensitive labels: MUST-1
+        # qualification + MUST-5 cofinancing. If EITHER changed,
+        # recompute the composite + fatal gate so the stored
+        # decision reflects hard-gates the call itself states.
+        _changed = False
+        _newqual = _cdv.derive_qualification(
+            _prof, row, _dn, _settings.get_org(), rfp_compliance=_flags)
+        if _newqual and _newqual != row.get("qualification"):
+            row["qualification"] = _newqual
+            _changed = True
+        _newcap = _cdv.derive_capacity(
+            _prof, row, _dn, _settings.get_org(), rfp_compliance=_flags)
+        if _newcap and _newcap != row.get("capacity"):
+            row["capacity"] = _newcap
+            _changed = True
+        _newcof = _cdv.derive_cofinancing(
+            _prof, row, _dn, rfp_compliance=_flags,
+            org_settings=_settings.get_org())
+        if _newcof and _newcof != row.get("cofinancing"):
+            row["cofinancing"] = _newcof
+            _changed = True
+        if _changed:
+            _cv = {k: row.get(k) for k in _CR}
+            _mres = _mm.composite_match({**row, **_cv}, _prof, _dn,
+                                        _settings.get_org())
+            row["alignment_score"] = round(_mres["composite"], 1)
+            # Re-evaluate the fatal gate with the RFP's own
+            # compliance flags folded in (a call-stated floor
+            # can now flip the decision even with no donor row).
+            _isf, _ = _cdv.fatal_decline(
+                _prof, row, _dn, _settings.get_org(),
+                rfp_compliance=_flags)
+            row["auto_recommendation"] = _rec(
+                _cv, _mres["composite"], fatal=_isf,
+                below_award_floor=_cdv.below_award_floor(row, _prof))
+
 def _build_row(
     candidate: dict[str, Any], serial: int, ts: datetime,
     policies: dict[str, Any],
@@ -201,7 +284,7 @@ def _build_row(
         "submitted_by": "auto-scan",
         # Default contact for auto-scanned rows. Avoids leaving the column
         # NULL — useful for filtering / replies on shared records.
-        "submitted_by_email": "autoscan@example.org",
+        "submitted_by_email": "autoscan@chai.rfpis.org",
         "submitted_at": iso_now,
         "search_date": iso_now,
         "opportunity_title": candidate["opportunity_title"],
@@ -385,6 +468,7 @@ def ingest_candidates(
     # does not carry a spent counter into the next scan and silently stop synthesising.
     try:
         extraction.reset_scan_synthesis()
+        extraction.reset_thin_rows()
     except Exception:
         pass
 
@@ -906,6 +990,9 @@ def ingest_candidates(
         # Direct application-portal URL (from extraction) so Tracking can show an
         # "Apply" button; fall back to the opportunity link.
         row["apply_url"] = (cand.get("apply_url") or cand.get("opportunity_link"))
+        # Bound before the synthesis attempt: `_apply_call_compliance` below runs
+        # unconditionally, including on the dry-run and model-disabled paths.
+        _syn_call_flags: dict = {}
         # LLM review-synthesis — ONLY for gate-passed rows we're about to insert
         # (Decline/Park/Proceed); rejected candidates never reach here, so we
         # never spend tokens on them. One call writes the reasoning fields a
@@ -969,63 +1056,10 @@ def ingest_candidates(
                         # CLOSE THE LOOP: feed the LLM-extracted RFP compliance flags
                         # into MUST-5, then re-derive cofinancing + re-score so the
                         # stored decision reflects hard-gates the call itself states.
-                        _flags = _syn.get("call_compliance_flags") or {}
-                        if _flags:
-                            import json as _json
-                            row["call_compliance_flags"] = _json.dumps(_flags)   # persist for Review re-merge
-                            from core import criteria_derive as _cdv, matching as _mm
-                            from core import settings as _settings
-                            from core.scorer import CRITERIA as _CR
-                            from core.auto_scorer import recommend_from_composite as _rec
-                            _prof = _orgp.get_profile()
-                            _dn = None
-                            try:
-                                _fa = (row.get("funding_agency") or "").strip()
-                                if _fa:
-                                    # Robust resolution (acronym / short / full name) so a
-                                    # call whose funder string differs from the stored donor
-                                    # name (e.g. "Grand Challenges" → "Bill & Melinda Gates
-                                    # Foundation") still joins its donor intel — an exact
-                                    # ilike missed these, starving the donor-fallback.
-                                    from core.donor_intel import match_donor as _match_donor
-                                    _dn = _match_donor(_fa, fuzzy=False)
-                            except Exception:
-                                _dn = None
-                            # Re-derive BOTH call-flag-sensitive labels: MUST-1
-                            # qualification + MUST-5 cofinancing. If EITHER changed,
-                            # recompute the composite + fatal gate so the stored
-                            # decision reflects hard-gates the call itself states.
-                            _changed = False
-                            _newqual = _cdv.derive_qualification(
-                                _prof, row, _dn, _settings.get_org(), rfp_compliance=_flags)
-                            if _newqual and _newqual != row.get("qualification"):
-                                row["qualification"] = _newqual
-                                _changed = True
-                            _newcap = _cdv.derive_capacity(
-                                _prof, row, _dn, _settings.get_org(), rfp_compliance=_flags)
-                            if _newcap and _newcap != row.get("capacity"):
-                                row["capacity"] = _newcap
-                                _changed = True
-                            _newcof = _cdv.derive_cofinancing(
-                                _prof, row, _dn, rfp_compliance=_flags,
-                                org_settings=_settings.get_org())
-                            if _newcof and _newcof != row.get("cofinancing"):
-                                row["cofinancing"] = _newcof
-                                _changed = True
-                            if _changed:
-                                _cv = {k: row.get(k) for k in _CR}
-                                _mres = _mm.composite_match({**row, **_cv}, _prof, _dn,
-                                                            _settings.get_org())
-                                row["alignment_score"] = round(_mres["composite"], 1)
-                                # Re-evaluate the fatal gate with the RFP's own
-                                # compliance flags folded in (a call-stated floor
-                                # can now flip the decision even with no donor row).
-                                _isf, _ = _cdv.fatal_decline(
-                                    _prof, row, _dn, _settings.get_org(),
-                                    rfp_compliance=_flags)
-                                row["auto_recommendation"] = _rec(
-                                    _cv, _mres["composite"], fatal=_isf,
-                                    below_award_floor=_cdv.below_award_floor(row, _prof))
+                        # The model's own reading of the call's requirements. It is
+                        # MERGED with a deterministic read and applied below, OUTSIDE
+                        # this `if _syn:` — see `_apply_call_compliance`.
+                        _syn_call_flags = _syn.get("call_compliance_flags") or {}
                 else:
                     # Visible, not debug: a mis-set cron env (LLM base URL/key) silently
                     # disables synthesis, so every brief is the raw scraped preamble.
@@ -1035,6 +1069,21 @@ def ingest_candidates(
                         (row.get("opportunity_title") or "")[:60])
             except Exception as _exc:
                 log.debug("llm_synthesis skipped: %s", _exc)
+        # THE CALL'S OWN REQUIREMENTS REACH MUST-1/MUST-5 WHETHER OR NOT A MODEL RAN.
+        #
+        # This used to live inside `if _syn:` above, so the entire loop from the
+        # call's stated requirements into the criteria depended on a successful
+        # model call. On 2026-11-18 the configured provider answered 402 to every
+        # request, which left `call_compliance_flags` NULL on every row scanned
+        # since and MUST-5 deciding co-financing from donor intel alone.
+        #
+        # It also runs on a DRY RUN now, which the old placement did not — that is
+        # intended rather than incidental. A dry run exists to show what a real
+        # scan would store, and the whole point of this block is that it can move
+        # a recommendation; a preview that skipped it would show a different
+        # verdict from the scan it is previewing. It only reads.
+        _apply_call_compliance(row, cand, _syn_call_flags)
+
         # ── RE-GATE AFTER ENRICHMENT ──────────────────────────────────────────
         # The gate ran on the SCRAPED candidate. Synthesis (and the deep-read above) can
         # then LEARN gate-relevant facts the listing never showed — the geographic scope,
@@ -1151,6 +1200,16 @@ def ingest_candidates(
             log.info("scan ingest: synthesised %d row(s) at scan time%s", _synth,
                      "  (per-scan ceiling reached — the rest is for the backfill)"
                      if _synth >= extraction._SCAN_SYNTH_MAX else "")
+        # HOW COMPLETE WERE THE ROWS THIS SCAN WROTE? Rows are made right on the
+        # way in now rather than repaired afterwards, so a scan that starts
+        # producing thin rows has to say so at the time — otherwise the only
+        # signal is a reviewer opening an empty page weeks later.
+        _thin, _scored = extraction.thin_rows()
+        if _scored:
+            log.info("scan ingest: %d of %d extracted row(s) landed below %.0f%% of "
+                     "the schema%s", _thin, _scored, extraction._THIN_FLOOR * 100,
+                     "" if not _thin else
+                     "  (each one is logged above with the fields it is missing)")
     except Exception:
         pass
     log.info(

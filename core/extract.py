@@ -108,6 +108,28 @@ def _amount_val(v) -> float | None:
     return f if f > 0 else None
 
 
+def _expected_awards(candidate: dict[str, Any]) -> str | None:
+    """`expected_awards` off a handler, as the TEXT the column stores.
+
+    The column is text because a call states a range ("3-5 awards") as often as a
+    number, but a structured API returns an integer — grants.gov `numberOfAwards`
+    — and `scraper._scan_grants_gov` sets it as one. Writing the int straight in
+    would store `5` on a text column in some drivers and `"5"` in others; coercing
+    here keeps one shape. 0 and negatives are "not stated", not "no awards".
+    """
+    v = candidate.get("expected_awards")
+    if v in (None, "") or isinstance(v, bool):
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        n = int(float(s))
+    except (TypeError, ValueError):
+        return s            # already a range or a phrase — store it as published
+    return str(n) if n > 0 else None
+
+
 def _amount_grounded(amount, text: str) -> bool:
     """True if `amount` (±1%) matches a real money expression in the text."""
     if amount in (None, 0, "0", ""):
@@ -463,8 +485,27 @@ def build_record(candidate: dict[str, Any], policies: dict[str, Any], *,
         "grant_amount": g_amt if g_amt else _syn_amount,
         "project_duration": _syn_duration or None,
         "currency": g_cur,
-        "call_award_floor": floor,
-        "call_award_ceiling": ceil,
+        # A HANDLER-READ FIGURE WINS, as it already does for `call_award_value` above.
+        #
+        # These four are published as STRUCTURED JSON by the source APIs this repo
+        # already calls — grants.gov `fetchOpportunity` returns awardFloor,
+        # awardCeiling, estimatedFunding and numberOfAwards, and
+        # `scraper._scan_grants_gov` maps all four onto the candidate. They then
+        # reached no column: `total_program_funding` and `expected_awards` appeared
+        # NOWHERE in this file, and the two award bounds were built only from the
+        # LLM's `funding_tiers` or a synthesised range. So a figure read exactly off
+        # the funder's own API was dropped in favour of nothing at all.
+        #
+        # Measured 2026-11-19 over the 469 live grants.gov rows, every one of which
+        # went through that handler: total_program_funding 0, call_award_floor 1,
+        # call_award_ceiling 3, expected_awards 2. The data was always there.
+        #
+        # Order is deliberate: handler first (it read the funder's own JSON), then the
+        # tier/synthesis derivation, which is an inference from prose.
+        "call_award_floor": _amount_val(candidate.get("call_award_floor")) or floor,
+        "call_award_ceiling": _amount_val(candidate.get("call_award_ceiling")) or ceil,
+        "total_program_funding": _amount_val(candidate.get("total_program_funding")),
+        "expected_awards": _expected_awards(candidate),
         "funding_tiers": tiers,
         "deadline": d_val,
         "deadline_confidence": d_conf,
@@ -476,16 +517,127 @@ def build_record(candidate: dict[str, Any], policies: dict[str, Any], *,
         "brief_description": _store_brief,
         # Schema §4.3-§4.6 fields the synthesis produces (see the note above).
         "call_domain_areas": _syn_areas or None,
-        "eligibility_other": _syn_text("eligibility_specifics",
-                                       "compliance_requirements"),
+        # Handler first again: a source API that publishes the funder's own
+        # eligibility wording (grants.gov `applicantEligibilityDesc`) beats a model's
+        # summary of the same page, because it IS the page. The synthesis fills the
+        # blank when no handler supplied one.
+        "eligibility_other": (str(candidate.get("eligibility_other")).strip()
+                              if str(candidate.get("eligibility_other") or "").strip()
+                              else _syn_text("eligibility_specifics",
+                                             "compliance_requirements")),
         "submission_format": _syn_text("how_to_apply"),
         "raw_text": (text or None) and str(text)[:20000],
         "content_hash": hashlib.sha1(blob.encode("utf-8")).hexdigest(),
         "extraction_confidence": overall_conf,
         "field_provenance": prov,
-        "solicitation_language": "English",
+        # A HANDLER THAT KNOWS THE LANGUAGE SAYS SO; English is only the default.
+        #
+        # This was the literal string "English" on every row ever written, which
+        # made the column a decoration: it was 100% populated and 100% unverified.
+        # TED proves it wrong at scale — it publishes a description in the
+        # language of the contracting country and translates only the title, so of
+        # 25 health notices probed exactly one was English, and all 25 were filed
+        # as English. A reviewer opening "Application language: English" on a
+        # German tender has been told something untrue by the record.
+        #
+        # English remains the fallback because most sources in the catalogue are
+        # genuinely English and nothing else currently reports a language — but it
+        # is now a default that a handler can correct, not an assertion.
+        "solicitation_language": (str(candidate.get("solicitation_language")).strip()
+                                  if str(candidate.get("solicitation_language") or "").strip()
+                                  else "English"),
     }
+
+    # THE DETERMINISTIC PASS RUNS HERE, ON THE WAY IN.
+    #
+    # `core/field_extract.py` reads award range, programme envelope, award date,
+    # time to award, project duration, applicant types, exclusions, documents,
+    # submission format, programme areas and eligible countries off the call text
+    # with patterns — no model, no network, nothing to pay for.
+    #
+    # It was written with a backfill beside it and WAS NEVER WIRED INTO THIS
+    # FUNCTION. The backfill's own docstring claimed it "now runs inside
+    # extraction, so every NEW row arrives with these fields"; that was an
+    # intention stated as a fact, and it was wrong. Every row scanned between then
+    # and now arrived without any of it and depended on a repair pass to catch up.
+    #
+    # That is the wrong shape whatever the backfill policy, and it is untenable
+    # under the owner's rule of 2026-11-19: no more repairing old rows, so a row
+    # has to be complete when it is written or it stays incomplete. Hence here,
+    # before the record is returned, rather than in a script somebody remembers to
+    # run.
+    #
+    # It fills BLANKS ONLY, so everything above — handler values, regex amounts,
+    # the LLM's reading — still wins, and it cannot regress a field this function
+    # already decided. Best-effort: a pattern failure must never cost the scan the
+    # row it just extracted.
+    try:
+        from core import field_extract
+        derived = field_extract.derive_fields(rec, text=text)
+        if derived:
+            rec.update(derived)
+            log.info("extract: %d deterministic field(s) for %s",
+                     len(derived), rec.get("uid"))
+    except Exception as exc:                       # never cost the scan the row
+        log.warning("extract: deterministic pass skipped for %s: %s",
+                    rec.get("uid"), exc)
+    _note_completeness(rec)
     return rec, reason
+
+
+# ---------------------------------------------------------------------------
+# how complete was the row we just wrote?
+# ---------------------------------------------------------------------------
+# The owner's rule from 2026-11-19 is that rows are made right on the way in
+# rather than repaired afterwards. That only holds if a row landing thin is
+# VISIBLE when it lands. Until now nothing said so: a call extracted into four
+# populated fields and a call extracted into thirty were both just "stored", and
+# the gap only surfaced weeks later when somebody opened the page.
+#
+# This is a LOG AND A COUNTER, deliberately — not a gate and not a new column.
+#
+#   * Not a gate, because refusing a thin row loses a real call. A sparse record
+#     for a call that exists still beats no record: the deadline and the link are
+#     usually there, and a reviewer can open the page. Dropping it would be the
+#     pipeline deciding on the reviewer's behalf.
+#   * Not a column, because `extracted_solicitations` lives in a shared hosted
+#     database and a migration there applies to everybody immediately. A scan-log
+#     line costs nothing and answers the question that is actually being asked —
+#     "is the crawler producing complete rows now?"
+#
+# `scan_runner` reports the counters at the end of a scan, beside the synthesis
+# call count, so a run that quietly started producing thin rows says so.
+_THIN_FLOOR = float(os.environ.get("RFPIS_THIN_ROW_FLOOR", "0.4"))
+_thin_rows = 0
+_scored_rows = 0
+
+
+def thin_rows() -> tuple[int, int]:
+    """(rows below the completeness floor, rows extracted) for the scan log."""
+    return _thin_rows, _scored_rows
+
+
+def reset_thin_rows() -> None:
+    global _thin_rows, _scored_rows
+    _thin_rows = _scored_rows = 0
+
+
+def _note_completeness(rec: dict[str, Any]) -> None:
+    """Count and log a row that lands below the floor. Never raises."""
+    global _thin_rows, _scored_rows
+    try:
+        from core.opportunity_detail import coverage
+        filled, total, missing = coverage(rec)
+        _scored_rows += 1
+        if total and filled / total < _THIN_FLOOR:
+            _thin_rows += 1
+            log.warning(
+                "extract: THIN ROW %s — %d/%d schema fields (%.0f%%) from %d chars of "
+                "source text; missing %s", rec.get("uid"), filled, total,
+                filled / total * 100, len(str(rec.get("raw_text") or "")),
+                ", ".join(missing[:8]))
+    except Exception:
+        pass                                       # a log line is never worth a raise
 
 
 # ---------------------------------------------------------------------------

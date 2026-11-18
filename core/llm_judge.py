@@ -93,7 +93,9 @@ def is_enabled() -> bool:
     requiring a non-empty key silently disabled the judge whenever the key var was
     unset. The key is defaulted to a placeholder in the client; a provider that truly
     needs one surfaces a visible auth error instead of going dark."""
-    if not os.environ.get("LLM_JUDGE_BASE_URL"):
+    from core.llm_client import primary_endpoint
+    base, _key = primary_endpoint("LLM_JUDGE_BASE_URL")
+    if not base:
         return False
     try:
         import openai  # noqa: F401, WPS433
@@ -264,11 +266,13 @@ def judge(candidate: dict[str, Any], policies: dict[str, Any],
             timeout = float(os.environ.get("LLM_JUDGE_TIMEOUT", _DEFAULT_TIMEOUT))
         except ValueError:
             timeout = _DEFAULT_TIMEOUT
+        from core.llm_client import primary_endpoint
+        _base, _key = primary_endpoint("LLM_JUDGE_BASE_URL")
         client = OpenAI(
-            base_url=os.environ["LLM_JUDGE_BASE_URL"],
+            base_url=_base,
             # Placeholder key for endpoints that ignore it (local Ollama); a provider
             # that requires a real key surfaces a visible auth error, never a silent skip.
-            api_key=os.environ.get("LLM_JUDGE_API_KEY") or "ollama",
+            api_key=_key or "ollama",
             timeout=timeout,
             max_retries=0,          # one shot — we fall back to regex on failure
         )

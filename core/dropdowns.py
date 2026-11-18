@@ -72,6 +72,27 @@ def get(key: str, default: list | None = None) -> list:
     return load().get(key, default or [])
 
 
+def currency_aliases(entry: Any) -> list:
+    """The alternate spellings of one currency entry.
+
+    THE KEY IS `aliases`, AND THREE READERS LOOKED FOR `donor_aliases`.
+    config/dropdowns.yaml writes `aliases`, `app_settings.currencies_json` stores
+    `aliases` (checked against the live row), and the TypeScript port reads `aliases` — so
+    every `entry.get("donor_aliases")` in this file and in core/currency.py matched
+    nothing, and alias lookup was dead on the Python side. A call quoting "£" or "FCFA"
+    fell through to the first-token fallback, which does not match a bare symbol at all,
+    and the amount was then converted at 1.0.
+
+    It reads BOTH, canonical first, because the Settings currency editor was WRITING
+    `donor_aliases`: a deployment where somebody pressed Save holds rows in that shape,
+    and refusing to read them would turn a dead path into a broken one. The editor now
+    writes `aliases`; this keeps the older rows working until they are re-saved.
+    """
+    if not isinstance(entry, dict):
+        return []
+    return list(entry.get("aliases") or entry.get("donor_aliases") or [])
+
+
 def usd_rate(currency: str | None) -> float:
     """USD per 1 unit of `currency`. 1.0 for empty/USD/unknown (no conversion).
 
@@ -104,7 +125,7 @@ def usd_rate(currency: str | None) -> float:
     for entry in currencies:
         if (entry.get("code") == cur
                 or entry.get("label") == cur
-                or cur in (entry.get("donor_aliases") or [])):
+                or cur in currency_aliases(entry)):
             return _rate(entry)
     # Fallback: first whitespace token (e.g. "GBP £" → "GBP")
     first = cur.split()[0] if cur else ""
@@ -151,7 +172,7 @@ def usd_rate_known(currency: str | None) -> float | None:
     first = cur.split()[0] if cur else ""
     for entry in currencies:
         if (entry.get("code") == cur or entry.get("label") == cur
-                or cur in (entry.get("donor_aliases") or [])
+                or cur in currency_aliases(entry)
                 or entry.get("code") == first):
             try:
                 _r = entry.get("usd_rate")
