@@ -534,6 +534,8 @@ export type OpportunityBucket = {
   key: string;
   label: string;
   kind: "rows" | "applications";
+  /** The heading this figure files under on Triage — see `bucketGroups` for the order. */
+  group: string;
   /** One line a reader can check the selection against. */
   rule: string;
   count: number;
@@ -570,6 +572,9 @@ export type OpportunityListRow = {
 
 export type OpportunityList = {
   today: string;
+  /** The bucket headings, in the order they read. The server decides it: first-appearance
+   *  order in `buckets` is the DASHBOARD's tile order, which groups differently. */
+  bucketGroups: string[];
   buckets: OpportunityBucket[];
   rows: OpportunityListRow[];
 };

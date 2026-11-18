@@ -42,7 +42,7 @@
 import { q, type Db } from "./db.ts";
 import { json, gzipped, str } from "./http.ts";
 import { ratesFor } from "./fx.ts";
-import { BUCKET, BUCKETS, measure, membership } from "./home_buckets.ts";
+import { BUCKET, BUCKET_GROUPS, BUCKETS, measure, membership } from "./home_buckets.ts";
 import {
   loadCurrencies, requestedCurrency, submissionWeight, usdValue,
 } from "./money.ts";
@@ -483,8 +483,12 @@ export function createPhase1Routes(db: Db) {
 
     return gzipped(req, json({
       today: t,
+      // The headings, in the order they read. Sent rather than derived in the browser:
+      // the order is a decision, and first-appearance order in `buckets` below is the
+      // DASHBOARD's tile order, which groups differently on purpose.
+      bucketGroups: BUCKET_GROUPS,
       buckets: BUCKETS.map((b) => ({
-        key: b.key, label: b.label, kind: b.kind, rule: b.rule,
+        key: b.key, label: b.label, kind: b.kind, group: b.group, rule: b.rule,
         count: measure(b, rows, t),
       })),
       rows: out,
