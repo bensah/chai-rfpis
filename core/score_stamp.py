@@ -171,6 +171,50 @@ def human_assessed(row: dict[str, Any]) -> bool:
     return _set("decision_date") or (_set("decision_overridden_by") and _set("decision"))
 
 
+def stamp_state(row: dict[str, Any] | None, current_sig: str | None) -> str:
+    """What the stamps on this row actually say. One of five words.
+
+        current     stamped, and the signature is the one in force
+        stale       stamped under an older signature — a re-score fixes it
+        unverified  no stamp, and nobody has assessed it — the job has not reached it yet
+        deferred    no stamp, and a human HAS assessed it — the job will never touch it
+        unknown     stamped, but the caller could not say what the current signature is
+
+    WHY `deferred` IS NOT `unverified`, which is the whole reason this exists.
+    `scripts/run_web_job.py::_rescore` skips a row a human has assessed and clears its
+    stamps, so it lands among the unstamped rows and gets reported as "the job has not run
+    on this yet". That is a different fact from "the job will never run on this", and only
+    the first one is actionable: waiting fixes an unverified row and does nothing at all
+    for a deferred one. Measured 2026-11-18 by the react-migration session: 39 rows sit in
+    the second group, permanently outside anything `check-rescore` asserts.
+
+    WHY `unknown` EXISTS AND IS NOT FOLDED INTO `current`. Because that fold is the bug
+    this session spent a day on. `web/scripts/parity/rescore_py.py` imported a
+    `profile_signature` that did not exist, caught the ImportError, and passed None;
+    `check-rescore` guarded its staleness branch with `if (sig && ...)`, so every stamped
+    row fell through to "current" and the check silently stopped being able to tell a
+    stale score from a wrong one. A missing signature is not evidence that a row is
+    current — it is the absence of evidence, and this returns a word that says so.
+
+    DERIVED, NEVER STORED. Every input is already on the row; a column holding this would
+    be a second copy that can disagree with the one that determines it, which is the same
+    failure as a stamp claiming a number nothing computed.
+
+    `deferred` INHERITS `human_assessed`'s DECAY BOUND. That predicate is deliberately
+    temporary — a conjunction holding the line until `decision_date` reaches the rows
+    people edit, after which its second clause is meant to go. Deleting that clause moves
+    rows between `deferred` and `unverified` without anyone touching this function or the
+    check that counts its buckets. Whoever simplifies it is also resizing a report.
+    """
+    row = row or {}
+    stamped = bool(str(row.get("score_profile_sig") or "").strip())
+    if not stamped:
+        return "deferred" if human_assessed(row) else "unverified"
+    if not str(current_sig or "").strip():
+        return "unknown"
+    return "current" if row.get("score_profile_sig") == current_sig else "stale"
+
+
 def editor_score_columns(score: float | None, rec: str | None) -> dict[str, Any]:
     """The score columns a HUMAN-FACING save writes: the number, and no claim about it.
 

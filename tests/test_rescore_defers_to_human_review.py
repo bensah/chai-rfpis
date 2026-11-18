@@ -117,6 +117,86 @@ class TestTheEditorStampsTheDateItAssesses(unittest.TestCase):
         self.assertIn("today", body)
 
 
+class TestWhatTheStampsSay(unittest.TestCase):
+    """`stamp_state` — the four facts the stamps carry, plus the one they cannot.
+
+    The job SKIPS a human-assessed row and clears its stamps, so it lands among the
+    unstamped and would otherwise be reported as "the job has not run on this yet". The
+    truth is "the job will never run on this": waiting fixes the first and does nothing
+    for the second, and 39 live rows are in the second group.
+    """
+
+    SIG = "abc123def456"
+
+    def test_a_matching_signature_is_current(self):
+        from core.score_stamp import stamp_state
+        self.assertEqual(
+            stamp_state({"score_profile_sig": self.SIG}, self.SIG), "current")
+
+    def test_an_older_signature_is_stale(self):
+        from core.score_stamp import stamp_state
+        self.assertEqual(stamp_state({"score_profile_sig": "older"}, self.SIG), "stale")
+
+    def test_an_unstamped_scan_row_is_unverified(self):
+        from core.score_stamp import stamp_state
+        self.assertEqual(stamp_state({"uid": "AS-1"}, self.SIG), "unverified")
+        self.assertEqual(
+            stamp_state({"score_profile_sig": None, "scored_at": None}, self.SIG),
+            "unverified")
+
+    def test_an_unstamped_assessed_row_is_deferred(self):
+        """The job cleared these, or never stamped them, and will not come back."""
+        from core.score_stamp import stamp_state
+        for row in ({"decision_date": "2026-11-09"},
+                    {"decision_overridden_by": "a@b.org", "decision": "Proceed"},
+                    {"score_profile_sig": None, "decision_date": "2026-11-09"}):
+            self.assertEqual(stamp_state(row, self.SIG), "deferred", row)
+
+    def test_a_missing_current_signature_is_unknown_not_current(self):
+        """THE BUG THIS REFUSES TO REBUILD.
+
+        rescore_py.py imported a profile_signature that did not exist, caught the
+        ImportError and passed None; check-rescore guarded staleness with `if (sig && …)`,
+        so every stamped row fell through to "current" and the check quietly stopped being
+        able to tell a stale score from a wrong one. Absence of a signature is not
+        evidence that a row is current.
+        """
+        from core.score_stamp import stamp_state
+        for missing in (None, "", "   "):
+            self.assertEqual(
+                stamp_state({"score_profile_sig": self.SIG}, missing), "unknown", missing)
+
+    def test_an_unstamped_row_needs_no_signature_to_classify(self):
+        """Its state does not depend on one, so a missing sig must not hide it."""
+        from core.score_stamp import stamp_state
+        self.assertEqual(stamp_state({"uid": "AS-1"}, None), "unverified")
+        self.assertEqual(stamp_state({"decision_date": "2026-11-09"}, None), "deferred")
+
+    def test_every_answer_is_one_of_the_five(self):
+        from core.score_stamp import stamp_state
+        states = {"current", "stale", "unverified", "deferred", "unknown"}
+        for row in ({}, {"score_profile_sig": self.SIG}, {"score_profile_sig": "x"},
+                    {"decision": "Proceed"}, {"decision_date": "2026-11-09"},
+                    {"scored_at": "2026-11-03T00:00:00Z"}):
+            for sig in (self.SIG, None):
+                self.assertIn(stamp_state(row, sig), states, (row, sig))
+
+    def test_the_deferred_set_follows_human_assessed(self):
+        """Pinned because the predicate is temporary and this is downstream of it.
+
+        `human_assessed`'s second clause is meant to go once decision_date reaches the
+        rows people edit. When it does, rows move between deferred and unverified with
+        nobody touching this function — so the coupling is asserted rather than assumed.
+        """
+        from core.score_stamp import human_assessed, stamp_state
+        for row in ({"decision_overridden_by": "a@b.org", "decision": "Proceed"},
+                    {"decision_overridden_by": "a@b.org"},
+                    {"decision": "Proceed"},
+                    {}):
+            expected = "deferred" if human_assessed(row) else "unverified"
+            self.assertEqual(stamp_state(row, self.SIG), expected, row)
+
+
 class _FakeTable:
     def __init__(self, rows, writes):
         self._rows, self._writes = rows, writes
