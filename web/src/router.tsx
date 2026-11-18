@@ -118,12 +118,21 @@ export const PAGES: Record<PageKey, PageInfo> = {
   // and it is deliberately nowhere near a hide list.
   alerts: { title: "Alerts", icon: "🔔", rail: true },
   opportunity: { title: "Opportunity", icon: "🎯" },
-  // NOT in the rail, like `opportunity` and `search`: it exists so the Dashboard's figures
-  // can be links. Every tile and every bar segment opens it with ?bucket=<figure>, which
-  // is the owner's ask — "clicking 17 Awaiting review opens the 17 listed". Whether it
-  // also deserves a sidebar entry of its own is a placement decision, and placement in
-  // this rail has been the owner's throughout; it is not taken here.
-  opportunities: { title: "Triage", icon: "🗂" },
+  // IN THE RAIL SINCE 2026-11-18, and the owner settled it: "Triage appears to be one of
+  // the most important parts of this app and yet it is hard to discover on navigating the
+  // app."
+  //
+  // It was reachable only by clicking a Dashboard figure — every tile and bar segment
+  // opens it with ?bucket=<figure>, which is the owner's earlier ask ("clicking 17
+  // Awaiting review opens the 17 listed"). That makes it the Dashboard's companion, not a
+  // page of its own, and a reader standing anywhere else had no way back to it. Reaching
+  // a page only by clicking a number is not discoverable; it is a page that exists if you
+  // already know it does.
+  //
+  // It sits directly under Dashboard in the Workspace group, because the figure you came
+  // in through is the Dashboard's and the two are read together. See shell/Layout.tsx's
+  // GROUPS, which is what actually orders the rail.
+  opportunities: { title: "Triage", icon: "🗂", rail: true },
   profile: { title: "Profile", icon: "👤" },
   help: { title: "Help", icon: "❓" },
   search: { title: "Search", icon: "🔍" },

@@ -22,7 +22,7 @@
  * remove them, not to count them).
  */
 import { useEffect, useState } from "react";
-import { BookOpen, ChevronDown, Download } from "lucide-react";
+import { BookOpen, CalendarClock, ChevronDown, Download, LayoutList } from "lucide-react";
 import { fetchHome, type HomeKpis, type User } from "../api";
 import OpportunityRail from "../components/OpportunityRail";
 import HowToUse from "../shell/HowToUse";
@@ -265,7 +265,38 @@ export default function HomePage({ user }: { user: User }) {
           </Notice>
         )}
 
+        {/* THE DASHBOARD'S OWN DOOR TO TRIAGE, which every figure above is already a link
+            to — and that is the problem this card answers rather than duplicates. A
+            number you can click looks like a number; nothing on this page said the rows
+            behind it live somewhere you can also go on purpose, filter and work through.
+            Triage is in the sidebar now too; this is the doorway for somebody reading the
+            Dashboard top to bottom, which is the same argument the guide card below makes
+            for itself.
+
+            It offers the two entries worth naming: everything, and the fortnight. Not a
+            third copy of the fourteen figures — those are the tiles above. */}
         <Card className="mt-6 p-5">
+          <h3 className="flex items-center gap-2 font-semibold text-brand-700">
+            <LayoutList className="h-4.5 w-4.5 text-accent-600" strokeWidth={1.9} />
+            Work through the calls in Triage
+          </h3>
+          <p className="mt-1.5 text-sm text-ink-600">
+            Every figure above opens there. It is the same list behind all of them, with
+            filters for funder, lead and text, and it is where a call gets a decision.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <LinkButton href={hrefOf("opportunities")} variant="primary"
+              icon={<LayoutList className="h-4 w-4" />}>Open Triage</LinkButton>
+            <LinkButton href={hrefOf("opportunities", { bucket: "due_in_14_days" })}
+              icon={<CalendarClock className="h-4 w-4" />}>
+              {/* The count only once the figures have loaded — "(0)" while they are
+                  still coming is a reassurance nobody has earned yet. */}
+              Due in 14 days{k ? ` (${dueSoon})` : ""}
+            </LinkButton>
+          </div>
+        </Card>
+
+        <Card className="mt-3 p-5">
           <h3 className="flex items-center gap-2 font-semibold text-brand-700">
             <BookOpen className="h-4.5 w-4.5 text-accent-600" strokeWidth={1.9} />
             New to RFPIS? Start with the manual
