@@ -31,6 +31,7 @@ that passed from a module it could not collect. See `_ALLOWED_EMPTY`.
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import subprocess
@@ -71,6 +72,35 @@ _COUNT = re.compile(r"(failures|errors|skipped)=(\d+)")
 #: naming in one place, and a per-file marker is one more thing that can be
 #: pasted into a file that should not have it.
 _ALLOWED_EMPTY: frozenset[str] = frozenset()
+
+
+def loose_test_functions(path: Path) -> list[str]:
+    """Module-level `def test_*` in `path` — the tests unittest will NOT run.
+
+    THE SECOND SHAPE, AND THE WORSE ONE. The zero-test guard above catches a
+    module unittest could not collect at all. It cannot catch a module that has a
+    `TestCase` AND loose `def test_*` functions beside it: the class makes the
+    module look collected, the count is non-zero so a count-based sweep passes it,
+    and the loose functions silently never run. Nothing about it looks wrong.
+
+    Once the runner is unittest, a test file has no business holding a loose test
+    function at all, so this is a flat rule rather than a heuristic — there is no
+    legitimate case to carve out, which is why it has no opt-out list.
+
+    PARSED, NOT GREPPED. `^def test_` finds the same thing far more cheaply and is
+    wrong here: this very repo has a module whose fixtures are Python source in
+    triple-quoted strings, and a regex reads those as declarations. `ast` sees
+    only what is actually defined, and `tree.body` is module level by
+    construction. A file that does not parse returns nothing — a syntax error is
+    the interpreter's to report, and it will, loudly.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError):
+        return []
+    return [node.name for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name.startswith("test_")]
 
 
 def module_names(selected: list[str]) -> list[str]:
@@ -118,8 +148,32 @@ def run_module(name: str) -> dict:
     # Skipped when the module reported real failures or errors: those already have
     # a better explanation than this one, and relabelling an import traceback as
     # "collected 0 tests" would bury the traceback.
-    if tests == 0 and bad == 0:
-        if name in _ALLOWED_EMPTY:
+    # The second shape — see `loose_test_functions`. Checked even when the module
+    # passed with a healthy count, because that is exactly how this one hides.
+    #
+    # `_ALLOWED_EMPTY` does NOT excuse it. That list means "this module
+    # legitimately defines no tests"; a module holding test functions unittest
+    # will not run is not empty, it is broken, and silencing it would make the
+    # opt-out a way to hide the worse of the two faults.
+    loose = loose_test_functions(TESTS_DIR / f"{name}.py")
+    shown = ", ".join(loose[:4]) + (f" (+{len(loose) - 4} more)" if len(loose) > 4
+                                    else "")
+    if bad == 0 and (loose or tests == 0):
+        if loose and tests == 0:
+            # Both at once, which is what a whole pytest-style module looks like.
+            # Lead with the louder fact and let the loose functions explain it.
+            ok = False
+            detail = (f"collected 0 tests — all {len(loose)} of its test functions "
+                      f"are module-level, which unittest does not collect: {shown}. "
+                      "Move them into a TestCase; see loose_test_functions in "
+                      "scripts/run_tests.py")
+        elif loose:
+            ok = False
+            detail = (f"{len(loose)} module-level test function(s) that unittest "
+                      f"will NOT run, beside {tests} that it did: {shown}. Move "
+                      "them into a TestCase; see loose_test_functions in "
+                      "scripts/run_tests.py")
+        elif name in _ALLOWED_EMPTY:
             # Named as legitimately empty, so forgive the exit code too: Python
             # 3.12+ returns 5 for "no tests ran", which would otherwise fail the
             # module the list exists to permit.
@@ -127,9 +181,8 @@ def run_module(name: str) -> dict:
             detail = "collected 0 tests (allowed)"
         else:
             ok = False
-            detail = ("collected 0 tests — unittest found no TestCase here. Bare "
-                      "`def test_*` functions and pytest fixtures are invisible to "
-                      "it; see the note above _ALLOWED_EMPTY in scripts/run_tests.py")
+            detail = ("collected 0 tests — unittest found no TestCase here; see "
+                      "the note above _ALLOWED_EMPTY in scripts/run_tests.py")
     return {
         "name": name,
         "ok": ok,
