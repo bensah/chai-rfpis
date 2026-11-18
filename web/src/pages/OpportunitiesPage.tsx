@@ -92,7 +92,7 @@ function BucketPicker({ buckets, groups, active, onPick }: {
 
   return (
     <Select
-      aria-label="Which figure to show" className="w-64 font-semibold"
+      aria-label="Which figure to show" className="font-semibold"
       value={active} onChange={(e) => onPick(e.target.value)}
     >
       {order.map((g) => {
@@ -208,34 +208,49 @@ export default function OpportunitiesPage({ user }: { user: User }) {
           which slice of it. Splitting them put the first above the page's heading and the
           second below it, so they looked like different kinds of thing. The picker leads
           because it is the only one that WIDENS — everything after it narrows. */}
+      {/* THE WIDTH IS ON THE WRAPPER, NOT THE CONTROL, and it has to be. `fieldClass`
+          begins `w-full`, and Tailwind resolves two width utilities by stylesheet order
+          rather than by the order they appear in the attribute — so the `w-52` these
+          selects used to pass LOST to it, every one of them rendered full width, and that
+          is why four filters occupied four lines. A fixed-width flex item with a w-full
+          control inside it does what the class was asking for, without changing `Select`
+          for the rest of the app (where other callers have the same silent problem). */}
       <div className="mt-4 mb-3 flex flex-wrap items-center gap-2">
-        <BucketPicker
-          buckets={data.buckets} groups={data.bucketGroups ?? []}
-          active={bucketKey} onPick={pick}
-        />
-        <div className="relative">
+        <div className="w-64">
+          <BucketPicker
+            buckets={data.buckets} groups={data.bucketGroups ?? []}
+            active={bucketKey} onPick={pick}
+          />
+        </div>
+        <div className="relative w-56">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-ink-400" />
           <input
             value={q} onChange={(e) => setQ(e.target.value)}
             aria-label="Filter these opportunities"
             placeholder="Title, funder, lead or uid"
-            className={`${fieldClass} w-64 pl-8`}
+            className={`${fieldClass} pl-8`}
           />
         </div>
-        <Select aria-label="Filter by funder" className="w-52"
-          value={funder} onChange={(e) => setFunder(e.target.value)}>
-          <option value="">Every funder</option>
-          {funders.map((f) => <option key={f} value={f}>{f}</option>)}
-        </Select>
-        <Select aria-label="Filter by lead" className="w-44"
-          value={lead} onChange={(e) => setLead(e.target.value)}>
-          <option value="">Anyone</option>
-          {leads.map((l) => <option key={l} value={l}>{l}</option>)}
-        </Select>
-        <Select aria-label="Sort" className="w-56"
-          value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
-          {SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-        </Select>
+        <div className="w-52">
+          <Select aria-label="Filter by funder"
+            value={funder} onChange={(e) => setFunder(e.target.value)}>
+            <option value="">Every funder</option>
+            {funders.map((f) => <option key={f} value={f}>{f}</option>)}
+          </Select>
+        </div>
+        <div className="w-44">
+          <Select aria-label="Filter by lead"
+            value={lead} onChange={(e) => setLead(e.target.value)}>
+            <option value="">Anyone</option>
+            {leads.map((l) => <option key={l} value={l}>{l}</option>)}
+          </Select>
+        </div>
+        <div className="w-56">
+          <Select aria-label="Sort"
+            value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
+            {SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </Select>
+        </div>
         {narrowed && (
           <button
             onClick={() => { setQ(""); setFunder(""); setLead(""); }}
