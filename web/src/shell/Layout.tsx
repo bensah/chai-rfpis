@@ -16,7 +16,10 @@ import {
   Bell, ChevronsLeft, ChevronsRight, Eye, HelpCircle, LogOut, Menu, Search, Settings, User as UserIcon, X,
 } from "lucide-react";
 import {
-  fetchShell, markAllRead, shellPartFailed, signOut, viewAs, type Shell, type User,
+  // `viewAs` is deliberately NOT imported any more. Leaving a view-as means clearing the
+  // `?tenant=` param as well as the session, and the param lives in App — so the shell
+  // takes a handler rather than calling half of the operation itself. See ViewAsBanner.
+  fetchShell, markAllRead, shellPartFailed, signOut, type Shell, type User,
 } from "../api";
 import { goToCrumb, hrefOf, Link, navigate, navTrail, PAGES, type PageKey } from "../router";
 import { NAV_ICON } from "./navIcons";
@@ -52,7 +55,12 @@ const GROUPS: { label: string; pages: PageKey[] }[] = [
   { label: "Organization", pages: ["organization", "submit-new-rfp", "alerts"] },
 ];
 
-export default function Layout({ user, page, children }: { user: User; page: PageKey; children: ReactNode }) {
+export default function Layout({ user, page, children, onReturnToMyAccount }: {
+  user: User; page: PageKey; children: ReactNode;
+  /** Leave a super_user view-as. App owns it because leaving means clearing the
+   *  `?tenant=` param as well as the session, and App is where the param lives. */
+  onReturnToMyAccount: () => void;
+}) {
   const [shell, setShell] = useState<Shell | null>(null);
   const [drawer, setDrawer] = useState(false);
   // STAYS OPEN ACROSS PAGES, on purpose (owner, 2026-11-09). The guide explains the
@@ -120,7 +128,7 @@ export default function Layout({ user, page, children }: { user: User; page: Pag
         />
         <main className="flex-1 px-4 pt-6 pb-14 sm:px-6 lg:px-8">
           <div className="mx-auto w-full max-w-[82rem]">
-            <ViewAsBanner user={user} />
+            <ViewAsBanner user={user} onReturn={onReturnToMyAccount} />
             {children}
           </div>
         </main>
@@ -566,8 +574,21 @@ function Breadcrumbs({ page }: { page: PageKey }) {
   );
 }
 
-/** app_header._render_super_view_banner */
-function ViewAsBanner({ user }: { user: User }) {
+/** app_header._render_super_view_banner
+ *
+ *  THE BUTTON NO LONGER CALLS viewAs ITSELF. It used to be
+ *  `onClick={() => viewAs(null).catch(() => undefined)}`, and that was wrong twice over.
+ *
+ *  Clearing the session is only half of leaving a view-as: the `?tenant=` param SELECTS
+ *  the view, so with it left in place App's own effect re-applied it on the very next
+ *  render and put the reader straight back. Owner, 2026-11-18: "clicking Return to my
+ *  account refuses to do so". It did not refuse — it returned and was immediately undone.
+ *
+ *  And `.catch(() => undefined)` meant a real failure (a 403, a dropped connection) looked
+ *  exactly like that: a button that does nothing, silently. Both halves now live in
+ *  `App.returnToMyAccount`, which owns the param as well as the session and reports what
+ *  goes wrong. */
+function ViewAsBanner({ user, onReturn }: { user: User; onReturn: () => void }) {
   if (!user.view) return null;
   return (
     <Notice tone="warn" icon={<Eye className="h-4 w-4" />} className="mb-5 items-center">
@@ -576,7 +597,7 @@ function ViewAsBanner({ user }: { user: User }) {
           Viewing <strong>{user.view.name || "another tenant"}</strong> as super_user — every page is scoped to this
           tenant. Cross-tenant analytics live in Settings → Analytics.
         </span>
-        <Button size="sm" onClick={() => viewAs(null).catch(() => undefined)}>Return to my account</Button>
+        <Button size="sm" onClick={onReturn}>Return to my account</Button>
       </div>
     </Notice>
   );

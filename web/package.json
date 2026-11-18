@@ -8,7 +8,7 @@
     "build": "node scripts/build-py-bundle.mjs && tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
-    "test": "node --test scripts/api-flows.test.mjs scripts/pipelines.test.mjs scripts/period.test.mjs scripts/pipeline-writes.test.mjs scripts/rfp-values.test.mjs",
+    "test": "node --test scripts/api-flows.test.mjs scripts/pipelines.test.mjs scripts/period.test.mjs scripts/pipeline-writes.test.mjs scripts/rfp-values.test.mjs scripts/view-as.test.mjs",
     "parity": "node scripts/parity/run-all.mjs"
   },
   "dependencies": {

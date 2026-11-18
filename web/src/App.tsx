@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { currentSession, fetchShell, me, onSessionChange, sessionVersion, signOut, viewAs, type Shell } from "./api";
 import { ActivatePage, ChoosePasswordGate, LoginScreen, PasswordResetPage, TokenScreen } from "./auth/AuthPages";
 import { navigate, PAGES, recordVisit, setParams, useLocation, type PageKey } from "./router";
@@ -18,6 +18,7 @@ import SearchPage from "./pages/SearchPage";
 import OrganizationPage from "./pages/OrganizationPage";
 import ProfilePage from "./pages/ProfilePage";
 import HelpPage from "./pages/HelpPage";
+import { viewAsUrlAction } from "./shell/viewAsUrl";
 import { EmptyState } from "./ui";
 
 export default function App() {
@@ -65,16 +66,61 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
 
   // ?tenant= — app_header._apply_tenant_url: for a super_user it SELECTS a view-as tenant;
   // for everyone else it only DESCRIBES the tenant being shown (an incoming value is ignored).
+  //
+  // WHY THERE IS A GUARD HERE (owner, 2026-11-18: "clicking Return to my account refuses to
+  // do so"). The URL param SELECTS the view, and "Return to my account" only cleared the
+  // SESSION. So the sequence was:
+  //
+  //   1. viewing chai-cameroon, URL ?tenant=chai-cameroon, user.view.slug = chai-cameroon
+  //   2. Return -> viewAs(null) -> session reissued with view = null
+  //   3. this effect re-runs: key is STILL chai-cameroon, and now it matches neither
+  //      user.view (null) nor user.tenant (the super's own), so every clause passes
+  //   4. viewAs("chai-cameroon") fires again and puts them straight back
+  //
+  // The server was never at fault — `routes_auth.viewAs` with an empty key returns a
+  // session with view null, correctly. The button worked; the URL undid it within the same
+  // tick, so from the outside it looked like the button did nothing at all.
+  //
+  // Streamlit does not have this problem because its handler deletes the query param in the
+  // same callback (`core/app_header.py:1200`, `del st.query_params["tenant"]`). Clearing it
+  // here is not enough on its own: the effect re-runs between the clear and the session
+  // update and re-stamps the slug of the view that is still set, which lands us back at
+  // step 3. So the INTENT has to outlive the round trip, and that is what this ref is.
+  // The decision itself is `shell/viewAsUrl.viewAsUrlAction`, a pure function with its own
+  // tests — this effect only carries it out.
   const key = params.get("tenant");
-  const shownSlug = user.view?.slug ?? user.tenant?.slug ?? null;
+  const leavingView = useRef(false);
   useEffect(() => {
-    if (user.role === "super_user" && key && key !== user.view?.slug && key !== user.view?.id &&
-      key !== user.tenant?.slug && key !== user.tenant?.id) {
-      viewAs(key).catch((e) => window.alert(e.message));
-      return;
+    const act = viewAsUrlAction({
+      role: user.role,
+      key,
+      viewSlug: user.view?.slug, viewId: user.view?.id,
+      tenantSlug: user.tenant?.slug, tenantId: user.tenant?.id,
+      leaving: leavingView.current,
+    });
+    if (act.do === "settled") leavingView.current = false;
+    else if (act.do === "clear") setParams({ tenant: null });
+    else if (act.do === "enter") viewAs(act.key).catch((e) => window.alert(e.message));
+    else setParams({ tenant: act.slug });
+  }, [key, user.role, user.view, user.tenant?.slug, user.tenant?.id]);
+
+  /** Leave a super_user view-as and go back to our own account.
+   *
+   *  Both halves, in this order, or the URL wins: raise the intent flag so the effect above
+   *  stops re-applying the stale param, THEN ask the server. The errors are not swallowed —
+   *  the old handler ended in `.catch(() => undefined)`, so a genuine failure and a
+   *  successful return that the URL immediately reversed looked identical from the outside.
+   */
+  const returnToMyAccount = useCallback(async () => {
+    leavingView.current = true;
+    try {
+      await viewAs(null);
+      setParams({ tenant: null });
+    } catch (e) {
+      leavingView.current = false;
+      window.alert(e instanceof Error ? e.message : "Couldn't return to your account.");
     }
-    setParams({ tenant: shownSlug });
-  }, [key, shownSlug, user.role, user.view?.slug, user.view?.id, user.tenant?.slug, user.tenant?.id]);
+  }, []);
 
   const shown: PageKey = page && !PAGES[page].public ? page : "home";
   // /login (or another public page) while signed in: Home is where they were going.
@@ -132,5 +178,9 @@ function SignedIn({ page, params }: { page: PageKey | null; params: URLSearchPar
   } else {
     body = <ClassicPage page={shown} classicUrl={classicUrl} />;
   }
-  return <Layout user={user} page={shown}>{body}</Layout>;
+  return (
+    <Layout user={user} page={shown} onReturnToMyAccount={() => void returnToMyAccount()}>
+      {body}
+    </Layout>
+  );
 }

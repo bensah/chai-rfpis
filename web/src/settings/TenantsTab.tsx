@@ -26,7 +26,8 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Ban, Building2, CheckCircle2, Link2, Search, ShieldAlert, Wrench,
 } from "lucide-react";
-import { fetchTenants, tenantAction, type TenantsData } from "../api";
+import { currentSession, fetchTenants, tenantAction, type TenantsData } from "../api";
+import { hrefOf, Link } from "../router";
 import { Badge, Button, Card, Eyebrow, Notice, Select, Spinner, fieldClass } from "../ui";
 
 const s = (v: unknown) => (v === null || v === undefined ? "" : String(v));
@@ -53,6 +54,12 @@ function Console({ blacklistedOnly }: { blacklistedOnly: boolean }) {
     .catch((e: unknown) =>
       setError(e instanceof Error ? e.message : "Couldn't load the organizations."));
   useEffect(() => { void load(); }, []);
+
+  // Only a super_user may enter a view-as; `data.canManage` is an admin flag and an
+  // admin of one tenant has no business opening another's. The server enforces this
+  // anyway (`routes_auth.viewAs` refuses a non-super with 403) — this only decides
+  // whether to offer a link that would be refused.
+  const canViewAs = currentSession()?.user.role === "super_user";
 
   const all = data?.tenants ?? [];
   const rows = useMemo(() => all.filter((t) => {
@@ -199,8 +206,32 @@ function Console({ blacklistedOnly }: { blacklistedOnly: boolean }) {
                       onChange={() => toggle(t.id)} />
                   </td>
                 )}
+                {/* THE NAME IS THE WAY IN (owner, 2026-11-18: "if i go to tenant settings
+                    and try to access any tenant via superuser, it will also work"). It was
+                    plain text here, so the only route into a view-as was typing ?tenant=
+                    into the address bar — while `views/account_sections.py:1252` has had
+                    the Organization name as the entry link all along.
+
+                    A link, not a button, and it carries ?tenant=<slug>: that is the
+                    selector App reads, so the entry is the same one a bookmark or a
+                    pasted URL uses rather than a second mechanism that can drift from it.
+                    It opens Home, because a view-as is scoped across every page and Home
+                    is where you would start reading a tenant.
+
+                    Shown only to a super_user — `canManage` is an admin flag and an admin
+                    of one tenant has no business entering another's. */}
                 <td className="px-3 py-2 font-medium text-ink-900">
-                  {t.name}
+                  {canViewAs && (t.slug || t.id)
+                    ? (
+                      <Link
+                        to={hrefOf("home", { tenant: t.slug ?? t.id })}
+                        className="text-accent-700 hover:underline"
+                        title={`Open ${t.name} as super_user`}
+                      >
+                        {t.name}
+                      </Link>
+                    )
+                    : t.name}
                   {t.kind === "individual" && (
                     <Badge tone="neutral" className="ml-2">personal</Badge>
                   )}

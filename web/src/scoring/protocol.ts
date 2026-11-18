@@ -91,6 +91,9 @@ export type Analysis = {
    *  over the criteria that could be determined, so 100 off two of them and 100 off all
    *  nine are the same number and a very different claim. */
   scoredOn?: { weight: number | null; n: number | null; of: number | null };
+  /** core.opportunity_scoring.FIT_STRONG_AT / FIT_FAIR_AT, so the page's band legend
+   *  states the rule rather than a retyped copy of it. */
+  fitBands?: { strongAt: number; fairAt: number };
   /** Set instead of everything above when scoring could not run at all. */
   error?: string;
 };
