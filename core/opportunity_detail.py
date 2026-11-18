@@ -530,9 +530,21 @@ def standard_view(kind: str, row: dict, extraction: dict | None = None) -> dict:
 _SECTIONS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
     ("Funding & awards", (
         ("Award range (per award)", "_award_range", "money_range"),
+        # These two came out of `_COVERAGE_FIELDS` and STAY ON THE PAGE, which is not a
+        # half-measure. Both are hand-editable — `views/rfp_editor.py:422` and its React
+        # twin offer "Total programme funding" and "Expected number of awards" as typed
+        # inputs — so dropping the rows would let a reviewer enter a figure the
+        # opportunity page then refuses to show them. `total_program_funding` is also the
+        # field that keeps a £12m PROGRAMME from reading as a £12m AWARD, which is the
+        # confusion the SRHR call demonstrated. Rare is a reason not to grade the
+        # pipeline on a field; it is not a reason to hide the value when it is there.
         ("Total programme funding", "total_program_funding", "money"),
         ("Expected number of awards", "expected_awards", "text"),
-        ("Funding tiers", "funding_tiers", "list"),
+        # "Funding tiers" was dropped with the measurement: 0.1% populated, nothing
+        # writes it but the LLM's staged-funding read, and nobody can type it. Where
+        # tiers ARE found, `core/extract.tiers_to_bounds` turns them into the award
+        # floor and ceiling, which the "Award range" row above already shows — so the
+        # information reaches the reader by the route that was always the useful one.
     )),
     ("Timeline", (
         ("Posted", "date_posted", "date"),
@@ -597,7 +609,9 @@ _TECHNICAL_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = 
         ("RFPIS uid", "uid", "text"),
         ("Opportunity ID", "opportunity_id", "text"),
         ("Opportunity number", "funding_opportunity_number", "text"),
-        ("Agency code", "agency_code", "text"),
+        # "Agency code" was dropped with the measurement — 0.9% of pages mention the
+        # concept, no row has ever carried one, and nothing can type it. It was a
+        # super_user row that could only ever print a dash.
         ("Source", "source", "text"),
         ("Source uid", "source_uid", "text"),
         ("Solicitation type (raw)", "solicitation_type", "text"),
@@ -1150,18 +1164,17 @@ def documents(view: dict) -> list[tuple[str, str, str]]:
 # (funding_status, the *_confidence pair, field_provenance).
 _COVERAGE_FIELDS = (
     # §4.1 identity & links
-    "opportunity_name", "opportunity_id", "opportunity_url", "apply_url",
+    "opportunity_name", "opportunity_id", "opportunity_url",
     "funding_opportunity_number",
     # §4.2 funder
-    "funder_name", "agency_code", "grantmaking_entity",
+    "funder_name",
     # §4.3 narrative
     "brief_description", "full_description", "applicant_fit_profile", "project_stages",
     # §4.4 eligibility
     "what_is_funded", "what_is_not_funded", "eligibility_applicant_types",
     "eligibility_countries", "eligibility_other",
     # §4.5 money
-    "grant_amount", "currency", "call_award_floor", "call_award_ceiling",
-    "total_program_funding", "expected_awards", "funding_tiers",
+    "grant_amount", "currency", "call_award_ceiling",
     # §4.6 dates & window
     "date_posted", "deadline", "funding_window", "expected_award_date", "time_to_award",
     "project_duration", "submission_format",
@@ -1172,6 +1185,37 @@ _COVERAGE_FIELDS = (
     "attachments", "resource_links",
     # §4.9 the audit copy — the fallback full read
     "raw_text",
+)
+
+# SEVEN FIELDS CAME OUT OF THE LIST ABOVE on 2026-11-18 (owner's decision), and the
+# reason is the one thing this constant is for: coverage is supposed to measure
+# EXTRACTION, and a field whose fact is not published cannot be extracted by anyone.
+# Measured over the 1517 catalogue rows that carry enough source text to judge
+# (`scripts/measure_extraction_coverage.py --availability`), these subjects appear on
+# almost no page at all:
+#
+#     agency_code            0.9%   a US-federal concept; funding_opportunity_number
+#                                   already carries the reference
+#     expected_awards        0.9%   funders publish a budget, not a count of awards
+#     total_program_funding  1.6%   published as the award figure, or not at all
+#     grantmaking_entity     2.8%   equals funder_name except in a pass-through grant
+#     call_award_floor       3.0%   calls publish a ceiling; a range is rare
+#     funding_tiers          5.6%   staged funding is real, for a small minority
+#     apply_url              never stored at all — "the button is a different shape on
+#                                   every portal", and apply_url() already falls back
+#                                   to the call page
+#
+# Together they were 17% of the schema, so the measurement was capped near 83% before
+# any extractor ran. Keeping them in meant grading the pipeline on facts funders do
+# not publish, which is how "extraction is poor" became impossible to act on.
+#
+# THEY ARE NOT DELETED. The columns stay, the extractors stay, and five of the seven
+# still render — see the note above `_SECTIONS` for which and why. A value read off a
+# call, or typed by a person, is worth showing whether or not it is common enough to
+# grade the pipeline by. What stopped is counting its absence against us.
+_REMOVED_FROM_COVERAGE = (
+    "apply_url", "agency_code", "grantmaking_entity", "total_program_funding",
+    "expected_awards", "call_award_floor", "funding_tiers",
 )
 
 

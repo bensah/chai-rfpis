@@ -45,22 +45,27 @@ const python = process.env.RFPIS_PYTHON
 
 // THE FLOOR, and why it is set where it is.
 //
-// Measured 2026-11-18 over 1687 live catalogue rows: 41.6% of the 41-field schema, 0 rows
-// at the owner's 80% bar. `scripts/backfill_field_extract.py` was applied the same day and
-// the measurement then read 48.3%, matching its dry run to a tenth of a point. The
-// deterministic pass also runs inside extraction, so new rows arrive with those fields.
+// Three readings on 2026-11-18, over the same 1687 live catalogue rows:
 //
-// The floor is a point under that, not at it. It is a REGRESSION guard rather than a
-// target: its job is to fail when a change stops filling fields, and a floor set exactly
-// at the current reading would go red on the ordinary churn of the catalogue — a week of
-// thin new rows moves the average without anything being wrong.
+//     41.6%   41-field schema, as found
+//     48.3%   after `scripts/backfill_field_extract.py --apply`
+//     57.8%   after the owner removed seven fields from the schema
 //
-// It is NOT the owner's 80%, and should not be raised towards it on principle. Seven of
-// the 41 fields name facts the sources do not publish (measured — see
-// `measure_extraction_coverage.py --availability` and docs/EXTRACTION_COVERAGE_REPORT.md),
-// which caps this number around 83% even if everything else were perfect. Raise the floor
-// when a change earns it, and say in the commit which change.
-const COVERAGE_FLOOR = 47.0;
+// The third is NOT a measurement improving — it is the measurement starting to mean
+// something. Those seven named facts the sources do not publish (`--availability`
+// measured each one's subject on under 6% of pages, `apply_url` on none), so they were a
+// standing 17% deduction no extractor could ever recover. 64 rows now clear 80%, where
+// none ever had.
+//
+// The floor is a point or two under the current reading, not at it. It is a REGRESSION
+// guard rather than a target: its job is to fail when a change stops FILLING fields, and
+// a floor set exactly at the reading would go red on the ordinary churn of the catalogue
+// — a week of thin new rows moves the average without anything being wrong.
+//
+// Raising it by removing more fields would be gaming it. The removals were justified by
+// `--availability` per field, not by this number; see docs/EXTRACTION_COVERAGE_REPORT.md.
+// Raise the floor when a change EARNS it, and say in the commit which change.
+const COVERAGE_FLOOR = 56.0;
 
 let diffs = 0, checks = 0;
 const ok = (label, cond, detail = "") => {
