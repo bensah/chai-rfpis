@@ -120,7 +120,13 @@ function Row({ label, value }: { label: string; value: string }) {
     // floating against nothing and values that started at a different place on every line.
     // Two aligned columns read as a table, which is what this is; the eye can run down
     // either side.
-    <div className="grid grid-cols-[minmax(0,5fr)_minmax(0,7fr)] items-baseline gap-x-4 py-1.5">
+    // `min-h-7` so a dash and a one-line value stand the same height. Without it a card's
+    // height tracked how much of it was FILLED, so the same section was a different size
+    // on every call and two cards beside each other rarely lined up — the owner's "ensure
+    // the full cards display even if data is not available ... whether data is empty or
+    // full, we have a fixed card view". A long value still wraps and still grows the row;
+    // what no longer varies is the floor.
+    <div className="grid min-h-7 grid-cols-[minmax(0,5fr)_minmax(0,7fr)] items-baseline gap-x-4 py-1.5">
       <dt className={`text-sm ${blank ? "text-ink-400" : "text-ink-500"}`}>{label}</dt>
       <dd className={`min-w-0 text-sm break-words ${
         blank ? "text-ink-300" : "font-medium text-ink-800"}`}>
@@ -213,6 +219,23 @@ export function OverviewCard({ heading, lines, missing, children }: {
  * Spacing is the grid's now, not the block's: no `mb-*` here, so two columns cannot drift
  * out of step with each other.
  */
+/**
+ * Does this block hold values too long to read in half a page?
+ *
+ * The owner, on "Scope & focus": it took "only have the page instead of flowing across so
+ * text content doesn't wrap and be choked up". That block carries three comma-separated
+ * lists — geographies, sectors, programme areas — and each ran to five or six wrapped
+ * lines inside a narrow column while the other half of the row sat empty.
+ *
+ * Measured from the block's own content rather than from its title, so a block that is
+ * wide on one call and short on another is laid out for what it actually holds. 90
+ * characters is roughly where a value stops fitting on two lines at half width.
+ */
+export function isWide(block: Block): boolean {
+  if (block.kind === "prose") return block.lines.join(" ").length > 220;
+  return block.rows.some(([, v]) => v.length > 90);
+}
+
 export function BlockView({ block }: { block: Block }) {
   if (block.kind === "prose") {
     return (
@@ -591,27 +614,34 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
         </OverviewCard>
       ))}
 
-      {/* ONE GRID WITH ONE GAP, instead of a separate grid per row.
+      {/* ONE FLAT GRID. Every block is an independent card, so they flow.
 
-          Each `page_rows` row used to be its own two-column grid, so a row whose columns
-          held different amounts of content left a ragged hole under the shorter one and
-          the next row began below the TALLER — cards stepped down the page out of
-          alignment with their neighbours. The server's pairing is still honoured (its
-          rows and columns are preserved in order), but the gap between blocks is now the
-          grid's single `gap-5` rather than each block's own margin, and `items-start`
-          keeps the two columns topped out together.
+          It was a separate two-column grid PER `page_rows` ROW, and a row whose two
+          columns held different amounts left a hole under the shorter one while the next
+          row waited for the taller — cards stepped down the page out of line with their
+          neighbours. Flattening removes the stepping entirely: a short card is followed
+          by the next card, not by the bottom of its row.
 
-          `h-full` on every block then makes the two cards in a row match height, so their
-          top AND bottom edges line up instead of only their tops. */}
-      {d.pageRows.map((row, i) => (
-        <div key={i} className="mb-5 grid items-start gap-5 md:grid-cols-2">
-          {row.map((col, j) => (
-            <div key={j} className="grid gap-5">
-              {col.map((b, k) => <BlockView key={k} block={b} />)}
-            </div>
-          ))}
-        </div>
-      ))}
+          THE COST, STATED: the server's column GROUPING is no longer honoured, only its
+          ORDER. `page_rows` decides which blocks sit beside which; this lays them out
+          left-to-right, top-to-bottom in that same sequence and lets the grid pack them.
+          That is a presentation decision taken here on purpose, because the grouping was
+          what produced the ragged gaps the owner reported.
+
+          A block whose values are too long for half a page takes the whole width — see
+          `isWide`. "Scope & focus" carries three comma-separated lists and was wrapping
+          to six lines in a narrow column with the other half of the row empty.
+
+          `grid-flow-row-dense` then backfills the gap a full-width block leaves behind
+          it: without it, the half-width block before a wide one sits alone with an empty
+          half-row beside it, which is the same wasted space in a new place. */}
+      <div className="mb-5 grid grid-flow-row-dense items-start gap-5 md:grid-cols-2">
+        {d.pageRows.flat(2).map((b, i) => (
+          <div key={i} className={isWide(b) ? "md:col-span-2" : undefined}>
+            <BlockView block={b} />
+          </div>
+        ))}
+      </div>
 
       <Section
         step="2" title="Decision aid"
