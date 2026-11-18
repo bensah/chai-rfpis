@@ -468,6 +468,7 @@ def ingest_candidates(
     # does not carry a spent counter into the next scan and silently stop synthesising.
     try:
         extraction.reset_scan_synthesis()
+        extraction.reset_thin_rows()
     except Exception:
         pass
 
@@ -1199,6 +1200,16 @@ def ingest_candidates(
             log.info("scan ingest: synthesised %d row(s) at scan time%s", _synth,
                      "  (per-scan ceiling reached — the rest is for the backfill)"
                      if _synth >= extraction._SCAN_SYNTH_MAX else "")
+        # HOW COMPLETE WERE THE ROWS THIS SCAN WROTE? Rows are made right on the
+        # way in now rather than repaired afterwards, so a scan that starts
+        # producing thin rows has to say so at the time — otherwise the only
+        # signal is a reviewer opening an empty page weeks later.
+        _thin, _scored = extraction.thin_rows()
+        if _scored:
+            log.info("scan ingest: %d of %d extracted row(s) landed below %.0f%% of "
+                     "the schema%s", _thin, _scored, extraction._THIN_FLOOR * 100,
+                     "" if not _thin else
+                     "  (each one is logged above with the fields it is missing)")
     except Exception:
         pass
     log.info(

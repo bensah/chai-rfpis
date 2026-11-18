@@ -300,8 +300,14 @@ _EXPECTED_OUTCOME_RE = re.compile(
 #: beginning September 2026 through September 30, 2028" stored 2028 as the award
 #: date — the date the project finishes.
 _AWARD_DATE_VETO = re.compile(
-    r"\bperiod of performance\b|\bthrough\b|\bend(?:s|ing)? (?:on|by)\b|"
-    r"\bcompletion date\b|\bstart (?:date|ing)\b|\bceremony\b|\bpresented on\b", re.I)
+    r"\bperiod of performance\b|\bend(?:s|ing)? (?:on|by)\b|"
+    r"\bcompletion date\b|\bstart (?:date|ing)\b|\bceremony\b|\bpresented on\b|"
+    # "…beginning September 2026 THROUGH September 30, 2028" — the end of the
+    # funded work. Only vetoes when `through` introduces a DATE: a bare \bthrough\b
+    # is one of the commonest words on a call page ("submitted through the online
+    # portal") and vetoed perfectly good award dates that merely sat near it.
+    r"\bthrough\s+(?:\d{1,2}[/.-]|\d{4}\b|(?:january|february|march|april|may|june|"
+    r"july|august|september|october|november|december)\b)", re.I)
 
 
 def _parse_date(frag: str) -> str | None:
