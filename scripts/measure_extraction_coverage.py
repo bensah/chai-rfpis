@@ -59,6 +59,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core import field_extract as fe  # noqa: E402
 from core import opportunity_detail as od  # noqa: E402
 from db.supabase_client import get_client  # noqa: E402
 
@@ -190,6 +191,57 @@ def _report(label: str, views: list[tuple[str, dict[str, Any]]],
     }
 
 
+def _availability() -> None:
+    """Is a blank field OUR gap, or a fact the funder never published?
+
+    The owner's rule for the schema is "where a data point is found to be
+    consistently unavailable across sources, propose removing it instead of
+    continuing to extract it — measure before proposing". Fill rate alone cannot
+    support that proposal: 0% is equally consistent with "nobody publishes this"
+    and with "we never wrote the extractor", and those call for opposite actions.
+
+    So for each field with a cue in `core.field_extract.AVAILABILITY_CUES` this
+    reports, over the rows that HAVE source text to judge by:
+
+        published   the source text mentions the subject at all
+        filled      we have a value
+        our gap     published and still blank  <- fix the extractor
+        unavailable not published anywhere     <- the removal argument
+
+    A field whose `published` rate is near zero across every source is the one to
+    propose removing. A field with a large "our gap" is an extraction bug wearing
+    the same 0%.
+    """
+    rows = _fetch_all("extracted_solicitations")
+    with_text = [r for r in rows if len(str(r.get("raw_text") or "").strip()) >= 200]
+    n = len(with_text)
+    print(f"\n== availability: {n} of {len(rows)} catalogue rows carry enough source "
+          f"text (>=200 chars) to judge")
+    print(f"\n   {'field':<30} {'published':>10} {'filled':>8} {'our gap':>9} {'unavail':>9}")
+    rank: list[tuple[float, str, str]] = []
+    for field in sorted(fe.AVAILABILITY_CUES):
+        pub = fil = gap = 0
+        for r in with_text:
+            p = fe.fact_is_published(field, r.get("raw_text"))
+            f_ok = not od._blank(r.get(field))
+            pub += bool(p)
+            fil += f_ok
+            gap += bool(p and not f_ok)
+        unavail = n - pub
+        print(f"   {field:<30} {pub / n * 100:9.1f}% {fil / n * 100:7.1f}% "
+              f"{gap / n * 100:8.1f}% {unavail / n * 100:8.1f}%")
+        rank.append((pub / n * 100, field, f"filled {fil / n * 100:.1f}%"))
+
+    print("\n   -- removal candidates: the subject is absent from almost every source --")
+    none_found = True
+    for pub_pct, field, note in sorted(rank):
+        if pub_pct < 10:
+            none_found = False
+            print(f"     {field:<30} mentioned on {pub_pct:.1f}% of rows with text, {note}")
+    if none_found:
+        print("     (none — every measured field's subject appears on at least 10% of rows)")
+
+
 def _compare(before: dict[str, Any], after: dict[str, Any]) -> None:
     for label in ("catalog", "pipeline"):
         b, a = before.get(label), after.get(label)
@@ -217,7 +269,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", metavar="PATH", help="write the full breakdown here")
     p.add_argument("--compare", metavar="PATH",
                    help="a --json file from an earlier run; print the deltas")
+    p.add_argument("--availability", action="store_true",
+                   help="is a blank field our gap, or a fact no funder publishes?")
     args = p.parse_args(argv)
+
+    if args.availability:
+        _availability()
+        return 0
 
     result: dict[str, Any] = {}
     if args.table in ("catalog", "both"):
