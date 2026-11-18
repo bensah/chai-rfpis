@@ -142,21 +142,40 @@ export default function PipelinePage({ user }: { user: User }) {
         lead="Every opportunity across its lifecycle — found and screened, decided, then tracked through the bid."
       />
 
-      {/* The common denominators, above the stages. The week picker only appears for the
-          stage that is keyed by a review week; the period drives the date-ranged ones. */}
-      <PeriodPicker
-        value={period}
-        onChange={pickPeriod}
-        right={stage === "screened" && weeks ? (
-          <label className="flex items-center gap-2 text-sm text-ink-600">
-            Review week
-            <Select value={week ?? weeks.defaultWeek} onChange={(e) => setWeek(e.target.value)}
-              className="w-auto py-1.5">
-              {weeks.weeks.map((w) => <option key={w} value={w}>{w}</option>)}
-            </Select>
-          </label>
-        ) : undefined}
-      />
+      {/* ONE CONTROL, AND IT IS THE ONE THAT WORKS HERE.
+
+          Screened is keyed by a review WEEK: `ScreenedStage` takes week/weeks/onPickWeek
+          and never reads `period` — grep it, the only hits are prose. So the period
+          picker that used to sit here on this stage drove nothing at all. A reader could
+          move the grain, step back a month, open the custom range, and watch the list not
+          change, which is a worse lie than any wording: the control was answering for a
+          filter that did not exist.
+
+          It was survivable while Screened had one list. It stopped being survivable when
+          the Triage section landed below (owner, 2026-11-18), because now there are two
+          lists under it and the obvious reading of an inert control is "it governs the
+          other one". The react-migration session's instinct was right — bind the control
+          to the block it governs — and the honest version of that is to show only the
+          control that governs something.
+
+          The other four stages are date-ranged and keep the picker, with defaultPeriodFor
+          and the pinning behind it untouched: a period chosen on Bidding still survives a
+          walk down the line and back. */}
+      {stage === "screened" ? (
+        weeks && (
+          <div className="mb-6 rounded-xl border border-ink-200 bg-white p-3 shadow-card">
+            <label className="flex items-center gap-2 text-sm text-ink-600">
+              Review week
+              <Select value={week ?? weeks.defaultWeek}
+                onChange={(e) => setWeek(e.target.value)} className="w-auto py-1.5">
+                {weeks.weeks.map((w) => <option key={w} value={w}>{w}</option>)}
+              </Select>
+            </label>
+          </div>
+        )
+      ) : (
+        <PeriodPicker value={period} onChange={pickPeriod} />
+      )}
 
       <StageLine
         stage={stage}
@@ -195,11 +214,11 @@ export default function PipelinePage({ user }: { user: User }) {
  * nobody has decided yet, and triage is the act of deciding. The block above it is that
  * work for the week the team is sitting down to; this is the same work with no week on it.
  *
- * THE SCOPE IS SAID TWICE, HERE AND IN THE BLOCK ABOVE, because the period picker at the
- * top of the page governs only that block. An all-time list under a week-scoped control is
- * exactly the arrangement a reader reports as a bug — "I set the week and the list below
- * ignored me" — so each list carries its own scope in its own heading, and this one says
- * what the control does not reach.
+ * THE SCOPE IS SAID TWICE, HERE AND IN THE BLOCK ABOVE, because the Review week control at
+ * the top of the stage governs only that block. An all-time list under a week-scoped
+ * control is exactly the arrangement a reader reports as a bug — "I set the week and the
+ * list below ignored me" — so each list carries its own scope in its own heading, and this
+ * one says what the control does not reach.
  *
  * It renders the SAME component the `/opportunities` key renders, with `embedded` to drop
  * the page heading. One list, two mount points: a change to what triage means cannot land
@@ -227,7 +246,7 @@ function TriageSection({ user }: { user: User }) {
     <section id="triage" className="mt-10 border-t border-ink-100 pt-8">
       <h2 className="text-lg font-bold text-brand-700">Triaged calls — full list</h2>
       <p className="mt-1 text-sm text-ink-600">
-        Every call, whichever week it was found in — the period above applies to the
+        Every call, whichever week it was found in — the Review week above applies to the
         screened block, not to this one. Pick a Dashboard figure to see the rows behind
         it, then narrow by funder, lead or text.
       </p>
