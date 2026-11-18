@@ -172,7 +172,13 @@ export default function ScreenedStage({ week, weeks, onPickWeek }: {
       <div className="mt-6 mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-brand-700">
-            Screened calls <span className="font-normal text-ink-500">({queue.length})</span>
+            {/* "this week" is in the heading because it stopped being the only list on
+                this stage: the Triage section below it is all-time, and the period
+                control at the top of the page belongs to this block, not that one
+                (owner, 2026-11-18). A reader seeing two lists needs the scope of each
+                where they are looking, not in a control above both. */}
+            Screened calls this week{" "}
+            <span className="font-normal text-ink-500">({queue.length})</span>
           </h2>
           {closedSince > 0 && (
             <p className="mt-0.5 text-xs text-ink-500">

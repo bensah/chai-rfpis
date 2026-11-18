@@ -118,21 +118,22 @@ export const PAGES: Record<PageKey, PageInfo> = {
   // and it is deliberately nowhere near a hide list.
   alerts: { title: "Alerts", icon: "🔔", rail: true },
   opportunity: { title: "Opportunity", icon: "🎯" },
-  // IN THE RAIL SINCE 2026-11-18, and the owner settled it: "Triage appears to be one of
-  // the most important parts of this app and yet it is hard to discover on navigating the
-  // app."
+  // NOT A PAGE OF ITS OWN ANY MORE (owner, 2026-11-18, the same day it reached the rail):
+  // "i don't think it needs to sit on a page of its own. it can sit under Pipeline >
+  // Screened". The list now renders as a section INSIDE the Screened stage, under that
+  // week's own block — see pages/PipelinePage.tsx.
   //
-  // It was reachable only by clicking a Dashboard figure — every tile and bar segment
-  // opens it with ?bucket=<figure>, which is the owner's earlier ask ("clicking 17
-  // Awaiting review opens the 17 listed"). That makes it the Dashboard's companion, not a
-  // page of its own, and a reader standing anywhere else had no way back to it. Reaching
-  // a page only by clicking a number is not discoverable; it is a page that exists if you
-  // already know it does.
+  // The entry stays here, without `rail`, because the KEY still has to resolve. Every
+  // Dashboard tile and bar segment links `hrefOf("opportunities", {bucket})`, and so does
+  // anything bookmarked since it existed; `App.tsx` renders the Pipeline page for this
+  // key, so those links land on the list in its new home instead of a "Page not found".
+  // Deleting the key would turn the owner's earlier "clicking 17 Awaiting review opens
+  // the 17 listed" back into a dead end.
   //
-  // It sits directly under Dashboard in the Workspace group, because the figure you came
-  // in through is the Dashboard's and the two are read together. See shell/Layout.tsx's
-  // GROUPS, which is what actually orders the rail.
-  opportunities: { title: "Triage", icon: "🗂", rail: true },
+  // The discoverability that put it in the rail on the 18th is not undone by this. It is
+  // reachable on purpose from Pipeline > Screened, which is where the work it belongs to
+  // already is; what changed is where it lives, not whether you can find it.
+  opportunities: { title: "Triage", icon: "🗂" },
   profile: { title: "Profile", icon: "👤" },
   help: { title: "Help", icon: "❓" },
   search: { title: "Search", icon: "🔍" },
