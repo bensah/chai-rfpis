@@ -16,7 +16,7 @@
  * second grid over the same rows. "Extracted Solicitations" is the global raw store, and
  * it is read-only because a scan is what writes it.
  */
-import { field, fieldClass, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Database, ExternalLink, Pencil, Save, Search, Trash2, X } from "lucide-react";
 import {
   deleteRecord, fetchRecords, saveRecord,

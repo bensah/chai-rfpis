@@ -11,7 +11,7 @@
  * notifications with an unread count, the account menu, the tenant identity,
  * the super_user view-as banner, breadcrumbs and the version footer.
  */
-import { field, fieldClass, type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import {
   Bell, ChevronsLeft, ChevronsRight, Eye, HelpCircle, LogOut, Menu, Search, Settings, User as UserIcon, X,
 } from "lucide-react";

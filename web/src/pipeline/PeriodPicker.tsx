@@ -6,7 +6,7 @@
  * a grain and stepping through it is the common case; the explicit range is there for the
  * questions a calendar grain cannot phrase ("the three weeks around the deadline").
  */
-import { field, useState } from "react";
+import { useState } from "react";
 import { CalendarRange, ChevronLeft, ChevronRight } from "lucide-react";
 import {
   atGrain, canGoForward, GRAINS, labelOf, periodOf, rangeOf, shift, today,

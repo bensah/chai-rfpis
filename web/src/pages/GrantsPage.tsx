@@ -15,7 +15,7 @@
  * rather than quietly picking one, because a reader who adds the by-funder column up and
  * compares it to the headline deserves to find out why they differ from the page itself.
  */
-import { field, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Briefcase, ChevronLeft, ChevronRight, ExternalLink, RotateCw, Search,
 } from "lucide-react";
