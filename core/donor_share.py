@@ -341,7 +341,7 @@ def donor_pdf(lines: list[str]) -> bytes:
     from reportlab.lib.units import cm
     from reportlab.lib.utils import ImageReader
     from reportlab.platypus import (
-        HRFlowable, Image, Paragraph, SimpleDocTemplate, Spacer,
+        HRFlowable, Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer,
     )
 
     def _safe(s: str) -> str:
@@ -397,10 +397,21 @@ def donor_pdf(lines: list[str]) -> bytes:
                            color=_colors.HexColor("#cbd5e1"), spaceAfter=8))
 
     # --- Donor intelligence body (from the share markdown lines) ---
+    #
+    # A "# " heading is a DONOR, and there is exactly one per profile. Several of them
+    # means a combined document, so each one after the first starts a new page: a profile
+    # that begins two thirds of the way down somebody else's last page cannot be printed,
+    # filed or handed to a colleague on its own, which is what a donor PDF is for. The
+    # FIRST is never preceded by a break, or every single-donor PDF would open on a blank
+    # page under the letterhead.
+    started = False
     for ln in lines:
         if not ln.strip():
             flow.append(Spacer(1, 4))
         elif ln.startswith("# "):
+            if started:
+                flow.append(PageBreak())
+            started = True
             flow.append(Paragraph(_inline(ln[2:]), h1))
         elif ln.startswith("- "):
             flow.append(Paragraph("&bull;&nbsp;" + _inline(ln[2:]), bullet))

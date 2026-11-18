@@ -331,6 +331,23 @@ class TestPdf(unittest.TestCase):
     def test_an_empty_document_still_renders(self):
         self.assertTrue(S.donor_pdf([]).startswith(b"%PDF"))
 
+    def test_one_donor_does_not_open_on_a_blank_page(self):
+        # The page break goes before every "# " EXCEPT the first. Breaking before the
+        # first would put an empty page under the letterhead of every single-donor PDF,
+        # which is the common case.
+        one = S.donor_pdf(["# Only Donor", "", "Overview", "- **Website:** https://x"])
+        self.assertEqual(one.count(b"/Type /Page\n"), 1, "a single profile is one page")
+
+    def test_each_donor_in_a_combined_pdf_starts_its_own_page(self):
+        # A profile that begins two thirds down somebody else's page cannot be printed,
+        # filed or handed over on its own, which is what a donor PDF is for.
+        three = S.donor_pdf([
+            "# First Donor", "", "Overview", "- **Website:** https://a", "",
+            "# Second Donor", "", "Overview", "- **Website:** https://b", "",
+            "# Third Donor", "", "Overview", "- **Website:** https://c",
+        ])
+        self.assertEqual(three.count(b"/Type /Page\n"), 3)
+
     def test_the_org_lookup_failing_does_not_fail_the_pdf(self):
         # get_org() is a database read and the only one in this module. A settings
         # outage must cost the letterhead, not the document.
