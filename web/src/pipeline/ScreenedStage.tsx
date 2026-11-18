@@ -22,8 +22,22 @@ import { Badge, Button, Card, EmptyState, Notice, Spinner, fieldClass } from "..
 
 const lower = (v: unknown) => String(v ?? "").trim().toLowerCase();
 
-/** screened_rfp.py's `_eff`: the human decision if there is one, else the engine's. */
-const effective = (r: ScreenRow) => lower(r.decision ?? r.auto_recommendation ?? "");
+/**
+ * screened_rfp.py's `_eff`: the human decision if there is one, else the engine's.
+ *
+ * A BLANK DECISION IS NO DECISION, and `??` does not know that. It was
+ * `r.decision ?? r.auto_recommendation`, which falls through only on null/undefined — so
+ * a row whose `decision` is the EMPTY STRING returned "" and the engine's recommendation
+ * was never consulted. Both spellings are in this table: `routes_pipelines.ts` selects
+ * `decision=not.is.null` and then filters again with `str(r.decision).trim() !== ""`,
+ * which is a filter that only exists because the first one lets blanks through.
+ *
+ * Everything on this stage reads through here — the three KPI counts, the ordering and
+ * now the list itself — so on such a row the screen showed no verdict at all while the
+ * footer promised "a decision nobody has made yet shows the engine's recommendation".
+ */
+const effective = (r: ScreenRow) =>
+  lower(r.decision).trim() || lower(r.auto_recommendation).trim();
 const isProceed = (d: string) => d.startsWith("proceed");
 
 export default function ScreenedStage({ week, weeks, onPickWeek }: {
