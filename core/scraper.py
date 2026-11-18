@@ -2613,18 +2613,126 @@ def _scan_ocds(name: str, url: str, *, notice_base: str, geo: str
             continue
         rid = _clean(rel.get("id") or rel.get("ocid") or "")
         tp = t.get("tenderPeriod") or {}
-        out.append({
+        body = _ocds_body(t)
+        amount, currency = _ocds_value(t)
+        cand = {
             "opportunity_title": title,
             "opportunity_link": f"{notice_base}{rid}" if rid else notice_base,
             "opportunity_id": _clean(rel.get("ocid") or ""),
             "funding_agency": _clean((rel.get("buyer") or {}).get("name") or "") or name,
             "brief_description": _clean(t.get("description") or "")[:1800] or None,
+            # THE FIELD THAT ACTUALLY REACHES THE STORE. `brief_description` on a
+            # candidate reaches nothing downstream: `extract.build_record` takes
+            # `_page_text` and writes it as `raw_text`, which is what synthesis and
+            # every extractor read. This handler has fetched a description since it
+            # was written and never put it where it would be used — the same trap
+            # the grants.gov and TED handlers were in.
+            "_page_text": (body or None) and body[:20000],
             "date_posted": _parse_iso_date(str(rel.get("date") or "")[:10]),
             "call_submission_deadline": _parse_iso_date(str(tp.get("endDate") or "")[:10]),
+            "call_award_value": amount,
+            "currency": currency,
+            "project_duration": _ocds_duration(t),
+            "submission_format": _clean(t.get("submissionMethodDetails") or "")[:600] or None,
+            "eligibility_other": _clean(t.get("eligibilityCriteria") or "")[:2000] or None,
             "call_geographic_scope": [geo],
             "_source_origin": name,
-        })
+        }
+        out.append({k: v for k, v in cand.items() if v is not None})
     return _dedup_by_link_or_title(out)
+
+
+def _ocds_body(tender: dict[str, Any]) -> str:
+    """The notice as readable text, assembled from the OCDS fields that carry prose.
+
+    A UK notice spreads its substance across several places and the top-level
+    `description` is often one sentence. Find a Tender puts the real content under
+    `lots[].awardCriteria.criteria[].description`; both services carry how-to-bid
+    detail in `submissionMethodDetails`. Pulling them together is what gives the
+    extractors and the synthesis something to work from — measured before this,
+    Contracts Finder rows held a median of 1,262 characters, most of it scraped
+    page furniture rather than the notice.
+
+    Labelled sections rather than a blob: the text is read by a model and by a
+    human on the opportunity page, and "How to submit" above the portal details
+    is the difference between a record and a paste.
+    """
+    parts: list[str] = []
+
+    def _add(label: str, value: Any, limit: int = 6000) -> None:
+        text = _clean(str(value or ""))
+        if text and text.lower() not in ("not specified", "not published", "n/a"):
+            parts.append(f"{label}{text[:limit]}" if label else text[:limit])
+
+    _add("", tender.get("description"))
+    for lot in (tender.get("lots") or [])[:6]:
+        if not isinstance(lot, dict):
+            continue
+        _add("", lot.get("description"), 3000)
+        for crit in ((lot.get("awardCriteria") or {}).get("criteria") or [])[:6]:
+            if isinstance(crit, dict):
+                name = _clean(str(crit.get("name") or ""))
+                _add(f"Award criterion — {name}: " if name else "",
+                     crit.get("description"), 1500)
+    _add("Eligibility: ", tender.get("eligibilityCriteria"), 2500)
+    _add("How to submit: ", tender.get("submissionMethodDetails"), 1500)
+    _add("Procedure: ", tender.get("procurementMethodDetails"), 300)
+
+    # `suitability` is a pair of booleans, and only a TRUE one says anything —
+    # {"sme": false, "vcse": false} is the default on most Contracts Finder
+    # notices and means "not stated", not "these may not apply".
+    suit = tender.get("suitability")
+    if isinstance(suit, dict):
+        flags = [n for n, k in (("small and medium enterprises", "sme"),
+                                ("voluntary, community and social enterprises", "vcse"))
+                 if suit.get(k) is True]
+        if flags:
+            parts.append("Suitable for: " + "; ".join(flags) + ".")
+
+    for doc in (tender.get("documents") or [])[:10]:
+        if not isinstance(doc, dict):
+            continue
+        url = _clean(str(doc.get("url") or doc.get("accessDetails") or ""))
+        desc = _clean(str(doc.get("description") or doc.get("documentType") or ""))
+        if url and desc.lower() != "not published":
+            parts.append(f"{desc}: {url}" if desc else url)
+    return "\n\n".join(p for p in parts if p).strip()
+
+
+def _ocds_value(tender: dict[str, Any]) -> tuple[float | None, str | None]:
+    """(contract value, currency) from `tender.value`, falling back to the lots.
+
+    `amount` is the net figure and `amountGross` includes VAT; the net one is what
+    a bidder prices against, so it is preferred where both are published.
+    """
+    sources = [tender.get("value")]
+    sources += [lot.get("value") for lot in (tender.get("lots") or [])
+                if isinstance(lot, dict)]
+    for value in sources:
+        if not isinstance(value, dict):
+            continue
+        amount = _coerce_money(value.get("amount") or value.get("amountGross"))
+        if amount is not None:
+            return amount, _clean(str(value.get("currency") or "")) or None
+    return None, None
+
+
+def _ocds_duration(tender: dict[str, Any]) -> int | None:
+    """Contract length in whole months, from `contractPeriod`.
+
+    Populated on 99 of 100 Contracts Finder releases and on none of the Find a
+    Tender ones, which is exactly why it is read here rather than left to the text
+    patterns: where the funder publishes the dates there is nothing to infer.
+    """
+    period = tender.get("contractPeriod")
+    if not isinstance(period, dict):
+        return None
+    start = _parse_iso_date(str(period.get("startDate") or "")[:10])
+    end = _parse_iso_date(str(period.get("endDate") or "")[:10])
+    if not start or not end or end <= start:
+        return None
+    months = round((end - start).days / 30.44)
+    return months if 1 <= months <= 120 else None
 
 
 def _scan_ted(name: str, url: str) -> list[dict[str, Any]]:
@@ -2810,6 +2918,18 @@ _UNGM_DOC_RE = re.compile(
 _UNGM_PRIMARY_HINT = re.compile(
     r'\b(rfp|rfq|rfi|itb|eoi|request\s+for|tender|proposal|solicitation|bid|notice)\b', re.I)
 _UNGM_TERMS_HINT = re.compile(r'\b(general\s+terms|terms\s+and\s+conditions|conditions)\b', re.I)
+#: Attachments that are the same on every notice. Folding one of these in as the
+#: call text tells a reviewer nothing and makes a thin row look substantial, so
+#: they are removed from consideration before a primary document is chosen.
+#: Matched on the FILENAME, which is where UN agencies are consistent even when
+#: the document's own first page is not.
+_UNGM_BOILERPLATE = re.compile(
+    r"bidder'?s?[_\s-]*instruction|instructions?[_\s-]*to[_\s-]*bidders?|"
+    r"general[_\s-]*(?:condition|term|provision)|terms[_\s-]*and[_\s-]*conditions|"
+    r"code[_\s-]*of[_\s-]*conduct|supplier[_\s-]*(?:registration|code)|"
+    r"ungm[_\s-]*(?:guide|registration|instruction)|how[_\s-]*to[_\s-]*(?:register|access)|"
+    r"privacy|data[_\s-]*protection|anti[_\s-]*fraud|vendor[_\s-]*form|"
+    r"sanctions?[_\s-]*list", re.I)
 # Enrichment is a per-notice fetch (+ PDF downloads), so bound it to the newest N.
 _UNGM_DETAIL_CAP = 40
 
@@ -2894,10 +3014,25 @@ def _enrich_ungm_notice(nid: str, cand: dict[str, Any]) -> None:
             cand["_unspsc"] = unspsc
         # Scan the primary RFP + a General-Terms PDF (bounded) into the call text so the
         # downstream LLM/regex extractor reads the REAL call, not just the listing title.
-        pdfs = [d for d in docs if d["name"].lower().endswith(".pdf")]
+        pdfs = [d for d in docs if d["name"].lower().endswith(".pdf")
+                and not _UNGM_BOILERPLATE.search(d["name"])]
         primary = [d for d in pdfs if _UNGM_PRIMARY_HINT.search(d["name"])][:1]
         terms = [d for d in pdfs if _UNGM_TERMS_HINT.search(d["name"]) and d not in primary][:1]
-        pick = (primary + terms) or pdfs[:1]
+        # NO BLIND FALLBACK TO "WHATEVER PDF IS FIRST".
+        #
+        # `pick = (primary + terms) or pdfs[:1]` meant that when no attachment
+        # looked like the call, we folded in the first one anyway — and the first
+        # attachment on a UN notice is almost always the generic pack every notice
+        # carries. Measured over the 184 live UNGM rows: 99 have a `raw_text` that
+        # STARTS with an attachment marker and 57 name a boilerplate document in
+        # their first 200 characters, which is why "BIDDERS' INSTRUCTIONS ON HOW
+        # TO ACCESS FAO TENDER DOCUMENTS" is the opening line of so many of them.
+        #
+        # That text is worse than nothing. It is identical across notices, so it
+        # tells a reviewer nothing, it pushes the row over the length thresholds
+        # that decide whether anything is wrong, and the synthesis then spends a
+        # model call summarising a form. An empty body is at least true.
+        pick = primary + terms
         texts = []
         # UNGM's DownloadDocument requires a Referer (the notice page) or it returns 0 bytes.
         _dl_hdrs = {"User-Agent": USER_AGENT,
@@ -2914,8 +3049,18 @@ def _enrich_ungm_notice(nid: str, cand: dict[str, Any]) -> None:
         if texts:
             extra = _clean(" ".join(texts))
             cand["_page_text"] = _clean(((cand.get("_page_text") or "") + " " + extra))[:12000]
-            if not cand.get("brief_description"):
-                cand["brief_description"] = extra[:1800]
+            # `brief_description` IS NOT A PLACE TO PUT ATTACHMENT TEXT.
+            #
+            # This used to drop the first 1800 characters of the PDF straight in,
+            # which is precisely what `core/extract.py` forbids: that column holds
+            # the clean org-neutral synthesis and "NEVER the raw attachment text
+            # ('[General_conditions.pdf] GENERAL CONDITIONS OF CONTRACT…')". The
+            # rule was written about this exact string and the writer that
+            # produced it was two files away.
+            #
+            # The text is still kept, in `_page_text`, where it belongs: it is
+            # grounding material for the extractors and the synthesis, not prose
+            # for a reviewer to read.
     except Exception as exc:
         log.debug("ungm enrich parse %s failed: %s", nid, exc)
 
