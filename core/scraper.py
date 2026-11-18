@@ -2106,6 +2106,13 @@ def _scan_grants_gov(name: str, url: str) -> list[dict[str, Any]]:
             elig_text = re.sub(r"<[^>]+>", " ", elig_text)
             elig_text = re.sub(r"\s+", " ", elig_text).strip()
             notes_parts.append("Eligibility detail: " + elig_text)
+            # …and into the SCHEMA field it belongs to. `notes` is free text nothing
+            # reads structurally, so the funder's own statement of who may apply —
+            # the single most useful eligibility sentence grants.gov publishes —
+            # reached no column and the opportunity page's "Other conditions" row
+            # sat empty beside it. `extract.build_record` prefers a handler value
+            # here over the synthesised one, because this IS the funder's wording.
+            cand["eligibility_other"] = elig_text[:2000]
             # SAFE US-only drop: only when the eligibility text EXPLICITLY
             # restricts to US/domestic applicants (and doesn't also welcome
             # foreign/international ones). Cuts the HRSA/CDC-domestic noise

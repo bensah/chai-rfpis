@@ -108,6 +108,28 @@ def _amount_val(v) -> float | None:
     return f if f > 0 else None
 
 
+def _expected_awards(candidate: dict[str, Any]) -> str | None:
+    """`expected_awards` off a handler, as the TEXT the column stores.
+
+    The column is text because a call states a range ("3-5 awards") as often as a
+    number, but a structured API returns an integer — grants.gov `numberOfAwards`
+    — and `scraper._scan_grants_gov` sets it as one. Writing the int straight in
+    would store `5` on a text column in some drivers and `"5"` in others; coercing
+    here keeps one shape. 0 and negatives are "not stated", not "no awards".
+    """
+    v = candidate.get("expected_awards")
+    if v in (None, "") or isinstance(v, bool):
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        n = int(float(s))
+    except (TypeError, ValueError):
+        return s            # already a range or a phrase — store it as published
+    return str(n) if n > 0 else None
+
+
 def _amount_grounded(amount, text: str) -> bool:
     """True if `amount` (±1%) matches a real money expression in the text."""
     if amount in (None, 0, "0", ""):
@@ -463,8 +485,27 @@ def build_record(candidate: dict[str, Any], policies: dict[str, Any], *,
         "grant_amount": g_amt if g_amt else _syn_amount,
         "project_duration": _syn_duration or None,
         "currency": g_cur,
-        "call_award_floor": floor,
-        "call_award_ceiling": ceil,
+        # A HANDLER-READ FIGURE WINS, as it already does for `call_award_value` above.
+        #
+        # These four are published as STRUCTURED JSON by the source APIs this repo
+        # already calls — grants.gov `fetchOpportunity` returns awardFloor,
+        # awardCeiling, estimatedFunding and numberOfAwards, and
+        # `scraper._scan_grants_gov` maps all four onto the candidate. They then
+        # reached no column: `total_program_funding` and `expected_awards` appeared
+        # NOWHERE in this file, and the two award bounds were built only from the
+        # LLM's `funding_tiers` or a synthesised range. So a figure read exactly off
+        # the funder's own API was dropped in favour of nothing at all.
+        #
+        # Measured 2026-11-19 over the 469 live grants.gov rows, every one of which
+        # went through that handler: total_program_funding 0, call_award_floor 1,
+        # call_award_ceiling 3, expected_awards 2. The data was always there.
+        #
+        # Order is deliberate: handler first (it read the funder's own JSON), then the
+        # tier/synthesis derivation, which is an inference from prose.
+        "call_award_floor": _amount_val(candidate.get("call_award_floor")) or floor,
+        "call_award_ceiling": _amount_val(candidate.get("call_award_ceiling")) or ceil,
+        "total_program_funding": _amount_val(candidate.get("total_program_funding")),
+        "expected_awards": _expected_awards(candidate),
         "funding_tiers": tiers,
         "deadline": d_val,
         "deadline_confidence": d_conf,
@@ -476,8 +517,14 @@ def build_record(candidate: dict[str, Any], policies: dict[str, Any], *,
         "brief_description": _store_brief,
         # Schema §4.3-§4.6 fields the synthesis produces (see the note above).
         "call_domain_areas": _syn_areas or None,
-        "eligibility_other": _syn_text("eligibility_specifics",
-                                       "compliance_requirements"),
+        # Handler first again: a source API that publishes the funder's own
+        # eligibility wording (grants.gov `applicantEligibilityDesc`) beats a model's
+        # summary of the same page, because it IS the page. The synthesis fills the
+        # blank when no handler supplied one.
+        "eligibility_other": (str(candidate.get("eligibility_other")).strip()
+                              if str(candidate.get("eligibility_other") or "").strip()
+                              else _syn_text("eligibility_specifics",
+                                             "compliance_requirements")),
         "submission_format": _syn_text("how_to_apply"),
         "raw_text": (text or None) and str(text)[:20000],
         "content_hash": hashlib.sha1(blob.encode("utf-8")).hexdigest(),
