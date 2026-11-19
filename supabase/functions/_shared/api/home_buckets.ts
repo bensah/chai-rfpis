@@ -54,11 +54,32 @@ const asDate = (v: unknown): string | null => {
  *  times it was actually sent, so the figure can exceed the number of rows behind it. */
 export type BucketKind = "rows" | "applications";
 
+/**
+ * The parent heading a figure files under, and the order those headings read in.
+ *
+ * FOURTEEN FIGURES IS TOO MANY TO SCAN AS ONE ROW, which is what Triage showed until now.
+ * They are not fourteen unrelated things, though: they answer three different questions —
+ * what WE decided, what the FUNDER said, and what the CALENDAR says — and a reader
+ * arriving at the page is already holding one of those questions.
+ *
+ * The order here is the order the headings appear, and it is deliberately NOT the order of
+ * `BUCKETS` below. That one is the Dashboard's tile order and moving it would rearrange
+ * the Dashboard; this is a grouping OF that order, so the two can differ without either
+ * being re-expressed.
+ */
+export type BucketGroup = "All calls" | "Our review" | "With a funder" | "By deadline";
+
+export const BUCKET_GROUPS: BucketGroup[] = [
+  "All calls", "Our review", "With a funder", "By deadline",
+];
+
 export type Bucket = {
   key: string;
   /** What the Dashboard calls it, so the list can say what it is showing. */
   label: string;
   kind: BucketKind;
+  /** Which question this figure answers — the heading it files under on Triage. */
+  group: BucketGroup;
   /** One line a reader can check the selection against. */
   rule: string;
   select: (rows: Json[], today: string) => Json[];
@@ -75,6 +96,7 @@ export type Bucket = {
 export const BUCKETS: Bucket[] = [
   {
     key: "found", label: "Calls found", kind: "rows",
+    group: "All calls",
     rule: "Every call that is not a duplicate of another.",
     select: (rows) => rows.filter(notDuplicate),
   },
@@ -85,12 +107,14 @@ export const BUCKETS: Bucket[] = [
     // for one that cannot be acted on. It moves to `expired_unreviewed` instead, so the
     // count of what was never looked at is still there to be read — just not as a prompt.
     key: "awaiting_review", label: "Awaiting review", kind: "rows",
+    group: "Our review",
     rule: "Still open, and nobody has recorded a decision yet.",
     select: (rows, today) => rows.filter((r) =>
       notDuplicate(r) && norm(r.decision) === "" && !deadlinePassed(r, today)),
   },
   {
     key: "expired_unreviewed", label: "Expired unreviewed", kind: "rows",
+    group: "Our review",
     rule: "The deadline passed before anybody decided. Nothing to do, but worth knowing.",
     select: (rows, today) => rows.filter((r) =>
       notDuplicate(r) && norm(r.decision) === "" && deadlinePassed(r, today)),
@@ -111,11 +135,13 @@ export const BUCKETS: Bucket[] = [
      * A call with no deadline is never archived: see `deadlinePassed`.
      */
     key: "archived", label: "Archived", kind: "rows",
+    group: "By deadline",
     rule: "The call's deadline has passed. Kept for the record; no longer asking for a decision.",
     select: (rows, today) => rows.filter((r) => notDuplicate(r) && deadlinePassed(r, today)),
   },
   {
     key: "reviewed", label: "Reviewed", kind: "rows",
+    group: "Our review",
     rule: "A person has recorded a decision — proceed, park or decline.",
     select: (rows) => rows.filter((r) => notDuplicate(r) && norm(r.decision) !== ""),
   },
@@ -123,16 +149,19 @@ export const BUCKETS: Bucket[] = [
     // Prefix, not equality: "Proceed as sub" is proceeding. views/tracking_rfp.py filters
     // the same way, and the Screened stage matches by prefix for the same reason.
     key: "proceed", label: "Proceed", kind: "rows",
+    group: "Our review",
     rule: "The team decided to bid, including as a sub-applicant.",
     select: (rows) => rows.filter((r) => notDuplicate(r) && norm(r.decision).startsWith("proceed")),
   },
   {
     key: "parked", label: "Parked", kind: "rows",
+    group: "Our review",
     rule: "Set aside — not pursued now, not ruled out.",
     select: (rows) => rows.filter((r) => notDuplicate(r) && norm(r.decision) === "park"),
   },
   {
     key: "declined", label: "Declined", kind: "rows",
+    group: "Our review",
     rule: "The team decided not to bid.",
     select: (rows) => rows.filter((r) => notDuplicate(r) && norm(r.decision) === "decline"),
   },
@@ -141,6 +170,7 @@ export const BUCKETS: Bucket[] = [
     // is `liveProceeds` and not every row whose decision reads Proceed: a call already
     // with the funder, discontinued, or duplicated needs no action before its deadline.
     key: "due_in_14_days", label: "Due in 14 days", kind: "rows",
+    group: "By deadline",
     rule: "A live bid whose deadline falls within the next fortnight.",
     select: (rows, today) => {
       const soon = new Date(Date.parse(today) + 14 * 86400_000).toISOString().slice(0, 10);
@@ -155,21 +185,25 @@ export const BUCKETS: Bucket[] = [
   },
   {
     key: "applications_sent", label: "Applications sent", kind: "applications",
+    group: "With a funder",
     rule: "Everything that reached a funder, whether or not they have answered.",
     select: (rows) => [...selectSubmittedRows(rows), ...selectOutcomeRows(rows)],
   },
   {
     key: "awaiting_answer", label: "Awaiting answer", kind: "applications",
+    group: "With a funder",
     rule: "With a funder, who has not yet approved or declined it.",
     select: (rows) => selectSubmittedRows(rows),
   },
   {
     key: "approved", label: "Approved", kind: "applications",
+    group: "With a funder",
     rule: "The funder said yes.",
     select: (rows) => selectOutcomeRows(rows).filter((r) => norm(r.donor_decision) === "approved"),
   },
   {
     key: "not_approved", label: "Not approved", kind: "applications",
+    group: "With a funder",
     rule: "The funder said no.",
     select: (rows) => selectOutcomeRows(rows).filter((r) => norm(r.donor_decision) === "not approved"),
   },
@@ -178,6 +212,7 @@ export const BUCKETS: Bucket[] = [
     // Completed weighs zero applications, so the bars do not add up and the reason is
     // this. The list is how somebody fixes it.
     key: "ledger_gap", label: "Answered but not counted", kind: "rows",
+    group: "With a funder",
     rule: "A funder has answered, but progress never reached Completed, so it weighs " +
       "nothing in the application figures.",
     select: (rows) => ledgerGap(selectOutcomeRows(rows) as never[]) as Json[],

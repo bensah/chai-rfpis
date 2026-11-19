@@ -1007,7 +1007,11 @@ def render_org_setup(user, sb, tenant_id=None):
                     "Code": c.get("code") or "",
                     "Label": c.get("label") or "",
                     "Symbol": c.get("symbol") or "",
-                    "Aliases": ", ".join(c.get("donor_aliases") or []),
+                    # `aliases` is the key the YAML, the stored currencies_json and
+                    # the TypeScript port all use; `donor_aliases` is what this
+                    # editor used to write, so it is read as a fallback until those
+                    # rows are re-saved. See core/dropdowns.currency_aliases.
+                    "Aliases": ", ".join(_d.currency_aliases(c)),
                     "USD rate": float(c.get("usd_rate") or 1.0),
                 }
                 for c in cur_list
@@ -1039,7 +1043,7 @@ def render_org_setup(user, sb, tenant_id=None):
                         "code": code,
                         "label": (row.get("Label") or code).strip() or code,
                         "symbol": (row.get("Symbol") or None) or None,
-                        "donor_aliases": aliases,
+                        "aliases": aliases,
                         "usd_rate": float(row.get("USD rate") or 1.0),
                     })
                 settings.set_currency_overrides(new_list, updated_by=user.get("email"))

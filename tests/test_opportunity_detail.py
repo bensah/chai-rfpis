@@ -285,15 +285,20 @@ class TestTheStandardLayout(unittest.TestCase):
         # compare two calls by eye. A dash is a statement; a missing row is ambiguous.
         v = od.standard_view(od.KIND_PIPELINE, PIPELINE_ROW, None)
         flat = _flat(v)
-        self.assertEqual(flat["Expected award date"], od.MISSING)   # not on the row
+        # Was asked of "Expected award date", which left the layout on 2026-11-18 (owner:
+        # it "has never picked up any data"). The same question, asked of another row this
+        # fixture is silent on.
+        self.assertEqual(flat["Posted"], od.MISSING)                # not on the row
         self.assertEqual(flat["Institution types accepted"], od.MISSING)
         self.assertNotIn("Key risks", flat)      # tenant-specific, in the decision aid
 
     def test_a_serialised_empty_collection_still_counts_as_blank(self):
         # The jsonb columns arrive as the literal "[]" — which must read as a dash, never as
-        # a value. That detection is what this test has always been about.
+        # a value. That detection is what this test has always been about. It used to be
+        # asked of "Funding tiers"; that row left the layout on 2026-11-18, so the same
+        # question is asked of another jsonb row that is still on the page.
         v = od.standard_view(od.KIND_CATALOG, CATALOG_ROW, CATALOG_ROW)
-        self.assertEqual(_flat(v)["Funding tiers"], od.MISSING)
+        self.assertEqual(_flat(v)["Project stages"], od.MISSING)
 
     def test_placeholder_strings_count_as_blank(self):
         v = {"funder_name": "Not stated", "instrument_type": "n/a",
@@ -758,8 +763,40 @@ class TestCoverageDoesNotFollowTheLayout(unittest.TestCase):
         _f, _t, missing = od.coverage({"opportunity_name": "T"})
         # full_description has NO writer anywhere in the codebase — it must show as a gap.
         for f in ("full_description", "what_is_funded", "eligibility_countries",
-                  "applicant_fit_profile", "attachments", "apply_url"):
+                  "applicant_fit_profile", "attachments"):
             self.assertIn(f, missing)
+
+    def test_a_fact_the_sources_do_not_publish_is_not_counted_against_us(self):
+        """The 2026-11-18 removal. Coverage measures EXTRACTION, and a fact that is not
+        published cannot be extracted by anyone — measured at under 6% of catalogue
+        rows that have source text to judge by, `apply_url` at none at all. Counting
+        them capped the measurement near 83% before any extractor ran."""
+        for f in od._REMOVED_FROM_COVERAGE:
+            with self.subTest(field=f):
+                self.assertNotIn(f, od._COVERAGE_FIELDS)
+
+    def test_removing_a_field_from_coverage_does_not_hide_its_value(self):
+        """Five of the seven still render, and two of those are typed by hand in the RFP
+        editor — hiding them would let a reviewer enter a figure the page refuses to
+        show back. Rare is a reason not to GRADE the pipeline on a field."""
+        labels = {label for _title, rows in od._SECTIONS for label, _f, _k in rows}
+        self.assertIn("Total programme funding", labels)
+        self.assertIn("Expected number of awards", labels)
+        # The award range still shows the floor when a call publishes one, which is
+        # what keeps `call_award_floor` worth extracting after it left the measurement.
+        self.assertIn("Award range (per award)", labels)
+        v = {"call_award_floor": 100000, "call_award_ceiling": 500000, "currency": "USD"}
+        self.assertEqual(od.award_range_bounds(v), (100000.0, 500000.0))
+        self.assertIn("100,000", od.format_money_range(100000, 500000, "USD"))
+
+    def test_the_two_fields_nobody_can_type_left_the_layout_too(self):
+        """`funding_tiers` (0.1% populated, LLM-only) and `agency_code` (never populated,
+        a super_user row that could only print a dash). Where tiers ARE found,
+        `extract.tiers_to_bounds` turns them into the award range, which still renders."""
+        labels = {label for _t, rows in od._SECTIONS for label, _f, _k in rows}
+        labels |= {label for _t, rows in od._TECHNICAL_SECTIONS for label, _f, _k in rows}
+        self.assertNotIn("Funding tiers", labels)
+        self.assertNotIn("Agency code", labels)
 
     def test_no_layout_only_pseudo_field_leaks_into_the_count(self):
         for f in od._COVERAGE_FIELDS:
@@ -846,8 +883,14 @@ class TestTheFullSchemaIsAlwaysOnScreen(unittest.TestCase):
     def test_every_tracked_field_appears(self):
         flat = _flat(self.THIN)
         for label in ("Total programme funding", "Expected number of awards",
-                      "Funding tiers", "Posted", "Status", "Window",
-                      "Expected award date", "Time to award",
+                      "Posted", "Status", "Window",
+                      # "Expected award date" and "Time to award" were here until
+                      # 2026-11-18. They are the exception this class's own docstring
+                      # allows for: a dash carries information only where the funder COULD
+                      # have stated the fact, and measured availability for a published
+                      # decision date across the catalogue is 0.0%. Two rows that print a
+                      # dash on every call are not comparability, they are furniture.
+                      # The columns and both editors are untouched.
                       # the call's OWN eligibility, in its own section
                       "Institution types accepted", "Eligible countries (applicants)",
                       "Other conditions",
@@ -856,7 +899,10 @@ class TestTheFullSchemaIsAlwaysOnScreen(unittest.TestCase):
                       # printed the same text twice.
                       "Ideal applicant",
                       "Geographic scope", "Sector", "Programme areas", "Project stages",
-                      "Submission format", "Application language", "Application steps"):
+                      # "Application steps" (application_checklist) left on 2026-11-18:
+                      # a synthesis field restating the deliverables already named under
+                      # "Other conditions" and in the compliance block.
+                      "Submission format", "Application language"):
             with self.subTest(label=label):
                 self.assertIn(label, flat)
 
@@ -1093,19 +1139,23 @@ class TestTheRowsLeaveNoHoles(unittest.TestCase):
             self.assertGreaterEqual(len(row), 1)
 
     def test_the_short_card_is_followed_by_another_in_the_same_column(self):
-        # THE FIX FOR THE HOLES. "Funding & awards" (3 rows) beside "Timeline" (5 rows) left
-        # dead space under the shorter one, and the next row began below BOTH. Stacking puts
-        # the next card directly under the short one.
+        # THE FIX FOR THE HOLES. A short card beside a tall one left dead space under the
+        # shorter, and the next row began below BOTH. Stacking puts the next card directly
+        # under the short one.
+        #
+        # Timeline leads since 2026-11-18 ("Swap, Timeline and Funding & Awards") — the
+        # swap is in LAYOUT, the tuple that decides the arrangement, not in _SECTIONS,
+        # which decides what a section CONTAINS.
         first = od.page_rows(self.V)[0]
         left = [b["title"] for b in first[0]]
         right = [b["title"] for b in first[1]]
-        self.assertEqual(left, ["Funding & awards", "Eligibility requirements"])
-        self.assertEqual(right, ["Timeline", "Type of opportunity"])
+        self.assertEqual(left, ["Timeline", "Eligibility requirements"])
+        self.assertEqual(right, ["Funding & awards", "Type of opportunity"])
 
     def test_the_paired_rows_are_actually_paired(self):
         rows = od.page_rows(self.V)
         beside = {tuple(c[0]["title"] for c in r) for r in rows if len(r) == 2}
-        self.assertIn(("Funding & awards", "Timeline"), beside)
+        self.assertIn(("Timeline", "Funding & awards"), beside)
         # The owner asked for these two beside each other.
         self.assertIn(("Who can apply", "How to apply"), beside)
 

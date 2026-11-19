@@ -6,7 +6,10 @@
 //
 //  1. HOME'S COUNTERS are the one piece of Phase 1 logic written twice — in TypeScript, so a
 //     page of numbers does not wait four seconds for a Python engine to boot. They are run
-//     here against app_pages/home.py's own arithmetic.
+//     here against app_pages/home.py's own arithmetic, lifted out of that file rather than
+//     retyped. The React Dashboard has since been rebuilt on api/home_buckets.ts, so only
+//     four of its figures still mean what the Streamlit tile of that name meant; section 1
+//     says which, and what relation the rest must satisfy instead.
 //
 //  2. THE RAIL AND THE OPPORTUNITY PAGE reuse the repo's Python, so the rules cannot drift.
 //     What can drift is the data underneath: the API builds a snapshot and the browser
@@ -60,16 +63,101 @@ const ctxFor = (tid) => ({
 });
 
 // ── 1. Home's counters ───────────────────────────────────────────────────────
+//
+// THE TWO DASHBOARDS ARE NO LONGER THE SAME DASHBOARD, and comparing them key by key was
+// asserting that they are. `app_pages/home.py::_kpis` is the original eight-tile Streamlit
+// Home; the React Dashboard was rebuilt on api/home_buckets.ts, where a figure is a
+// SELECTION a reader can click into, four of them are weighed in applications rather than
+// counted in rows, and two of them (`awaiting_review`, `archived`) answer questions the
+// Streamlit Home never asked. Only `proceed` survived under its own name. So the check was
+// reporting 54 differences of which 54 were "that figure was renamed in October", and in
+// doing so it was saying nothing at all about the four that genuinely still agree.
+//
+// It is split instead, the same way check-shell is:
+//
+//   * SAME - the figure means exactly what it meant, under a new name. Compared exactly.
+//     A difference here is the drift this section exists to catch.
+//   * REDEFINED - the Dashboard deliberately changed the rule or the unit. There is no
+//     equality to assert, but there IS a relation that must hold for the redefinition to
+//     be the one described, and a violation means one of the two is wrong. Both numbers
+//     are printed either way, so the size of the redefinition stays visible.
+//
+// `total_found` and `duplicates` have no counterpart at all: the React Dashboard reports
+// no figure that includes duplicates. They are printed, not compared.
+const SAME = [
+  ["found", "total_unique", "calls that are not duplicates of another"],
+  ["proceed", "proceed", "decision starts with \"proceed\""],
+  ["parked", "park", "decision is \"park\""],
+  ["declined", "decline", "decision is \"decline\""],
+];
+const REDEFINED = [
+  {
+    api: "due_in_14_days", py: "due_soon", rel: "<=",
+    holds: (a, p) => a <= p,
+    why: "Streamlit counts every Proceed row due inside a fortnight; the Dashboard counts " +
+      "LIVE bids only, so one already with the funder or discontinued drops out. The " +
+      "Dashboard's figure can only be the smaller of the two.",
+  },
+  {
+    api: "applications_sent", py: "submitted", rel: ">=",
+    holds: (a, p) => a >= p,
+    why: "The same rows in a different unit: Streamlit counts rows whose progress reached " +
+      "Completed, the Dashboard weighs each by how many times it was actually sent " +
+      "(submissionWeight, at least 1 for a Completed row). It can only be the larger.",
+  },
+  {
+    api: "approved", py: "awarded_grants", rel: ">= minus ledger_gap",
+    holds: (a, p, got) => a >= p - got.ledger_gap,
+    why: "An approved row weighs at least one application when its progress reached " +
+      "Completed, and exactly zero when it did not - and the ones that did not are what " +
+      "`ledger_gap` counts. So every approved row is in one figure or the other.",
+  },
+  {
+    api: "archived", py: "overdue", rel: ">=",
+    holds: (a, p) => a >= p,
+    why: "Streamlit's overdue is Proceed rows past their deadline; the Archive is EVERY " +
+      "non-duplicate row past its deadline, decided or not. It contains the other.",
+  },
+];
+
 const wantHome = JSON.parse(py([path.join(here, "home_py.py")], { cwd: root }));
 for (const t of tenants) {
+  const who = t.slug ?? t.id;
   const got = await body(await routes.home(ctxFor(String(t.id))));
   const want = wantHome[String(t.id)];
   if (!want) continue;
-  for (const k of Object.keys(want)) {
-    if (got[k] !== want[k]) fail(`home ${t.slug ?? t.id}.${k}: api=${got[k]} python=${want[k]}`);
+  for (const [api, pyKey] of SAME) {
+    if (got[api] !== want[pyKey]) {
+      fail(`home ${who}.${api} (= home.py ${pyKey}): api=${got[api]} python=${want[pyKey]}`);
+    }
+  }
+  for (const r of REDEFINED) {
+    if (!r.holds(got[r.api], want[r.py], got)) {
+      fail(`home ${who}.${r.api}=${got[r.api]} vs home.py ${r.py}=${want[r.py]} ` +
+        `(ledger_gap=${got.ledger_gap}): expected ${r.api} ${r.rel} ${r.py}. ${r.why}`);
+    }
+  }
+  // The decision bar has to fit inside what was found, or two of its segments are counting
+  // the same row. Reported rather than failed when it falls SHORT: a decision string that
+  // is none of proceed/park/decline leaves a gap, and that is data, not a port bug.
+  const bar = got.awaiting_review + got.expired_unreviewed + got.proceed + got.parked + got.declined;
+  if (bar > got.found) {
+    fail(`home ${who}: the decision bar sums to ${bar} over ${got.found} found - ` +
+      "two of its segments are counting the same row");
+  } else if (bar < got.found) {
+    console.log(`NOTE ${who}: ${got.found - bar} of ${got.found} calls carry a decision ` +
+      "that is neither proceed, park nor decline, so the decision bar falls short");
   }
 }
-console.log(`home counters: ${tenants.length} tenants checked`);
+console.log(`home counters: ${tenants.length} tenants checked — ${SAME.length} figures ` +
+  `compared exactly, ${REDEFINED.length} checked against the relation their redefinition implies`);
+for (const t of tenants) {
+  const w = wantHome[String(t.id)];
+  if (w?.duplicates) {
+    console.log(`  ${t.slug ?? t.id}: home.py found ${w.total_found} rows of which ` +
+      `${w.duplicates} are duplicates; the Dashboard reports no figure that includes them`);
+  }
+}
 
 // ── 2. The rail and the Opportunity page, per tenant ─────────────────────────
 // One tenant at a time: each run reloads the scoring modules against a different data layer,

@@ -19,7 +19,7 @@ export default function HowToUse() {
           <strong>Friday morning</strong> — the automated scan pulls new opportunities from
           the donor sources into the shared store, the bell shows <strong>Scan
           completed</strong>, and everyone is emailed any new Proceed / Park calls. Open{" "}
-          <strong>Funding Pipeline → Screen</strong> and click <strong>Eligibility
+          <strong>Pipeline → Screen</strong> and click <strong>Eligibility
           Scan</strong> to screen against your organisation.
         </li>
         <li>

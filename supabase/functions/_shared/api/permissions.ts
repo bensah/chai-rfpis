@@ -123,6 +123,25 @@ export function canAssignOverride(actor: PermUser, surface: string, cap: string,
   return capRank(cap) <= capRank(access(actor, surface));
 }
 
+/**
+ * `core.permissions.capability_label` — what a capability code reads as on screen.
+ *
+ * An unknown code falls back to ITSELF, as the Python's `.get(cap, cap)` does. That is
+ * the right failure: a capability this build has not heard of shows as its raw code,
+ * which is legible and obviously odd, rather than as "No access", which is legible and
+ * wrong — and would describe a grant as its opposite.
+ */
+const CAPABILITY_LABELS: Record<string, string> = {
+  "edit": "✓ View & edit",
+  "view": "\u{1F441} View only",
+  "view+add": "\u{1F441} View + add (no edit)",
+  "trigger": "✓ View & trigger",
+  "self": "✓ Edit own only",
+  "all": "✓ Manage all users",
+  "hidden": "\u{1F6AB} No access",
+};
+export const capabilityLabel = (cap: string): string => CAPABILITY_LABELS[cap] ?? cap;
+
 export const canView = (u: PermUser, surface: string) => access(u, surface) !== "hidden";
 export const canEdit = (u: PermUser, surface: string) =>
   ["edit", "all", "self", "trigger", "view+add"].includes(access(u, surface));

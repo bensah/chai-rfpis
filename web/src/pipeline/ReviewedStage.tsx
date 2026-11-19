@@ -21,10 +21,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import {
-  fetchReviewed, recordDecision, scoreIsBehind,
+  fetchReviewed, recordDecision, rescoreFailed, scoreIsBehind,
   type Reviewed, type ReviewedRow, type Warning,
 } from "../api";
 import OpportunityCell from "../opportunity/OpportunityCell";
+import OpportunityPeek from "../opportunity/OpportunityPeek";
 import RfpEditor from "../opportunity/RfpEditor";
 import { atGrain, periodOf, rangeOf, labelOf, type Period } from "./period";
 import { Badge, Button, Card, EmptyState, Notice, Select, Spinner, fieldClass } from "../ui";
@@ -72,6 +73,7 @@ export default function ReviewedStage({ period, onPickPeriod }: {
   const [notices, setNotices] = useState<Warning[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
   const [editUid, setEditUid] = useState<string | null>(null);
+  const [peekUid, setPeekUid] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -245,8 +247,17 @@ export default function ReviewedStage({ period, onPickPeriod }: {
               {filtered.map((r) => {
                 const d = lower(r.decision);
                 const behind = scoreIsBehind(r);
+                const stuck = rescoreFailed(r);
                 return (
-                  <tr key={r.uid} className="border-b border-ink-100 transition-colors last:border-0 hover:bg-ink-50">
+                  <tr key={r.uid} className="cursor-pointer border-b border-ink-100 transition-colors last:border-0 hover:bg-ink-50"
+                    onClick={(e) => {
+                      // A click that landed on a link, a button or a form control is
+                      // THAT control's — the title still opens the full record, the ↗
+                      // still leaves for the funder, and the decision select still works.
+                      // Only the rest of the row opens the summary.
+                      if ((e.target as HTMLElement).closest("a,button,select,input,textarea,label")) return;
+                      setPeekUid(r.uid);
+                    }}>
                     <td className="px-4 py-3">
                       <OpportunityCell uid={r.uid} title={r.opportunity_title}
                         link={r.opportunity_link} onEdit={setEditUid} />
@@ -273,11 +284,22 @@ export default function ReviewedStage({ period, onPickPeriod }: {
                     <td className="px-4 py-3 text-right font-semibold tabular-nums text-brand-700">
                       {r.alignment_score == null ? "—" : Math.round(r.alignment_score)}
                       {behind && (
-                        /* The score predates the last edit, so a re-score is in flight.
-                           Saying so beats showing the old number as though it were final. */
+                        /* A re-score is queued or running, so this number is about to be
+                           replaced. Saying so beats showing it as though it were final. */
                         <span title="Being recalculated after a recent edit"
                           className="ml-1 inline-flex align-middle text-ink-400">
                           <RefreshCw className="h-3 w-3 animate-spin" />
+                        </span>
+                      )}
+                      {stuck && (
+                        /* The re-score this row was waiting for DIED, so the number is
+                           from before the edit that queued it and nothing is coming to
+                           replace it. Louder than the spinner on purpose: a spinner says
+                           "wait", and there is nothing to wait for. */
+                        <span
+                          title="The last recalculation failed, so this score may predate the edit that triggered it. Saving the opportunity again will queue another."
+                          className="ml-1 inline-flex align-middle text-amber-600">
+                          <AlertTriangle className="h-3 w-3" />
                         </span>
                       )}
                     </td>
@@ -316,6 +338,16 @@ export default function ReviewedStage({ period, onPickPeriod }: {
           </table>
         </div>
       </Card>
+      {/* The summary overlay. `onEdit` hands the row to the editor and closes this, so
+          there is one editor rather than a second set of controls in here. */}
+      {peekUid && (
+        <OpportunityPeek
+          uid={peekUid}
+          onClose={() => setPeekUid(null)}
+          onEdit={(u) => { setPeekUid(null); setEditUid(u); }}
+          onChanged={load}
+        />
+      )}
       {editUid && (
         <RfpEditor uid={editUid} onClose={() => setEditUid(null)} onSaved={load} />
       )}

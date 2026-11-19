@@ -12,9 +12,11 @@ says the time check was excluded and the team is in place. The chain:
   1. no deadline  → scorer.bid_effort_label(None, bd) → None
   2.              → criteria_derive.derive_bid_effort → None
   3. review_rfp._baseline_val → `_derived.get(key) or stored` → None (stored is None too)
-  4. → scorer.default_response(key, None): bid_effort is the ONE criterion with no
+  4. → scorer.default_response(key, None): bid_effort WAS the ONE criterion with no
        "Not sure" option, so the fallback `opts[-1]` picked the LAST option — and the
-       list is ordered best→worst, so that is "Not enough time, no team".
+       list is ordered best→worst, so that is "Not enough time, no team". (bid_effort
+       gained "Not sure" on 2026-11-17, so step 4 now answers it directly; the midpoint
+       fallback below is kept for any vocabulary that loses the option again.)
 
 Not cosmetic: that label scores 0, and PREFER-9 feeds Bid Strength and the
 Proceed/Park/Decline suggestion. Unknown time is now EXCLUDED, not failed — matching
@@ -211,9 +213,33 @@ class DefaultResponseFallbackTests(unittest.TestCase):
                                 f"{key}: unknown resolved to a 0-scoring verdict ({got!r})")
 
     def test_bid_effort_specifically_no_longer_defaults_to_the_worst(self):
+        """An undetermined PREFER-9 now says "Not sure" rather than standing in for it.
+
+        This asserted `criterion_score(got) == 1` — the Park midpoint — until 2026-11-17,
+        and that was a PROXY rather than the thing wanted. bid_effort had no "Not sure",
+        so the nearest available way to say "we did not measure this" was a middling
+        label; but "Tight but doable, with a team" asserts a time verdict AND a team
+        verdict, on a row where the whole point is that time was never captured. This
+        module's own docstring says what it wanted: unknown time is EXCLUDED, not failed.
+
+        The owner had "Not sure" added to bid_effort's vocabulary, so the thing can now be
+        said directly. At the time nothing scored differently — `alignment_score` rated an
+        unscored criterion 0.5 and a midpoint one 0.5 — and only the label a reader sees
+        changed, to the true one.
+
+        THAT IS NO LONGER TRUE, and the difference is now the point. On 2026-11-18 an
+        undetermined criterion left the denominator entirely, so saying "Not sure" and
+        saying "Tight but doable, with a team" are worth very different things: the first
+        takes PREFER 9's 0.09 out of the model, the second spends it at half value on a
+        verdict nobody measured. Getting the label right stopped being cosmetic.
+
+        The real invariant — never a 0-scoring verdict — is asserted for all nine in
+        `test_an_unknown_value_never_resolves_to_a_zero_scoring_verdict` above, and still holds.
+        """
         got = default_response("bid_effort", None)
         self.assertNotEqual(got, "Not enough time, no team")
-        self.assertEqual(criterion_score(got), 1)          # the Park midpoint
+        self.assertEqual(got, "Not sure")
+        self.assertIsNone(criterion_score(got))            # unscored → out of the model
 
     def test_criteria_with_not_sure_are_untouched(self):
         for key in ("qualification", "strategic_fit", "capacity", "geographic_fit",

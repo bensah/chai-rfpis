@@ -12,6 +12,18 @@ const SEEN_KEY = "notifications_seen";     // app_settings: {email: iso} of each
 
 const ORG_DEFAULT_NAME = "Your Organization";
 
+/**
+ * How far back the feed reads, EXPORTED because the parity harness needs the same numbers.
+ *
+ * `core/notifications.recent_feed` takes these as `limit_scans` / `limit_rfps`, and the two
+ * sides must read the same window or the comparison turns into an argument about which rows
+ * each one happened to see. They are named here, and check-shell.mjs passes them to the
+ * Python half, so widening one window cannot silently leave the check comparing two
+ * different slices of the table.
+ */
+export const SCAN_FEED_LIMIT = 12;
+export const RFP_FEED_LIMIT = 40;
+
 /** pandas.to_datetime(v, utc=True): a naive timestamp is UTC, a bare date is UTC midnight. */
 export function parseTs(v: unknown): number | null {
   if (v == null || v === "") return null;
@@ -52,19 +64,31 @@ export type FeedItem = {
   facts?: { label: string; value: string }[];
 };
 
-export function createShellRoutes(db: Db) {
+/**
+ * The placeholder `views/account_sections.py` falls back to when ADMIN_CONTACT_EMAIL is
+ * unset. Kept identical so a deployment that has not configured it shows the same
+ * obviously-unconfigured address in both apps, rather than one app inventing a plausible
+ * one nobody reads.
+ */
+const ADMIN_CONTACT_FALLBACK = "admin@example.org";
+
+export function createShellRoutes(db: Db, adminContactEmail?: string) {
   /** notifications.recent_feed for the session's effective tenant. */
   async function recentFeed(ctx: Ctx): Promise<FeedItem[]> {
     const sb = db.as(ctx.scope);
     const eff = db.scopeTid(ctx.scope);
     const [rawScans, rfps] = await Promise.all([
-      sb.get("scan_logs", `select=*&order=scan_date.desc&limit=${12 * 4}`).catch(() => [] as Json[]),
+      // NEITHER READ IS CAUGHT HERE, deliberately. A feed built from one of its two
+      // sources is the worst of the three outcomes: it looks complete, it is short by
+      // whatever the broken half held, and nothing on the page can tell. `shell` catches
+      // the whole part instead and reports the bell as unavailable.
+      sb.get("scan_logs", `select=*&order=scan_date.desc&limit=${SCAN_FEED_LIMIT * 4}`),
       sb.get("rfp_submissions",
         "select=uid,opportunity_title,source,search_date,submitted_by," +
         "auto_recommendation,alignment_score,funding_agency,call_submission_deadline" +
         // 40, not 15: auto rows are now kept when the engine rated them Proceed or
         // Park, and a Friday scan can bury a week of manual entries in the first 15.
-        "&order=search_date.desc&limit=40").catch(() => [] as Json[]),
+        `&order=search_date.desc&limit=${RFP_FEED_LIMIT}`),
     ]);
     const items: FeedItem[] = [];
     // System-wide runs (no tenant_id) show to everyone; a tenant's own screening run only to
@@ -73,7 +97,7 @@ export function createShellRoutes(db: Db) {
     for (const s of rawScans) {
       const stid = s.tenant_id;
       if (!stid || String(stid) === eff) scans.push(s);
-      if (scans.length >= 12) break;
+      if (scans.length >= SCAN_FEED_LIMIT) break;
     }
     for (const s of scans) {
       const [icon, detail] = scanIconAndDetail(s);
@@ -160,9 +184,11 @@ export function createShellRoutes(db: Db) {
     const tid = ctx.session.tenant?.id;
     if (!tid) return null;
     const rows = await db.service.get("tenant_settings",
-      `select=value&tenant_id=eq.${q(tid)}&key=eq.schedule_json&limit=1`).catch(() => [] as Json[]);
+      `select=value&tenant_id=eq.${q(tid)}&key=eq.schedule_json&limit=1`);
     let items: Json[] = [];
     try {
+      // A schedule that will not parse is a corrupt VALUE, which is genuinely "no next
+      // meeting" — unlike a read that failed, which is now left to `shell` to report.
       items = JSON.parse(String(rows[0]?.value ?? "[]")) as Json[];
     } catch {
       return null;
@@ -183,8 +209,7 @@ export function createShellRoutes(db: Db) {
   async function orgIdentity(ctx: Ctx) {
     const tid = ctx.scope.viewTenantId || ctx.session.tenant?.id;
     if (!tid) return { name: ORG_DEFAULT_NAME, logo: null };
-    const rows = await db.service.get("tenants", `select=name,org_identity&id=eq.${q(tid)}&limit=1`)
-      .catch(() => [] as Json[]);
+    const rows = await db.service.get("tenants", `select=name,org_identity&id=eq.${q(tid)}&limit=1`);
     const ident = (rows[0]?.org_identity && typeof rows[0].org_identity === "object" ?
       rows[0].org_identity : {}) as Json;
     const name = String(rows[0]?.name || ident.org_name || ORG_DEFAULT_NAME);
@@ -192,20 +217,64 @@ export function createShellRoutes(db: Db) {
     return { name, logo: b64 ? { b64, mime: String(ident.org_logo_mime || "image/png") } : null };
   }
 
+  /**
+   * Everything the chrome needs, in one request — plus whatever could not be read.
+   *
+   * THIS ROUTE MUST NOT FAIL THE WAY routes_phase1 NOW DOES, and the difference is what it
+   * costs. The rail is one panel on one page, so a 502 there loses a panel and says so.
+   * The shell is drawn on EVERY page: a 502 here is the whole app refusing to render
+   * because the next-meeting line could not be fetched. So each part may fail on its own.
+   *
+   * What it must not do is what it used to: swallow the failure and serve the fallback as
+   * the answer. A bell with no items reads "you have no notifications". A schedule that
+   * could not be loaded reads "no meeting booked". A tenants row that could not be loaded
+   * puts the placeholder "Your Organization" in the header of somebody's own app. Each is
+   * a statement about the user's data, made at the one moment nobody had asked.
+   *
+   * `unavailable` names the parts that failed, so a page can say so where it would
+   * otherwise draw an empty state. The reads INSIDE each part are no longer caught
+   * separately: a feed missing only its scan rows is a harder lie to catch than a feed
+   * that admits it could not be built at all.
+   */
   async function shell(ctx: Ctx): Promise<Response> {
+    const unavailable: string[] = [];
+    const part = <T>(name: string, fallback: T, p: Promise<T>): Promise<T> =>
+      p.catch((e) => {
+        console.error(`shell: ${name} could not be read`, e);
+        unavailable.push(name);
+        return fallback;
+      });
+
     const [feed, seen, meeting, org, urlRows] = await Promise.all([
-      recentFeed(ctx).catch(() => [] as FeedItem[]),
-      seenMap().catch(() => ({} as Record<string, string>)),
-      nextMeeting(ctx),
-      orgIdentity(ctx),
-      db.service.get("app_settings", "select=value&key=eq.app_public_url&limit=1").catch(() => [] as Json[]),
+      part<FeedItem[]>("feed", [], recentFeed(ctx)),
+      part<Record<string, string> | null>("seen", null, seenMap()),
+      part<Json | null>("meeting", null, nextMeeting(ctx)),
+      part<{ name: string; logo: { b64: string; mime: string } | null }>(
+        "org", { name: ORG_DEFAULT_NAME, logo: null }, orgIdentity(ctx)),
+      part<Json[]>("classicUrl", [],
+        db.service.get("app_settings", "select=value&key=eq.app_public_url&limit=1")),
     ]);
     const email = String(ctx.user.email ?? "");
-    const seenTs = parseTs(seen[email]);
-    const unread = email ? (seenTs == null ? feed.length : feed.filter((it) => it.ts > seenTs).length) : 0;
+    const seenTs = seen ? parseTs(seen[email]) : null;
+    // NO BADGE ON A FAILED READ. A null `seen` legitimately means "has never marked
+    // anything read", which counts every item as unread — so a seen map that could not be
+    // read would put a full-count badge on the bell and present it as news. Unknown is 0,
+    // and `unavailable` says why.
+    const unread = !email || unavailable.includes("feed") || unavailable.includes("seen")
+      ? 0
+      : (seenTs == null ? feed.length : feed.filter((it) => it.ts > seenTs).length);
     return json({
       org, nextMeeting: meeting, feed, seen: seenTs, unread,
       classicUrl: String(urlRows[0]?.value ?? "").trim() || null,
+      adminContactEmail: (adminContactEmail ?? "").trim() || ADMIN_CONTACT_FALLBACK,
+      // WHETHER IT IS A REAL ADDRESS, said rather than left to be inferred. The
+      // placeholder is deliberately obvious to a developer reading a config file and
+      // completely opaque to a user reading a Help page — who would email it, and hear
+      // nothing. A page that knows the difference can write "your administrator"
+      // instead of printing a dead address, and the Deployment panel can say it needs
+      // setting. Both apps keep the SAME fallback value; only the wording differs.
+      adminContactConfigured: !!(adminContactEmail ?? "").trim(),
+      unavailable,
     });
   }
 

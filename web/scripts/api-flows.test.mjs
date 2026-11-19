@@ -825,6 +825,150 @@ test("Reviewed holds what a person decided, keyed on when the call was FOUND", a
   assert.deepEqual(earlier.body.rows, []);
 });
 
+test("the shell still renders when a part fails, and says which part", async () => {
+  // The opposite trade-off from /opportunities/feed, and for a reason. The rail is one
+  // panel on one page, so failing the request loses a panel. The shell is on EVERY page: a
+  // 502 here is the whole app refusing to draw because the next-meeting line would not
+  // load. So each part fails alone — and says so, instead of serving its fallback as the
+  // answer. An empty bell used to mean "no notifications" whether or not anybody had asked.
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const ok = await call("GET", "/shell", null, col.token);
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.body.unavailable, [], "nothing is unavailable when every read works");
+  assert.ok(ok.body.feed.length > 0, "and the feed really does have items to lose");
+
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("scan_logs")) throw new TypeError("fetch failed");
+    return real(url, init);
+  };
+  let broken;
+  try {
+    broken = await call("GET", "/shell", null, col.token);
+  } finally {
+    globalThis.fetch = real;
+  }
+  assert.equal(broken.status, 200, "the chrome still draws — it is on every page");
+  assert.deepEqual(broken.body.unavailable, ["feed"],
+    "and one half of the feed failing takes the whole feed, not a silent half of it");
+  assert.deepEqual(broken.body.feed, []);
+  assert.equal(broken.body.unread, 0,
+    "no badge on a feed nobody could read: a count would present the failure as news");
+  // The parts that DID load are still served, which is the point of failing one at a time.
+  assert.ok(broken.body.org.name);
+  assert.equal(broken.body.adminContactEmail, ok.body.adminContactEmail);
+});
+
+test("a read that fails is not served as an empty catalogue", async () => {
+  // routes_phase1 used to wrap nearly every read in `.catch(() => [])`, so a database that
+  // could not be reached produced a rail reading "Nothing to feature yet — run an
+  // extraction": a statement about the user's pipeline, made when nobody had asked it.
+  //
+  // It cost a parity failure to notice. check-scoring reported
+  // `ts-rail.featured: python=5 ts=0` on 2026-11-16 and would not reproduce — one
+  // transient read of extracted_solicitations, served as an empty catalogue.
+  const { call, signIn } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+
+  const ok = await call("GET", "/opportunities/feed", null, col.token);
+  assert.equal(ok.status, 200, "the rail answers normally to begin with");
+
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("extracted_solicitations")) throw new TypeError("fetch failed");
+    return real(url, init);
+  };
+  let broken;
+  try {
+    broken = await call("GET", "/opportunities/feed", null, col.token);
+  } finally {
+    globalThis.fetch = real;
+  }
+  assert.equal(broken.status, 502,
+    "a catalogue that cannot be read is not a catalogue with nothing in it");
+  assert.match(broken.body.error, /could not be reached/);
+  assert.equal(broken.body.featured, undefined,
+    "and no card list is served alongside the failure for a page to draw");
+
+  // The point of the distinction: an EMPTY table still answers 200 with empty cards, as it
+  // always did. `.catch` only ever fired when the read itself broke.
+  const empty = await call("GET", "/opportunities/feed", null, col.token);
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body.featured, [], "no rows in the catalogue is a real, quiet answer");
+});
+
+test("'being recalculated' follows the job queue, not the save stamps", async () => {
+  // The Reviewed stage used to work this out in the browser, as
+  // `decision_overridden_at > scored_at`. Every save stamps the first and only a save that
+  // touched a scoring input queues a re-score, so recording a decision — which queues
+  // `record_decision`, a job that does not score — left the row spinning for good. Three
+  // live rows had been doing that since 9 November, under scores that were correct.
+  //
+  // The first assertion is the important one: it pins that the OLD test would have said
+  // yes here, so putting the inference back fails this rather than passing quietly.
+  const { call, signIn, db } = setup();
+  const col = await signIn("col@x.org", "col pass 1");
+  const FOUND = "2026-10-22";
+  const dayAfter = "2026-10-23";
+  const reviewed = async () => {
+    const r = await call("GET", `/pipelines/reviewed?from=${FOUND}&to=${dayAfter}`, null, col.token);
+    return r.body.rows.find((x) => x.uid === "R1");
+  };
+
+  const stored = db.tables.rfp_submissions.find((r) => r.uid === "R1");
+  stored.scored_at = "2026-10-22T00:00:00+00:00";
+  stored.score_profile_sig = "sig-1";
+
+  await call("POST", "/pipelines/decision", { uid: "R1", decision: "Park" }, col.token);
+  const after = await reviewed();
+  assert.ok(after.decision_overridden_at > after.scored_at,
+    "the stamps DO read as saved-since-scored, which is why believing them was wrong");
+  assert.equal(db.tables.web_jobs.filter((j) => j.kind === "rescore").length, 0,
+    "a decision queues no re-score — it is a verdict, not an input to the number");
+  assert.equal(after.rescore_state, null, "so the row is settled, and says nothing");
+
+  // A re-score genuinely in flight is what the spinner is for.
+  db.tables.web_jobs.push({
+    id: "job-rescore-1", kind: "rescore", status: "running",
+    params: { tenant_id: T1, uid: "R1" }, tenant_id: T1,
+    created_at: "2026-11-16T10:00:00+00:00",
+  });
+  assert.equal((await reviewed()).rescore_state, "pending");
+
+  // A job that finished cleanly settles the row and says nothing.
+  for (const status of ["done", "cancelled"]) {
+    db.tables.web_jobs.at(-1).status = status;
+    assert.equal((await reviewed()).rescore_state, null,
+      `a ${status} job is not a recalculation in progress`);
+  }
+
+  // A job that STARTED AND DIED is the case the first version of this missed: nothing is
+  // in flight, and the number on screen predates the edit that queued the job.
+  db.tables.web_jobs.at(-1).status = "failed";
+  assert.equal((await reviewed()).rescore_state, "failed",
+    "a dead re-score is not the same as no re-score");
+
+  // A later run that succeeded puts the failure to rest — which is why `done` jobs are
+  // read rather than filtered out of the query.
+  db.tables.web_jobs.push({
+    id: "job-rescore-2", kind: "rescore", status: "done",
+    params: { tenant_id: T1, uid: "R1" }, tenant_id: T1,
+    created_at: "2026-11-16T11:00:00+00:00",
+  });
+  assert.equal((await reviewed()).rescore_state, null,
+    "the latest job decides, so a repaired failure stops warning");
+
+  // Another tenant's queued re-score never reaches this one, even on the same uid.
+  db.tables.web_jobs.push({
+    id: "job-rescore-3", kind: "rescore", status: "queued",
+    params: { tenant_id: T2, uid: "R1" }, tenant_id: T2,
+    created_at: "2026-11-16T12:00:00+00:00",
+  });
+  assert.equal((await reviewed()).rescore_state, null);
+});
+
 test("a migrated decision with no decision_date is still a decision", async () => {
   // The bug this route shipped with. 61 of the 83 decided rows on the live table have no
   // `decision_date` — the Excel migration carried the verdict and the rationale but never
@@ -1940,11 +2084,21 @@ test("a row on the old criterion vocabulary opens on the right answer", async ()
   assert.equal(d.qualification.no, "No, not eligible");
   assert.equal(d.funding_quality["1"], "High", "the legacy numeric spelling too");
 
-  // bid_effort is the criterion with no "Not sure": an undeterminable value there must
-  // land on the Park midpoint, never on the worst option — core/scorer says so at length,
-  // because that turned "we never captured a deadline" into "Not enough time, no team".
-  assert.ok(!r.body.criterionAnswers.bid_effort.includes("Not sure"));
+  // bid_effort WAS the criterion with no "Not sure", and gained one on 2026-11-17 (owner).
+  // Until then `views/submit_form.py::_crit` fell back to `opts[0]` for it — best of a
+  // best-to-worst list — so an untouched PREFER-9 asserted "Ample time, sufficient
+  // resources" and scored a full 2.
+  assert.ok(r.body.criterionAnswers.bid_effort.includes("Not sure"),
+    "all nine criteria carry Not sure now, so the one-line default rule reaches the " +
+    "right answer for every one of them");
+
+  // THE OLDER RULE STILL HOLDS AND IS THE REASON THIS BLOCK EXISTS. An undeterminable
+  // value must never land on the WORST option: the list is ordered best to worst, and
+  // falling to opts[-1] turned "we never captured a deadline" into "Not enough time, no
+  // team", which then fed the gauge and the auto-decision.
   assert.notEqual(d.bid_effort.no, "Not enough time, no team");
+  assert.equal(d.bid_effort.wat ?? "Not sure", "Not sure",
+    "and an unrecognised spelling now resolves to Not sure rather than to a verdict");
 
   // Every criterion resolves every legacy spelling onto one of its OWN answers.
   for (const [key, answers] of Object.entries(r.body.criterionAnswers)) {

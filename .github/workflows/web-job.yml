@@ -34,7 +34,10 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Extraction crawls every catalogued source and defaults to a 45-minute internal
+    # limit (RFPIS_EXTRACT_TIMEOUT_SEC), so 60 would leave it no room for the pip and
+    # browser install before it and no margin after. Every other job finishes in minutes.
+    timeout-minutes: ${{ inputs.group == 'scan-extract' && 90 || 60 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -47,6 +50,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      # ONLY FOR EXTRACTION. The crawler drives a real browser to read detail pages, and
+      # without this it fails on the first source that needs one. It is conditional
+      # because `--with-deps` pulls a large apt set and costs every OTHER job — a
+      # re-score, an export, a decision — a minute or two for a browser none of them
+      # opens. The job kind is not an input here, but its concurrency group is, and
+      # `scan-extract` is that group (see routes_jobs.ts, where it is a fixed string
+      # precisely so there is one crawl at a time).
+      - name: Install Chromium (extraction only)
+        if: inputs.group == 'scan-extract'
+        run: python -m playwright install --with-deps chromium
 
       - name: Run the job
         env:

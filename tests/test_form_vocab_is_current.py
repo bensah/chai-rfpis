@@ -41,6 +41,10 @@ PLAIN_KEYS = [
     "applicant_role", "funding_window", "time_to_award", "submission_format",
     "feasibility", "decisions", "stages", "progress_status", "donor_decision",
     "support_roles", "eligibility_values", "report_statuses", "report_types",
+    # Added for Submit New Notice, which offers the donor as a DROPDOWN where the RFP
+    # editor has a free-text box. Plain repo YAML with no app_settings overlay, unlike
+    # team_members and currencies below, so generating it bakes in nothing per-deployment.
+    "donors",
 ]
 
 

@@ -28,13 +28,23 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 
+# THE SAME WINDOW, OR THE COMPARISON IS ABOUT NOTHING. routes_shell.ts reads the newest
+# RFP_FEED_LIMIT rfp_submissions rows and SCAN_FEED_LIMIT scan runs; recent_feed defaults to
+# 15 and 12. Left alone, the check would report every manual entry that falls in rows 16-40
+# as missing from Streamlit when it is only outside the window Streamlit was asked for.
+# check-shell.mjs passes routes_shell.ts's own exported constants on the command line, so
+# neither number lives twice, and recent_feed's real parameters do the widening — the
+# harness re-implements nothing.
+limit_scans, limit_rfps = (int(a) for a in sys.argv[1:3])
+
 feed = getattr(N.recent_feed, "__wrapped__", N.recent_feed)
 out = {}
 for t in service_client().table("tenants").select("id").eq("status", "active").execute().data or []:
     tid = str(t["id"])
     tok = tc.set_tenant_override(tid)      # get_client() scopes to this tenant, as for a member
     try:
-        items = feed(scope_tid=tid, is_super=False)
+        items = feed(scope_tid=tid, is_super=False,
+                     limit_scans=limit_scans, limit_rfps=limit_rfps)
     finally:
         tc.reset_tenant_override(tok)
     out[tid] = [{"ts": int(it["ts"].timestamp() * 1000), "icon": it["icon"], "title": it["title"],

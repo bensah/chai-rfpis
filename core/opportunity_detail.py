@@ -530,16 +530,42 @@ def standard_view(kind: str, row: dict, extraction: dict | None = None) -> dict:
 _SECTIONS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
     ("Funding & awards", (
         ("Award range (per award)", "_award_range", "money_range"),
+        # These two came out of `_COVERAGE_FIELDS` and STAY ON THE PAGE, which is not a
+        # half-measure. Both are hand-editable — `views/rfp_editor.py:422` and its React
+        # twin offer "Total programme funding" and "Expected number of awards" as typed
+        # inputs — so dropping the rows would let a reviewer enter a figure the
+        # opportunity page then refuses to show them. `total_program_funding` is also the
+        # field that keeps a £12m PROGRAMME from reading as a £12m AWARD, which is the
+        # confusion the SRHR call demonstrated. Rare is a reason not to grade the
+        # pipeline on a field; it is not a reason to hide the value when it is there.
         ("Total programme funding", "total_program_funding", "money"),
         ("Expected number of awards", "expected_awards", "text"),
-        ("Funding tiers", "funding_tiers", "list"),
+        # "Funding tiers" was dropped with the measurement: 0.1% populated, nothing
+        # writes it but the LLM's staged-funding read, and nobody can type it. Where
+        # tiers ARE found, `core/extract.tiers_to_bounds` turns them into the award
+        # floor and ceiling, which the "Award range" row above already shows — so the
+        # information reaches the reader by the route that was always the useful one.
     )),
     ("Timeline", (
         ("Posted", "date_posted", "date"),
         ("Status", "funding_status", "text"),
         ("Window", "funding_window", "text"),
-        ("Expected award date", "expected_award_date", "date"),
-        ("Time to award", "time_to_award", "text"),
+        # "Expected award date" and "Time to award" ARE NOT ROWS HERE (owner, 2026-11-18,
+        # restated after a first pass kept them): "from my experience [they have] never
+        # picked up any data ... those can be removed or hidden for now."
+        #
+        # I argued against it once on the measurement — 17.3% and 22.1% of
+        # `rfp_submissions` carry a value, almost all of them hand-typed in the editor —
+        # and the owner, who types them, repeated the instruction. The page he reads is
+        # the call's own terms; two rows that print a dash on every scanned call are two
+        # rows of noise in the card a reviewer opens first.
+        #
+        # HIDDEN, NOT DELETED. The columns stay, the editors still write them
+        # (`views/rfp_editor.py:143` and `web/src/opportunity/RfpEditor.tsx:429`), and the
+        # tracking and records views still show them, so nothing already typed is lost and
+        # the award-date pipeline keeps working. Only the opportunity page stops carrying
+        # them. They also came out of `_COVERAGE_FIELDS` below, so a call is no longer
+        # marked down for a fact its funder does not publish.
     )),
     ("Eligibility requirements", (
         # WHAT THE CALL ITSELF PUBLISHES about who qualifies — nothing derived from the
@@ -583,7 +609,13 @@ _SECTIONS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
         # call is published in, sometimes stated separately. It is a requirement, not a
         # property of our record, so it is labelled as the applicant's obligation.
         ("Application language", "solicitation_language", "text"),
-        ("Application steps", "application_checklist", "bullets"),
+        # "Application steps" (application_checklist) was dropped on the owner's
+        # instruction, 2026-11-18. It is a synthesis field — `core/llm_synthesis.py`
+        # writes it from the call text — and what it produced was a restatement of the
+        # deliverables already named in "Other conditions" and the compliance block, in a
+        # bullet list wide enough to dominate the card. The column and its writers are
+        # untouched; `views/tracking_rfp.py` and `views/rfp_records.py` still render it
+        # where a reviewer is actually assembling a bid.
         # Only when the funder publishes a SECOND reference distinct from the header id.
         ("Opportunity number", "_second_reference", "text"),
     )),
@@ -597,7 +629,9 @@ _TECHNICAL_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = 
         ("RFPIS uid", "uid", "text"),
         ("Opportunity ID", "opportunity_id", "text"),
         ("Opportunity number", "funding_opportunity_number", "text"),
-        ("Agency code", "agency_code", "text"),
+        # "Agency code" was dropped with the measurement — 0.9% of pages mention the
+        # concept, no row has ever carried one, and nothing can type it. It was a
+        # super_user row that could only ever print a dash.
         ("Source", "source", "text"),
         ("Source uid", "source_uid", "text"),
         ("Solicitation type (raw)", "solicitation_type", "text"),
@@ -945,8 +979,14 @@ AS_CARDS = frozenset({"Funding & awards", "Timeline", "Type of opportunity",
 # same column, which is what closes the gap.
 LAYOUT: tuple[tuple[tuple[str, ...], ...], ...] = (
     # left column stacks under itself; right column does the same, so the two even out
-    (("Funding & awards", "Eligibility requirements"),
-     ("Timeline", "Type of opportunity")),
+    #
+    # TIMELINE LEADS, then the money (owner, 2026-11-18: "Swap Timeline and Funding &
+    # awards"). The first question a reviewer asks of a call is whether there is still
+    # time to bid; what it pays only matters once the answer is yes. Swapped HERE rather
+    # than by reordering `_SECTIONS`, because this tuple is what decides the arrangement —
+    # `_SECTIONS` decides what a section CONTAINS, and reordering it moves nothing.
+    (("Timeline", "Eligibility requirements"),
+     ("Funding & awards", "Type of opportunity")),
     (("Who can apply",), ("How to apply",)),
     (("Scope & focus",),),                 # one column = full width
 )
@@ -1150,20 +1190,23 @@ def documents(view: dict) -> list[tuple[str, str, str]]:
 # (funding_status, the *_confidence pair, field_provenance).
 _COVERAGE_FIELDS = (
     # §4.1 identity & links
-    "opportunity_name", "opportunity_id", "opportunity_url", "apply_url",
+    "opportunity_name", "opportunity_id", "opportunity_url",
     "funding_opportunity_number",
     # §4.2 funder
-    "funder_name", "agency_code", "grantmaking_entity",
+    "funder_name",
     # §4.3 narrative
     "brief_description", "full_description", "applicant_fit_profile", "project_stages",
     # §4.4 eligibility
     "what_is_funded", "what_is_not_funded", "eligibility_applicant_types",
     "eligibility_countries", "eligibility_other",
     # §4.5 money
-    "grant_amount", "currency", "call_award_floor", "call_award_ceiling",
-    "total_program_funding", "expected_awards", "funding_tiers",
+    "grant_amount", "currency", "call_award_ceiling",
     # §4.6 dates & window
-    "date_posted", "deadline", "funding_window", "expected_award_date", "time_to_award",
+    # `expected_award_date` and `time_to_award` left this list on 2026-11-18 with the
+    # rows they fed (see the Timeline section above). Measured availability is 0.0% —
+    # no call in the catalogue publishes a decision date — so every scanned call was
+    # being marked down twice for a fact no funder states.
+    "date_posted", "deadline", "funding_window",
     "project_duration", "submission_format",
     # §4.7 classification
     "solicitation_type", "instrument_type", "opportunity_type", "focus_themes",
@@ -1172,6 +1215,37 @@ _COVERAGE_FIELDS = (
     "attachments", "resource_links",
     # §4.9 the audit copy — the fallback full read
     "raw_text",
+)
+
+# SEVEN FIELDS CAME OUT OF THE LIST ABOVE on 2026-11-18 (owner's decision), and the
+# reason is the one thing this constant is for: coverage is supposed to measure
+# EXTRACTION, and a field whose fact is not published cannot be extracted by anyone.
+# Measured over the 1517 catalogue rows that carry enough source text to judge
+# (`scripts/measure_extraction_coverage.py --availability`), these subjects appear on
+# almost no page at all:
+#
+#     agency_code            0.9%   a US-federal concept; funding_opportunity_number
+#                                   already carries the reference
+#     expected_awards        0.9%   funders publish a budget, not a count of awards
+#     total_program_funding  1.6%   published as the award figure, or not at all
+#     grantmaking_entity     2.8%   equals funder_name except in a pass-through grant
+#     call_award_floor       3.0%   calls publish a ceiling; a range is rare
+#     funding_tiers          5.6%   staged funding is real, for a small minority
+#     apply_url              never stored at all — "the button is a different shape on
+#                                   every portal", and apply_url() already falls back
+#                                   to the call page
+#
+# Together they were 17% of the schema, so the measurement was capped near 83% before
+# any extractor ran. Keeping them in meant grading the pipeline on facts funders do
+# not publish, which is how "extraction is poor" became impossible to act on.
+#
+# THEY ARE NOT DELETED. The columns stay, the extractors stay, and five of the seven
+# still render — see the note above `_SECTIONS` for which and why. A value read off a
+# call, or typed by a person, is worth showing whether or not it is common enough to
+# grade the pipeline by. What stopped is counting its absence against us.
+_REMOVED_FROM_COVERAGE = (
+    "apply_url", "agency_code", "grantmaking_entity", "total_program_funding",
+    "expected_awards", "call_award_floor", "funding_tiers",
 )
 
 

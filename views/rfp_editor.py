@@ -21,6 +21,8 @@ import streamlit as st
 
 from core import dropdowns
 from core.scorer import (score_submission, CRITERION_RESPONSES, default_response)
+from core.score_stamp import editor_score_columns
+from core import criteria_provenance
 from core.donor_decision import is_no_answer as _dd_is_no_answer
 
 
@@ -587,8 +589,10 @@ def render_rfp_editor(row: dict, *, sb, user, is_admin: bool = False,
             **vals,
             "decline_flags_present": decline_bool,
             "key_risks": _val(risks_in),
-            "alignment_score": align,
-            "auto_recommendation": rec,
+            # The editor's own coarser number, with no claim that the server computed it:
+            # editor_score_columns nulls scored_at / score_profile_sig in the same write.
+            # See core/score_stamp.py for why this screen scores at all.
+            **editor_score_columns(align, rec),
             "submissions": int(submissions_in) if submissions_in else 1,
             "decision": _val(dec_in),
             "decision_note": _val(rat_in),
@@ -613,6 +617,31 @@ def render_rfp_editor(row: dict, *, sb, user, is_admin: bool = False,
             "decision_overridden_by": user.get("email"),
             "decision_overridden_at": datetime.now(timezone.utc).isoformat(),
         }
+        # FIRST CAPTURE OF A DECISION STAMPS THE DATE (2026-11-16). `decision_date` is what
+        # the rest of the app reads as "a person has reviewed this" — the Review screen
+        # (`_reviewed`), `web/src/api.ts`, `pipeline_writes.ts` and now
+        # `core.score_stamp.human_assessed`, which is how the re-score job knows not to
+        # re-derive someone's assessment. This screen records decisions and never stamped
+        # it, so an assessment made here was invisible to all four.
+        #
+        # ONLY WHEN THE ROW HAS NONE, and only when a decision is actually being recorded.
+        # A system date may stand in at a row's FIRST capture and nowhere else (owner,
+        # 2026-11-09): a call settled on the 3rd and written up on the 20th must not be
+        # dated by its data entry. An existing date is the team's and is left alone; this
+        # screen has no date field to offer, so re-dating from here would be exactly the
+        # silent re-dating that rule forbids.
+        if update.get("decision") and not str(row.get("decision_date") or "").strip():
+            update["decision_date"] = date.today().isoformat()
+        # WHO ANSWERED WHICH CRITERION (migration 102). The nine dropdowns above are a
+        # person's answers, and until this column existed the scorer could not tell them
+        # from the scan's own output in the same columns — so `auto_score` re-derived over
+        # them and, once the server owned the score, wrote its answer over the reviewer's.
+        # `record` returns only what this save actually CHANGED, and None when nothing did,
+        # so an untouched criterion is never claimed as anybody's and the column is left
+        # out of the update entirely on a save that moved no criterion.
+        _prov = criteria_provenance.record(row, vals, user.get("email"))
+        if _prov is not None:
+            update[criteria_provenance.COLUMN] = _prov
         # NO SILENT DEFAULT HERE ANY MORE (owner, 2026-08-17). This used to force
         # donor_decision to "Under Review" whenever Progress was Completed and the answer was
         # blank. The intent was right - a Completed row with no donor decision leaves Tracking

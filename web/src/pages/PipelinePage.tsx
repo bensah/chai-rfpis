@@ -19,6 +19,7 @@ import ReviewedStage from "../pipeline/ReviewedStage";
 import OutcomeStage from "../pipeline/OutcomeStage";
 import ScreenedStage from "../pipeline/ScreenedStage";
 import SubmittedStage from "../pipeline/SubmittedStage";
+import OpportunitiesPage from "./OpportunitiesPage";
 import { PageHeader, Select } from "../ui";
 
 /**
@@ -59,6 +60,33 @@ const STAGES: {
     rule: "approved or not approved — what the Funding page calls applied funding" },
 ];
 
+/**
+ * What period a stage OPENS on, which is not the same question for all five.
+ *
+ * The owner's rhythm, in their words: "Screened and Review are the parts that gets the
+ * found rfps into the pipeline, the Bidding and Submitted are those that are actively
+ * being worked on to completion, then the Outcome is the one waiting Funder's feedback."
+ *
+ * So the first two are a WEEKLY intake — the meeting walks through the week just gone, one
+ * week at a time, and `periodOf("week")` already anchors on the previous week because the
+ * current one is a day old on the Monday the team sits down.
+ *
+ * The last three are not periods of intake at all; they are WORK IN FLIGHT. A bid decided
+ * in March is still a bid in March, and a proposal sent in April is still with the funder
+ * in November — the Submitted screen said so itself, "7 proposals are still with a funder
+ * from outside this period", and Bidding said "widen the period above to see bids from
+ * earlier". A week-shaped window over work that outlives the week shows an empty board and
+ * asks every reader to widen it by hand before the meeting can start. They open on the
+ * YEAR instead. What leaves those boards is a row being submitted, answered, discontinued
+ * or past its deadline — the stage rules already do that, and the period should not be
+ * doing it a second time by accident.
+ */
+function defaultPeriodFor(stage: StageKey): Period {
+  return stage === "screened" || stage === "reviewed"
+    ? periodOf("week")
+    : periodOf("year");
+}
+
 /** A deep link may name the stage to open and widen the period to reach it.
  *
  * The Dashboard's "Due in 14 days" counts across ALL time, while this page filters by when
@@ -88,7 +116,12 @@ export default function PipelinePage({ user }: { user: User }) {
     intent.wide
       // Wide enough to contain every row the Dashboard counted, whenever it was found.
       ? { kind: "custom", from: "1900-01-01", to: "2999-01-01" }
-      : periodOf("week"));
+      : defaultPeriodFor(intent.stage ?? "screened"));
+  // Once the reader moves the period themselves it is theirs, and changing stage stops
+  // resetting it. Without this the per-stage default would undo a deliberate choice every
+  // time somebody stepped along the line and back.
+  const [pinnedPeriod, setPinnedPeriod] = useState(intent.wide);
+  const pickPeriod = (p: Period) => { setPinnedPeriod(true); setPeriod(p); };
   const [weeks, setWeeks] = useState<Weeks | null>(null);
   const [week, setWeek] = useState<string | null>(null);
 
@@ -109,29 +142,116 @@ export default function PipelinePage({ user }: { user: User }) {
         lead="Every opportunity across its lifecycle — found and screened, decided, then tracked through the bid."
       />
 
-      {/* The common denominators, above the stages. The week picker only appears for the
-          stage that is keyed by a review week; the period drives the date-ranged ones. */}
-      <PeriodPicker
-        value={period} onChange={setPeriod}
-        right={stage === "screened" && weeks ? (
-          <label className="flex items-center gap-2 text-sm text-ink-600">
-            Review week
-            <Select value={week ?? weeks.defaultWeek} onChange={(e) => setWeek(e.target.value)}
-              className="w-auto py-1.5">
-              {weeks.weeks.map((w) => <option key={w} value={w}>{w}</option>)}
-            </Select>
-          </label>
-        ) : undefined}
+      {/* ONE CONTROL, AND IT IS THE ONE THAT WORKS HERE.
+
+          Screened is keyed by a review WEEK: `ScreenedStage` takes week/weeks/onPickWeek
+          and never reads `period` — grep it, the only hits are prose. So the period
+          picker that used to sit here on this stage drove nothing at all. A reader could
+          move the grain, step back a month, open the custom range, and watch the list not
+          change, which is a worse lie than any wording: the control was answering for a
+          filter that did not exist.
+
+          It was survivable while Screened had one list. It stopped being survivable when
+          the Triage section landed below (owner, 2026-11-18), because now there are two
+          lists under it and the obvious reading of an inert control is "it governs the
+          other one". The react-migration session's instinct was right — bind the control
+          to the block it governs — and the honest version of that is to show only the
+          control that governs something.
+
+          The other four stages are date-ranged and keep the picker, with defaultPeriodFor
+          and the pinning behind it untouched: a period chosen on Bidding still survives a
+          walk down the line and back. */}
+      {stage === "screened" ? (
+        weeks && (
+          <div className="mb-6 rounded-xl border border-ink-200 bg-white p-3 shadow-card">
+            <label className="flex items-center gap-2 text-sm text-ink-600">
+              Review week
+              <Select value={week ?? weeks.defaultWeek}
+                onChange={(e) => setWeek(e.target.value)} className="w-auto py-1.5">
+                {weeks.weeks.map((w) => <option key={w} value={w}>{w}</option>)}
+              </Select>
+            </label>
+          </div>
+        )
+      ) : (
+        <PeriodPicker value={period} onChange={pickPeriod} />
+      )}
+
+      <StageLine
+        stage={stage}
+        onPick={(s) => {
+          setStage(s);
+          // Follow the stage only while the period is still a default. A reader who has
+          // chosen one keeps it across the whole line.
+          if (!pinnedPeriod) setPeriod(defaultPeriodFor(s));
+        }}
       />
 
-      <StageLine stage={stage} onPick={setStage} />
-
       <div className="mt-6">
-        {stage === "screened" && <ScreenedStage week={week} weeks={weeks} onPickWeek={setWeek} />}
-        {stage === "reviewed" && <ReviewedStage period={period} onPickPeriod={setPeriod} />}
+        {stage === "screened" && (
+          <>
+            <ScreenedStage week={week} weeks={weeks} onPickWeek={setWeek} />
+            <TriageSection user={user} />
+          </>
+        )}
+        {/* A stage's own "show the whole year" button is the reader choosing a period
+            just as deliberately as the picker above, so it pins too. */}
+        {stage === "reviewed" && <ReviewedStage period={period} onPickPeriod={pickPeriod} />}
         {stage === "bidding" && <BiddingStage period={period} />}
-        {stage === "submitted" && <SubmittedStage period={period} onPickPeriod={setPeriod} />}
-        {stage === "outcome" && <OutcomeStage period={period} onPickPeriod={setPeriod} />}
+        {stage === "submitted" && <SubmittedStage period={period} onPickPeriod={pickPeriod} />}
+        {stage === "outcome" && <OutcomeStage period={period} onPickPeriod={pickPeriod} />}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * TRIAGE, as a section of the Screened stage rather than a page (owner, 2026-11-18):
+ * "i don't think it needs to sit on a page of its own. it can sit under Pipeline >
+ * Screened ... sits own its own section as 'Triaged Calls - full list'".
+ *
+ * WHY IT BELONGS HERE. Screened is the stage where a call has been found and scored and
+ * nobody has decided yet, and triage is the act of deciding. The block above it is that
+ * work for the week the team is sitting down to; this is the same work with no week on it.
+ *
+ * THE SCOPE IS SAID TWICE, HERE AND IN THE BLOCK ABOVE, because the Review week control at
+ * the top of the stage governs only that block. An all-time list under a week-scoped
+ * control is exactly the arrangement a reader reports as a bug — "I set the week and the
+ * list below ignored me" — so each list carries its own scope in its own heading, and this
+ * one says what the control does not reach.
+ *
+ * It renders the SAME component the `/opportunities` key renders, with `embedded` to drop
+ * the page heading. One list, two mount points: a change to what triage means cannot land
+ * on one and miss the other.
+ */
+function TriageSection({ user }: { user: User }) {
+  // Deep links from the Dashboard carry ?bucket=<figure> and used to land on a page whose
+  // first element was the list. Here the list is below a stage, so an unscrolled landing
+  // shows the week's block and looks like the tile went to the wrong place. Scroll to the
+  // section when, and only when, the reader arrived by clicking a figure.
+  useEffect(() => {
+    try {
+      if (!new URLSearchParams(window.location.search).get("bucket")) return;
+    } catch {
+      return;
+    }
+    // After paint, so the section exists and the list has laid out its filters.
+    const id = window.setTimeout(() => {
+      document.getElementById("triage")?.scrollIntoView({ block: "start" });
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, []);
+
+  return (
+    <section id="triage" className="mt-10 border-t border-ink-100 pt-8">
+      <h2 className="text-lg font-bold text-brand-700">Triaged calls — full list</h2>
+      <p className="mt-1 text-sm text-ink-600">
+        Every call, whichever week it was found in — the Review week above applies to the
+        screened block, not to this one. Pick a Dashboard figure to see the rows behind
+        it, then narrow by funder, lead or text.
+      </p>
+      <div className="mt-2">
+        <OpportunitiesPage user={user} embedded />
       </div>
     </section>
   );

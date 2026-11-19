@@ -22,7 +22,10 @@
  * than letting the reader think five went missing.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowUpDown, ExternalLink, Pencil, Search, X } from "lucide-react";
+import {
+  AlertTriangle, ArrowUpDown, CalendarClock, ChevronLeft, ChevronRight, ExternalLink,
+  Pencil, Search, X,
+} from "lucide-react";
 import {
   fetchOpportunityList,
   type OpportunityBucket, type OpportunityList, type OpportunityListRow, type User,
@@ -30,8 +33,13 @@ import {
 import RfpEditor from "../opportunity/RfpEditor";
 import { hrefOf, Link, setParams, useLocation } from "../router";
 import {
-  Badge, Card, EmptyState, Notice, PageHeader, Select, Spinner, fieldClass, type Tone,
+  Badge, Card, EmptyState, IconButton, Notice, PageHeader, Select, Spinner, field,
+  type Tone,
 } from "../ui";
+
+/** Rows per page (owner, 2026-11-18). Ten is also what Funding and Donors show, and a
+ *  reader moving between them should not have to learn a different page size for each. */
+const PAGE_SIZE = 10;
 
 const DECISION_TONE: Record<string, Tone> = {
   proceed: "good", "proceed as sub": "good", park: "warn", decline: "bad",
@@ -62,37 +70,116 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: "title", label: "Title, A to Z" },
 ];
 
-/** The bucket chips across the top. Each carries its own live count, so the page doubles
- *  as the Dashboard's figures at a glance — and switching costs nothing, because the whole
- *  set was fetched once. */
-function BucketChips({ buckets, active, onPick }: {
-  buckets: OpportunityBucket[]; active: string; onPick: (k: string) => void;
+/**
+ * The bucket picker — one control, the figures filed under the question each answers.
+ *
+ * WHY A SELECT AND NOT FOURTEEN CHIPS. The chips were honest but unreadable: fourteen of
+ * them wrapped over two rows above the page's own filters, so the thing that decides WHAT
+ * YOU ARE LOOKING AT sat apart from, and looked unlike, the things that narrow it. A
+ * reader had to scan fourteen labels to find the one question they arrived with.
+ *
+ * WHY ONE SELECT AND NOT ONE PER GROUP. The buckets are a single choice — picking Archived
+ * replaces Awaiting review, it does not combine with it. Three dropdowns would LOOK like
+ * three filters that narrow together and would have to silently reset each other, which is
+ * the worse lie. `optgroup` gives the parent headings without implying they compose.
+ *
+ * The counts stay on every option, so the Dashboard's figures are still readable here —
+ * they are just read inside the list rather than across the page.
+ */
+/**
+ * The one figure that is a PROMPT rather than a lens, given its own control.
+ *
+ * Every other bucket answers "show me the calls that are X". This one answers "what runs
+ * out soon", and it is the only one on the page with a deadline attached to doing nothing
+ * about it — a live bid whose fortnight passes unnoticed is simply not submitted. Inside
+ * the dropdown it was a line of text you had to go looking for, which is the wrong shape
+ * for the question somebody opens this page to ask first.
+ *
+ * IT IS STILL IN THE DROPDOWN, under By deadline, and that is deliberate. The buckets are
+ * one selection; a shortcut that removed its own target from the list would leave the
+ * dropdown with nothing valid to show while the shortcut was active, and a native select
+ * with no matching option displays its FIRST one — the page would say "Calls found" while
+ * listing the fortnight's bids. Both controls show the same state because they set the
+ * same state.
+ *
+ * Pressing it while it is already on returns to Calls found, so it toggles rather than
+ * trapping the reader in a filter they have to go elsewhere to leave.
+ */
+function DueSoonButton({ bucket, active, onPick }: {
+  bucket: OpportunityBucket; active: boolean; onPick: (k: string) => void;
 }) {
   return (
-    <div className="flex flex-wrap gap-1.5">
-      {buckets.map((b) => {
-        const on = b.key === active;
-        return (
-          <button
-            key={b.key} onClick={() => onPick(b.key)} title={b.rule}
-            aria-pressed={on}
-            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors ${
-              on
-                ? "border-brand-700 bg-brand-700 font-semibold text-white"
-                : "border-ink-200 bg-white text-ink-700 hover:border-ink-300 hover:bg-ink-50"}`}
-          >
-            {b.label}
-            <span className={`tabular-nums ${on ? "text-brand-100" : "text-ink-400"}`}>
-              {b.count}
-            </span>
-          </button>
-        );
-      })}
-    </div>
+    <button
+      type="button"
+      onClick={() => onPick(active ? "found" : bucket.key)}
+      aria-pressed={active}
+      title={bucket.rule}
+      className={`inline-flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors ${
+        active
+          ? "border-accent-600 bg-accent-600 text-white hover:bg-accent-700"
+          : "border-accent-600/40 bg-accent-50 text-accent-800 hover:border-accent-600 hover:bg-accent-100"}`}
+    >
+      <CalendarClock className="h-4 w-4" strokeWidth={2} />
+      {bucket.label}
+      {/* The count is the point of the control: a 0 here is the reassurance, so it is
+          never hidden or greyed into invisibility. */}
+      <span className={`tabular-nums ${active ? "text-white" : "text-accent-700"}`}>
+        {bucket.count}
+      </span>
+    </button>
   );
 }
 
-export default function OpportunitiesPage({ user }: { user: User }) {
+function BucketPicker({ buckets, groups, active, onPick }: {
+  buckets: OpportunityBucket[]; groups: string[];
+  active: string; onPick: (k: string) => void;
+}) {
+  // Any bucket whose group the server did not name still has to appear, or a figure
+  // added later would vanish from the page instead of landing under a new heading.
+  const named = new Set(groups);
+  const rest = buckets.filter((b) => !named.has(b.group));
+  const order = rest.length ? [...groups, "Other"] : groups;
+  const inGroup = (g: string) =>
+    g === "Other" ? rest : buckets.filter((b) => b.group === g);
+
+  return (
+    <Select
+      aria-label="Which figure to show" className="font-semibold"
+      value={active} onChange={(e) => onPick(e.target.value)}
+    >
+      {order.map((g) => {
+        const members = inGroup(g);
+        if (!members.length) return null;
+        return (
+          <optgroup key={g} label={g}>
+            {members.map((b) => (
+              <option key={b.key} value={b.key} title={b.rule}>
+                {b.label} ({b.count})
+              </option>
+            ))}
+          </optgroup>
+        );
+      })}
+    </Select>
+  );
+}
+
+/**
+ * `embedded` — rendered as a SECTION of another screen rather than as the page itself.
+ *
+ * It drops the PageHeader and nothing else: the heading belongs to whatever is hosting it
+ * (Pipeline > Screened says "Triaged calls — full list"), and two headings stacked read as
+ * two screens. The filters, the bucket and the table are identical, deliberately — this is
+ * one list with two mount points, not a copy, so a change to the triage rules cannot reach
+ * one and miss the other.
+ *
+ * The bucket still lives in the URL, so a Dashboard tile remains an ordinary link however
+ * this is mounted, and `setParams` edits the query in place rather than replacing it —
+ * picking a figure inside the Pipeline page keeps `stage=screened` where it is.
+ */
+export default function OpportunitiesPage(
+  { user, embedded = false }: { user: User; embedded?: boolean },
+) {
   const { params } = useLocation();
   const [data, setData] = useState<OpportunityList | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -116,6 +203,10 @@ export default function OpportunitiesPage({ user }: { user: User }) {
   useEffect(load, [load]);
 
   const bucket = data?.buckets.find((b) => b.key === bucketKey) ?? null;
+  // Looked up rather than assumed: a deployment whose server does not ship this figure
+  // should lose the shortcut, not render a button that selects a bucket with no rows and
+  // no rule to explain itself.
+  const dueSoon = data?.buckets.find((b) => b.key === "due_in_14_days") ?? null;
 
   const inBucket = useMemo(
     () => (data?.rows ?? []).filter((r) => r.buckets.includes(bucketKey)),
@@ -161,6 +252,21 @@ export default function OpportunitiesPage({ user }: { user: User }) {
     () => rows.reduce((t, r) => t + r.applications, 0), [rows]);
   const narrowed = rows.length !== inBucket.length;
 
+  // PAGING. Ten rows at a time, over the rows the bucket and filters have already chosen —
+  // never over the bucket, so the figure a tile promised still governs what can appear.
+  //
+  // `cur` is clamped rather than stored clamped: a filter that shortens the list below the
+  // page you are on must not leave you looking at an empty table while the control says
+  // page 4. The effect below resets to 1 on any change to the SELECTION, which is the
+  // honest behaviour when the rows underneath you are no longer the ones you were reading
+  // — paging is a position in a list, and that is a different list.
+  const [page, setPage] = useState(1);
+  useEffect(() => setPage(1), [bucketKey, funder, lead, q, sort]);
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const cur = Math.min(page, pages);
+  const pageRows = useMemo(
+    () => rows.slice((cur - 1) * PAGE_SIZE, cur * PAGE_SIZE), [rows, cur]);
+
   const pick = (k: string) => {
     setParams({ bucket: k });
     // The narrowing filters belong to the bucket you were in; carrying them into another
@@ -173,60 +279,84 @@ export default function OpportunitiesPage({ user }: { user: User }) {
 
   return (
     <>
-      <PageHeader
-        title="Triage"
-        lead={
-          <>
-            Every call in one place. The figures below are the Dashboard's own — picking one
-            shows the rows behind that number, and nothing else.
-          </>
-        }
-      />
+      {!embedded && (
+        <PageHeader
+          title="Triage"
+          lead={
+            <>
+              Every call in one place. The figure you pick is the Dashboard's own —
+              choosing one shows the rows behind that number, and nothing else; the
+              filters beside it narrow what it chose.
+            </>
+          }
+        />
+      )}
 
-      <BucketChips buckets={data.buckets} active={bucketKey} onPick={pick} />
+      {/* ONE ROW, because they are one decision taken in two steps: which figure, then
+          which slice of it. Splitting them put the first above the page's heading and the
+          second below it, so they looked like different kinds of thing.
 
-      {bucket && (
-        <div className="mt-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <h2 className="text-lg font-bold text-brand-700">{bucket.label}</h2>
-          <p className="text-sm text-ink-500">{bucket.rule}</p>
+          TWO ROWS, SPLIT BY WHAT THEY DO. Row one chooses WHICH CALLS — the fortnight
+          shortcut, the figure, the funder, the lead, the order. Row two narrows them by
+          free text, which is the only filter with no fixed set of answers and the only
+          one you type, so it gets its own line and room to be read back.
+
+          THE WIDTH IS ON THE WRAPPER, NOT THE CONTROL, and it has to be. `fieldClass`
+          begins `w-full`, and Tailwind resolves two width utilities by stylesheet order
+          rather than by the order they appear in the attribute — so the `w-52` these
+          selects used to pass LOST to it, every one of them rendered full width, and that
+          is why four filters occupied four lines. A fixed-width flex item with a w-full
+          control inside it does what the class was asking for, without changing `Select`
+          for the rest of the app (where other callers have the same silent problem). */}
+      {/* ROW ONE — WHICH CALLS. Every control here changes the set. */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {dueSoon && (
+          <DueSoonButton
+            bucket={dueSoon} active={bucketKey === dueSoon.key} onPick={pick}
+          />
+        )}
+        <div className="w-64">
+          <BucketPicker
+            buckets={data.buckets} groups={data.bucketGroups ?? []}
+            active={bucketKey} onPick={pick}
+          />
         </div>
-      )}
+        <div className="w-52">
+          <Select aria-label="Filter by funder"
+            value={funder} onChange={(e) => setFunder(e.target.value)}>
+            <option value="">Every funder</option>
+            {funders.map((f) => <option key={f} value={f}>{f}</option>)}
+          </Select>
+        </div>
+        <div className="w-44">
+          <Select aria-label="Filter by lead"
+            value={lead} onChange={(e) => setLead(e.target.value)}>
+            <option value="">Anyone</option>
+            {leads.map((l) => <option key={l} value={l}>{l}</option>)}
+          </Select>
+        </div>
+        <div className="w-56">
+          <Select aria-label="Sort"
+            value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
+            {SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </Select>
+        </div>
+      </div>
 
-      {/* The one place this page could mislead, said out loud. */}
-      {bucket?.kind === "applications" && (
-        <Notice tone="neutral" className="mt-3">
-          <strong>{bucket.count}</strong>{" "}
-          {bucket.count === 1 ? "application" : "applications"} across{" "}
-          <strong>{inBucket.length}</strong>{" "}
-          {inBucket.length === 1 ? "opportunity" : "opportunities"} — a call sent to the
-          same funder twice counts twice in the figure and appears once below.
-        </Notice>
-      )}
-
-      <div className="mt-4 mb-3 flex flex-wrap items-center gap-2">
-        <div className="relative">
+      {/* ROW TWO — WHICH OF THEM. Text search is the one filter with no fixed set of
+          answers, so it gets the room to be typed in rather than a slot between two
+          dropdowns. The tally sits with it because it is what all of row one and row two
+          together produced, and it reads last for the same reason. */}
+      <div className="mt-2 mb-3 flex flex-wrap items-center gap-2">
+        <div className="relative w-72">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-ink-400" />
           <input
             value={q} onChange={(e) => setQ(e.target.value)}
             aria-label="Filter these opportunities"
             placeholder="Title, funder, lead or uid"
-            className={`${fieldClass} w-64 pl-8`}
+            className={field("pl-8")}
           />
         </div>
-        <Select aria-label="Filter by funder" className="w-52"
-          value={funder} onChange={(e) => setFunder(e.target.value)}>
-          <option value="">Every funder</option>
-          {funders.map((f) => <option key={f} value={f}>{f}</option>)}
-        </Select>
-        <Select aria-label="Filter by lead" className="w-44"
-          value={lead} onChange={(e) => setLead(e.target.value)}>
-          <option value="">Anyone</option>
-          {leads.map((l) => <option key={l} value={l}>{l}</option>)}
-        </Select>
-        <Select aria-label="Sort" className="w-56"
-          value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
-          {SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-        </Select>
         {narrowed && (
           <button
             onClick={() => { setQ(""); setFunder(""); setLead(""); }}
@@ -235,13 +365,39 @@ export default function OpportunitiesPage({ user }: { user: User }) {
             <X className="h-3.5 w-3.5" /> Clear filters
           </button>
         )}
+        {/* "Showing" moved to the pager below, where it names the PAGE. Two lines both
+            beginning "Showing", one counting what the filters kept and one counting what
+            fits on screen, is a reader comparing two numbers that answer different
+            questions. This line is the filter's count; the pager's is the page's. */}
         <span className="ml-auto text-sm text-ink-500 tabular-nums">
           {narrowed
-            ? <>Showing <strong className="text-ink-700">{rows.length}</strong> of {inBucket.length}</>
+            ? <><strong className="text-ink-700">{rows.length}</strong> of {inBucket.length} match</>
             : <><strong className="text-ink-700">{rows.length}</strong> {rows.length === 1 ? "opportunity" : "opportunities"}</>}
           {bucket?.kind === "applications" && <> · {applications} applications</>}
         </span>
       </div>
+
+      {/* The chosen figure's own sentence, kept. The picker shows a label and a count;
+          this is the rule behind them, and it is the only thing on the page a reader can
+          check the selection against. It reads under the controls now rather than above
+          them, because it describes what they produced. */}
+      {bucket && (
+        <p className="mb-3 text-sm text-ink-500">
+          <strong className="font-semibold text-brand-700">{bucket.label}</strong>
+          {" — "}{bucket.rule}
+        </p>
+      )}
+
+      {/* The one place this page could mislead, said out loud. */}
+      {bucket?.kind === "applications" && (
+        <Notice tone="neutral" className="mb-3">
+          <strong>{bucket.count}</strong>{" "}
+          {bucket.count === 1 ? "application" : "applications"} across{" "}
+          <strong>{inBucket.length}</strong>{" "}
+          {inBucket.length === 1 ? "opportunity" : "opportunities"} — a call sent to the
+          same funder twice counts twice in the figure and appears once below.
+        </Notice>
+      )}
 
       {rows.length === 0 ? (
         <Card>
@@ -272,7 +428,7 @@ export default function OpportunitiesPage({ user }: { user: User }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => {
+                {pageRows.map((r) => {
                   const d = daysTo(r.deadline, data.today);
                   const dec = lower(r.decision);
                   const ans = lower(r.donorDecision);
@@ -357,6 +513,30 @@ export default function OpportunitiesPage({ user }: { user: User }) {
             </table>
           </div>
         </Card>
+      )}
+
+      {/* ONLY WHEN THERE IS MORE THAN ONE PAGE. "Page 1 of 1" beside two dead arrows is a
+          control that has nothing to control, on what is usually a short list once a
+          figure and a funder have been chosen. The count itself is never hidden — it is on
+          the filter line above, which is there whether or not this is. */}
+      {pages > 1 && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-ink-600">
+          <span className="tabular-nums">
+            Showing {(cur - 1) * PAGE_SIZE + 1}–{(cur - 1) * PAGE_SIZE + pageRows.length}
+            {" of "}{rows.length}
+          </span>
+          <div className="flex items-center gap-1">
+            <IconButton label="Previous page" disabled={cur <= 1}
+              onClick={() => setPage(cur - 1)}>
+              <ChevronLeft className="h-4 w-4" />
+            </IconButton>
+            <span className="px-2 tabular-nums">Page {cur} of {pages}</span>
+            <IconButton label="Next page" disabled={cur >= pages}
+              onClick={() => setPage(cur + 1)}>
+              <ChevronRight className="h-4 w-4" />
+            </IconButton>
+          </div>
+        </div>
       )}
 
       <p className="mt-3 flex items-center gap-1.5 text-xs text-ink-500">

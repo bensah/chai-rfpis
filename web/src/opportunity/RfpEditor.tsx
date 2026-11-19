@@ -48,109 +48,13 @@ import {
   type FormOptions, type Warning,
 } from "../api";
 import { awaitJob, JOB_STATUS_LABEL } from "../jobs";
-import MultiSelect from "../components/MultiSelect";
-import { Button, IconButton, Notice, Select, Spinner, fieldClass } from "../ui";
+import { Button, IconButton, Notice, Spinner } from "../ui";
+// The form controls are shared with Submit New Notice — see ./controls.tsx.
+import { Choice, ChoiceOrNew, DateBox, Lbl, Multi, Num, Row, Text } from "./controls";
 import {
   changedColumns, columnValue, dateText, numText, orNull, readRow, txt,
   type Form, type FormValue,
 } from "./values";
-
-// ── Small controls ───────────────────────────────────────────────────────────
-
-function Row({ children, cols = 2 }: { children: React.ReactNode; cols?: 2 | 3 | 4 }) {
-  const c = cols === 4 ? "sm:grid-cols-4" : cols === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2";
-  return <div className={`grid grid-cols-1 gap-x-4 ${c}`}>{children}</div>;
-}
-
-function Lbl({ children, hint }: { children: React.ReactNode; hint?: string }) {
-  return (
-    <div className="mb-1.5 text-sm font-medium text-ink-700" title={hint}>{children}</div>
-  );
-}
-
-function Text({ label, value, onChange, hint, area, required }: {
-  label: string; value: string; onChange: (v: string) => void;
-  hint?: string; area?: boolean; required?: boolean;
-}) {
-  return (
-    <div className="mb-4">
-      <Lbl hint={hint}>{label}{required && <span className="text-bad-600"> *</span>}</Lbl>
-      {area
-        ? <textarea className={`${fieldClass} min-h-24`} value={value}
-            onChange={(e) => onChange(e.target.value)} />
-        : <input className={fieldClass} value={value}
-            onChange={(e) => onChange(e.target.value)} />}
-      {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
-    </div>
-  );
-}
-
-function Num({ label, value, onChange, step = "1", hint }: {
-  label: string; value: string; onChange: (v: string) => void; step?: string; hint?: string;
-}) {
-  return (
-    <div className="mb-4">
-      <Lbl hint={hint}>{label}</Lbl>
-      <input type="number" min="0" step={step} className={fieldClass} value={value}
-        onChange={(e) => onChange(e.target.value)} />
-      {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
-    </div>
-  );
-}
-
-function DateBox({ label, value, onChange, hint }: {
-  label: string; value: string; onChange: (v: string) => void; hint?: string;
-}) {
-  return (
-    <div className="mb-4">
-      <Lbl hint={hint}>{label}</Lbl>
-      <input type="date" className={fieldClass} value={value}
-        onChange={(e) => onChange(e.target.value)} />
-      {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
-    </div>
-  );
-}
-
-/**
- * A controlled vocabulary, with one rule worth stating: a value already on the row that is
- * NOT in the list stays selectable. `_opt` and `_type_select` both do this, and it is not
- * politeness — a row carrying a value an older vocabulary allowed would otherwise be
- * silently rewritten to something else the moment anyone opened the editor on it.
- */
-function Choice({ label, value, onChange, options, hint, blank = "—" }: {
-  label: string; value: string; onChange: (v: string) => void;
-  options: string[]; hint?: string; blank?: string;
-}) {
-  const opts = useMemo(() => {
-    const list = [...new Set(options)];
-    return value && !list.includes(value) ? [...list, value] : list;
-  }, [options, value]);
-  return (
-    <div className="mb-4">
-      <Lbl hint={hint}>{label}</Lbl>
-      <Select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">{blank}</option>
-        {opts.map((o) => <option key={o} value={o}>{o}</option>)}
-      </Select>
-      {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
-    </div>
-  );
-}
-
-function Multi({ label, value, onChange, options, hint }: {
-  label: string; value: string[]; onChange: (v: string[]) => void;
-  options: string[]; hint?: string;
-}) {
-  // Same rule as Choice: stored values the vocabulary has since dropped stay selected.
-  const opts = useMemo(
-    () => [...new Set([...options, ...value])], [options, value]);
-  return (
-    <div className="mb-4">
-      <MultiSelect label={label} options={opts} value={value} onChange={onChange} help={hint} />
-      {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
-    </div>
-  );
-}
 
 // ── The nine criteria ────────────────────────────────────────────────────────
 
@@ -376,6 +280,34 @@ export default function RfpEditor({
         );
         row = res.row;
         notes.push(...(res.warnings ?? []));
+        /*
+         * THIS MESSAGE IS WRONG FOR SOME ROWS AND THE FIX IS WAITING ON A DEFINITION.
+         *
+         * Since dcea067 the re-score job DECLINES a row a person has assessed, so on
+         * those rows the number will not move and this says it will. The fix is not to
+         * predict the skip here — pipeline_writes.ts explains why the predicate cannot be
+         * evaluated at save time — but to report what the job actually DID, which is
+         * correct however "assessed" ends up being defined.
+         *
+         * The job's contract, from the session that wrote it, so whoever picks this up
+         * does not have to go and ask:
+         *
+         *   result: { rows, scored, changed, failed, skipped_human_assessed, runner }
+         *   skipped_human_assessed is an int, always present, 0 when nothing was skipped
+         *   message: "Scored 0, 1 left to the reviewer"
+         *
+         * So a single-uid job on a reviewed row returns
+         * { rows: 1, scored: 0, changed: 0, failed: 0, skipped_human_assessed: 1 }, and the
+         * editor should then say the score was left as the reviewer set it rather than
+         * anything mentioning a job. `awaitJob` already exists for the delete flow; this
+         * wants the non-blocking version — show "queued", then replace the note when it
+         * lands — because a save should not wait on a job the way a delete must.
+         *
+         * HELD because the owner has an open question about what counts as assessed, and
+         * the answer changes how large this gap is: keyed on decision_date it affects
+         * genuinely reviewed rows, keyed as it is today it affects every row anyone has
+         * ever saved. See the measurement in e19e838.
+         */
         if (res.rescore) {
           notes.push({
             code: "rescoring",
@@ -536,9 +468,19 @@ export default function RfpEditor({
               onChange={(x) => set("call_geographic_scope", x)} options={opts.geoOptions} />
             <Multi label="Program area(s)" value={l("call_domain_areas")}
               onChange={(x) => set("call_domain_areas", x)} options={opts.programAreas} />
+            {/* "Funding opportunity number" was here, next to "Opportunity ID" on the
+                first tab, and the two asked the same question twice. Measured over the
+                live table: 151 of 271 rows carry an opportunity_id, ONE carries a funding
+                opportunity number, and on that row the two strings are identical.
+                `core/opportunity_detail.py` had already reached the same conclusion from
+                the other end — it prints the number "only when it is genuinely a SECOND
+                reference".
+
+                The COLUMN stays. Extraction (`core/extract.py`), de-duplication
+                (`core/deduplicator.py`) and the shared pool all read it, and a funder's
+                own reference is worth keeping when a source supplies one. What goes is
+                the second box asking a human to type it. */}
             <Row>
-              <Text label="Funding opportunity number" value={v("funding_opportunity_number")}
-                onChange={(x) => set("funding_opportunity_number", x)} />
               <Text label="Apply URL (funder portal)" value={v("apply_url")}
                 onChange={(x) => set("apply_url", x)}
                 hint="Where applicants actually submit, if different from the opportunity link." />
@@ -667,13 +609,25 @@ export default function RfpEditor({
       case "Team":
         return (
           <>
-            <Choice label="Proposal lead" value={v("proposal_lead")}
-              onChange={(x) => set("proposal_lead", x)} options={opts.teamMembers} />
-            <Multi label="Contributors" value={l("contributors")}
-              onChange={(x) => set("contributors", x)} options={opts.teamMembers} />
-            <Multi label="Reviewers" value={l("reviewers")}
-              onChange={(x) => set("reviewers", x)} options={opts.teamMembers} />
-            <Multi label="Support" value={l("support_roles")}
+            {/* THE THREE PEOPLE FIELDS ACCEPT A NAME THE LIST DOES NOT HOLD. `teamMembers`
+                is the tenant's own structure from Settings, and a proposal is routinely
+                led or reviewed by somebody outside it — a CHAI Global Vaccines lead on a
+                Cameroon call, say. Refusing the name does not keep the data clean; it
+                leaves the field blank or fills it with the wrong person. People are not a
+                controlled vocabulary and nothing scores off them.
+
+                SUPPORT IS DIFFERENT and stays closed: it is a list of FUNCTIONS
+                (technical, finance, compliance), not of people. Its label now says so. */}
+            <ChoiceOrNew label="Proposal lead" value={v("proposal_lead")}
+              onChange={(x) => set("proposal_lead", x)} options={opts.teamMembers}
+              hint="Anyone on the team, or type a name from another team." />
+            <Multi label="Contributors" value={l("contributors")} allowNew
+              onChange={(x) => set("contributors", x)} options={opts.teamMembers}
+              hint="Type a name not listed to add it." />
+            <Multi label="Reviewers" value={l("reviewers")} allowNew
+              onChange={(x) => set("reviewers", x)} options={opts.teamMembers}
+              hint="Type a name not listed to add it." />
+            <Multi label="Type of support needed" value={l("support_roles")}
               onChange={(x) => set("support_roles", x)} options={d.support_roles ?? []}
               hint="Functions this proposal needs — technical, finance, compliance. Not people; name individuals under Contributors and Reviewers." />
           </>

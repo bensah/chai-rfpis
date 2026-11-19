@@ -34,6 +34,7 @@ from core import org_profile as orgp                       # noqa: E402
 from core import settings as _settings                     # noqa: E402
 from core.assessment import assess_row                     # noqa: E402
 from core.policies import get_policies                     # noqa: E402
+from core.score_stamp import stamp_state                   # noqa: E402
 from db.supabase_client import service_client              # noqa: E402
 from scripts.rescore_existing import _evaluate             # noqa: E402
 
@@ -52,7 +53,8 @@ if hasattr(sys.stdout, "reconfigure"):
 LIMIT = int(sys.argv[1]) if len(sys.argv) > 1 else 120
 
 
-def both_paths(row: dict, org: dict, org_set: dict, donors: list[dict]) -> dict:
+def both_paths(row: dict, org: dict, org_set: dict, donors: list[dict],
+               current_sig: str | None = None) -> dict:
     """What each path would store for this row.
 
     The re-score runs TWICE, because the two runs answer different questions and only one of
@@ -83,6 +85,18 @@ def both_paths(row: dict, org: dict, org_set: dict, donors: list[dict]) -> dict:
             "has_stamp": "score_profile_sig" in row,
             "scored_at": row.get("scored_at"),
             "profile_sig": row.get("score_profile_sig"),
+            # THE VERDICT, DECIDED IN PYTHON. `core.score_stamp.stamp_state` is the one
+            # definition of what the stamps mean, and the TypeScript side now reads it
+            # rather than re-deriving it from `profile_sig` and a signature — which is
+            # exactly what it used to do, and exactly how it came to report every stamped
+            # row as "current" for weeks when the signature it compared against was null.
+            #
+            # Five words, and two of them did not exist before: `deferred` (unstamped
+            # because a human assessed the row, so the job will NEVER re-stamp it — 39
+            # rows, permanently outside what this check asserts) and `unknown` (stamped,
+            # but we could not say what the current signature is, which is the absence of
+            # evidence rather than evidence of currency).
+            "state": stamp_state(row, current_sig),
         },
     }
 
@@ -111,6 +125,38 @@ def both_paths(row: dict, org: dict, org_set: dict, donors: list[dict]) -> dict:
     return out
 
 
+# The row shapes the TypeScript side asks about. Kept HERE so both halves are answering
+# about the same bytes, and answered by the Python's own predicate rather than by a list
+# of expectations written down twice — a shared fixture with two hand-written answer keys
+# is two things to keep in step, which is the problem this check exists to solve.
+HUMAN_CASES = [
+    {"decision_date": "2026-11-16"},
+    {"decision_date": "2026-11-16", "decision": "Proceed"},
+    {"decision_overridden_by": "ben@x.org"},
+    {"decision_overridden_by": "ben@x.org", "decision": "Proceed"},
+    {"decision_overridden_by": "ben@x.org", "decision": ""},
+    {"decision": "Proceed"},
+    {"decision_date": "", "decision_overridden_by": "   ", "decision": "Proceed"},
+    {"decision_date": None, "decision_overridden_by": None, "decision": None},
+    {},
+]
+
+
+def human_cases() -> list[bool]:
+    """What `core.score_stamp.human_assessed` answers for each shape above."""
+    from core.score_stamp import human_assessed
+    return [bool(human_assessed(r)) for r in HUMAN_CASES]
+
+
+def human_markers() -> list[str]:
+    """`core.score_stamp.ASSESSED_BY_A_HUMAN` — the columns the re-score job's skip is
+    keyed on, which `pipeline_writes.ts` must answer the same question with. Read from the
+    module rather than retyped: a column added on one side only would have the job
+    declining a row the API has just told the editor is being recalculated."""
+    from core.score_stamp import ASSESSED_BY_A_HUMAN
+    return sorted(ASSESSED_BY_A_HUMAN)
+
+
 def main() -> None:
     sb = service_client()
     donors = sb.table("donor_intel").select("*").limit(5000).execute().data or []
@@ -118,6 +164,8 @@ def main() -> None:
                .execute().data or [])
     report: dict = {}
     report_sig: dict = {}
+    report_markers = human_markers()
+    report_cases = human_cases()
     for t in tenants:
         tid = str(t["id"])
         tok = tc.set_tenant_override(tid)
@@ -126,21 +174,36 @@ def main() -> None:
                     .eq("tenant_id", tid).limit(LIMIT).execute().data or [])
             # The signature the current profile would produce. A stored score tagged with
             # this one claims to be current; if it then disagrees with a fresh computation,
-            # that is a fault rather than staleness. Absent until migration 101 is applied.
-            try:
-                from core.live_scoring import profile_signature  # type: ignore[attr-defined]
-                report_sig[t.get("slug") or tid] = profile_signature()
-            except Exception:
-                report_sig[t.get("slug") or tid] = None
+            # that is a fault rather than staleness.
+            #
+            # THE IMPORT IS NO LONGER SWALLOWED, and that is the fix for this check's own
+            # longest-running defect. This was `try: from core.live_scoring import
+            # profile_signature / except Exception: None` — and the function DID NOT EXIST.
+            # So the except fired on every run, every tenant got a null signature, and
+            # `check-rescore.mjs`'s `if (sig && ...)` sent every stamped row to "current".
+            # The check could not tell a stale score from a wrong one and said nothing
+            # about it for as long as that import had been there.
+            #
+            # A missing signature is a fault in THIS harness, not a condition to tolerate:
+            # it silently removes the check's ability to distinguish its two outcomes. So
+            # it raises now, and the only thing caught is the per-tenant failure to read a
+            # profile, which is reported as a null signature and shows up as `unknown`.
+            from core.live_scoring import profile_signature
+            _sig = profile_signature()
+            report_sig[t.get("slug") or tid] = _sig
             org = orgp.get_profile()
             try:
                 org_set = _settings.get_org()
             except Exception:
                 org_set = {}
-            report[t.get("slug") or tid] = [both_paths(r, org, org_set, donors) for r in rows]
+            report[t.get("slug") or tid] = [
+                both_paths(r, org, org_set, donors, _sig) for r in rows]
         finally:
             tc.reset_tenant_override(tok)
-    sys.stdout.write(json.dumps({"rows": report, "current_profile_sig": report_sig},
+    sys.stdout.write(json.dumps({"rows": report, "current_profile_sig": report_sig,
+                                 "human_markers": report_markers,
+                                 "human_cases": HUMAN_CASES,
+                                 "human_answers": report_cases},
                                 default=str))
 
 

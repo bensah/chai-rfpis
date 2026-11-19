@@ -102,11 +102,45 @@ function Lines({ lines, missing }: { lines: string[]; missing: boolean }) {
   }
   return (
     <>
-      {lines.map((l, i) => (
-        <p key={i} className="text-sm leading-relaxed text-ink-700">{l}</p>
+      {paragraphs(lines).map((l, i) => (
+        <p key={i} className="mb-2 text-sm leading-relaxed text-ink-700 last:mb-0">{l}</p>
       ))}
     </>
   );
+}
+
+/**
+ * Rejoin lines that a sentence was broken across, and separate the ones that are really
+ * paragraphs.
+ *
+ * The owner, reading the SRHR overview: "see after 'evidence' and jumps to another line
+ * that begins with Pillar 2 — unclear if this is a continuous sentence or a new
+ * paragraph. likely a continuous sentence." It was. The text arrives with newlines that
+ * are an artefact of how it was written down, not of how it should be read, and rendering
+ * each one as its own `<p>` turned a flowing passage into a column of orphaned fragments
+ * with no punctuation to explain the breaks.
+ *
+ * THE RULE IS THE PUNCTUATION, not the newline. A line that does not END in terminal
+ * punctuation has not finished its sentence, so the next line continues it. A line that
+ * does is a paragraph in its own right. That is a judgement about PRESENTATION only —
+ * nothing is added, removed or reworded, and a bulleted list (every line a complete item)
+ * is unaffected because each item ends cleanly or is short enough to stand alone.
+ */
+function paragraphs(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    const prev = out[out.length - 1];
+    // Continue the previous line when it stopped mid-sentence. `:` and `;` count as
+    // unfinished too — "The Centre will operate through two pillars:" is a lead-in.
+    if (prev && !/[.!?]["')\]]?$/.test(prev) && !/^[•\-–—*]/.test(line)) {
+      out[out.length - 1] = `${prev} ${line}`;
+    } else {
+      out.push(line);
+    }
+  }
+  return out;
 }
 
 /** A label/value pair. The whole design of this page lives in these six lines: a stated
@@ -115,12 +149,31 @@ function Lines({ lines, missing }: { lines: string[]; missing: boolean }) {
 function Row({ label, value }: { label: string; value: string }) {
   const blank = isMissing(value);
   return (
-    <div className="flex items-baseline justify-between gap-4 py-1.5">
-      <dt className={`shrink-0 basis-5/12 text-sm ${blank ? "text-ink-400" : "text-ink-500"}`}>
+    // A GRID, AND THE VALUES ARE LEFT-ALIGNED. They used to be pushed to the right edge of
+    // the block, which on a page where most fields are silent produced a column of dashes
+    // floating against nothing and values that started at a different place on every line.
+    // Two aligned columns read as a table, which is what this is; the eye can run down
+    // either side.
+    // `min-h-7` so a dash and a one-line value stand the same height. Without it a card's
+    // height tracked how much of it was FILLED, so the same section was a different size
+    // on every call and two cards beside each other rarely lined up — the owner's "ensure
+    // the full cards display even if data is not available ... whether data is empty or
+    // full, we have a fixed card view". A long value still wraps and still grows the row;
+    // what no longer varies is the floor.
+    // THE LABEL IS THE BOLD ONE, not the value. It was the other way round, which put
+    // semibold weight on every sentence of extracted prose — a whole card of emphasis,
+    // which is no emphasis at all — while the thing you scan for, the field's name, was
+    // the lighter of the two. The owner: "sub-section titles can be bolded but the main
+    // text shouldn't be. In fact reverse the font style throughout all the cards."
+    //
+    // 4fr/8fr, not 5fr/7fr: the labels are short and known, the values are extracted
+    // text of any length, so the room belongs to the side that needs it.
+    <div className="grid min-h-7 grid-cols-[minmax(0,4fr)_minmax(0,8fr)] items-baseline gap-x-4 py-1.5">
+      <dt className={`text-sm ${blank ? "text-ink-400" : "font-semibold text-ink-700"}`}>
         {label}
       </dt>
-      <dd className={`min-w-0 flex-1 text-right text-sm ${
-        blank ? "text-ink-300" : "font-medium text-ink-800"}`}>
+      <dd className={`min-w-0 text-sm leading-relaxed break-words ${
+        blank ? "text-ink-300" : "text-ink-800"}`}>
         {blank ? MISSING : value}
       </dd>
     </div>
@@ -146,14 +199,140 @@ function Filled({ rows }: { rows: [string, string][] }) {
   );
 }
 
-/** A fact block or a prose block from core/opportunity_detail.page_rows. */
-function BlockView({ block }: { block: Block }) {
+/**
+ * How much of the call we actually captured, said as a percentage first.
+ *
+ * A reader meeting a page of dashes asks "is this app broken?". The honest answer is
+ * "this call stated 12 of the 97 things we track", and it belongs where they ask it
+ * rather than in a tooltip. The bar is coloured by how thin the record is, because a thin
+ * record is a fact about whether the score further down can be trusted at all.
+ */
+function Meter({ label, pct, note }: { label: string; pct: number; note?: string }) {
+  const text = pct >= 60 ? "text-good-700" : pct >= 30 ? "text-gold-700" : "text-bad-700";
+  const bar = pct >= 60 ? "bg-good-600" : pct >= 30 ? "bg-gold-500" : "bg-bad-600";
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-[0.7rem] font-semibold tracking-[0.06em] text-ink-500 uppercase">
+          {label}
+        </span>
+        <span className={`text-sm font-bold tabular-nums ${text}`}>{pct}%</span>
+      </div>
+      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-ink-200">
+        <div className={`h-full rounded-full ${bar}`} style={{ width: `${pct}%` }} />
+      </div>
+      {note && <p className="mt-1 text-xs text-ink-500">{note}</p>}
+    </div>
+  );
+}
+
+export function CoverageAside({ cov, confidence }: {
+  cov: { filled: number; total: number };
+  /** `analysis.confidence` — the scoring side's own view of how much it had to read. */
+  confidence?: { callPct: number; donorPct: number; donorMatched: boolean } | null;
+}) {
+  if (!cov.total) return null;
+  const pct = Math.round((cov.filled / cov.total) * 100);
+  return (
+    <div className="min-w-[16rem] space-y-2 rounded-lg border border-ink-200 bg-ink-50/70 px-3 py-2">
+      <Meter
+        label="Captured from the call" pct={pct}
+        note={`${cov.filled} of ${cov.total} tracked fields are stated here.`}
+      />
+      {/* THE SECOND HALF OF THE ANSWER. The owner: "Stating 'Captured from the call', does
+          it mean part was not captured from the donor site ... perhaps use the other space
+          to show % captured from donor intel, which should be 0 with a flag at the bottom
+          no intel data available, so it is clear it is 0 because no donor matching the
+          opportunity is found."
+
+          Exactly so, and the number already existed — `core/data_quality.py` computes it
+          for the confidence band and the page threw it away. A lone "captured from the
+          call" figure invites the reading that the rest came from somewhere else; two
+          figures say which, and a zero with a reason attached is information rather than
+          an unexplained blank. */}
+      {/* THE NOTES ARE A FEW WORDS NOW (owner, 2026-11-18: "is a lot of text. reduce it
+          to a few words"). The first draft explained the zero in two sentences and then
+          added a third about what a dash means. A box beside the page heading is a glance
+          surface; three lines of prose in it is an essay the reader did not open. "No
+          matching donor record" says the whole of why the figure is 0, and the dash
+          sentence went entirely — the page says "—" and a reader knows what that is. */}
+      {confidence && (
+        <Meter
+          label="From donor intelligence" pct={confidence.donorPct}
+          note={confidence.donorMatched ? undefined : "No matching donor record."}
+        />
+      )}
+    </div>
+  );
+}
+
+/** The call's own summary, in the same card as every block under it. It used to be the
+ *  one bare section at the top of a page of cards, which read as a loose paragraph adrift
+ *  rather than as the call's opening statement. */
+export function OverviewCard({ heading, lines, missing, children }: {
+  heading: string; lines: string[]; missing: boolean; children?: React.ReactNode;
+}) {
+  return (
+    // THE TEXT FILLS THE CARD. It was capped at `max-w-3xl` — 48rem — inside a card that
+    // runs the full page width, so on any normal window the overview sat in a column with
+    // a third of the card empty to its right, which is the uneven padding the owner
+    // reported ("ensure the text occupies the full space of the card, same padding across
+    // all margins"). The cap was there for line length, but this block is already the one
+    // block on the page that EARNS the full width (isWide, >900 characters), and the
+    // other cards beside it are not capped — so the one card that was supposed to be the
+    // widest read as the narrowest. `p-4` on every side is the padding; nothing insets
+    // the body past it.
+    <Card className="mb-5 p-4">
+      <h3 className="mb-1.5 text-sm font-semibold text-brand-700">{heading}</h3>
+      <Lines lines={lines} missing={missing} />
+      {children}
+    </Card>
+  );
+}
+
+/**
+ * A fact block or a prose block from core/opportunity_detail.page_rows.
+ *
+ * ONE SURFACE FOR ALL THREE KINDS, which is the whole point of this rewrite. A block was
+ * rendered three ways — `prose` as a bare section, `cards` as a bordered padded Card, and
+ * anything else as another bare section — and `page_rows` puts them SIDE BY SIDE in two
+ * columns. So a bordered card routinely sat next to a borderless one with a different
+ * vertical rhythm (`mb-5` against `mb-6`), which is the "cards distortedly placed against
+ * each other" the owner reported. The block's `kind` still decides what goes INSIDE it;
+ * it no longer decides whether the thing has edges.
+ *
+ * Spacing is the grid's now, not the block's: no `mb-*` here, so two columns cannot drift
+ * out of step with each other.
+ */
+/**
+ * Does this block hold values too long to read in half a page?
+ *
+ * The owner, on "Scope & focus": it took "only have the page instead of flowing across so
+ * text content doesn't wrap and be choked up". That block carries three comma-separated
+ * lists — geographies, sectors, programme areas — and each ran to five or six wrapped
+ * lines inside a narrow column while the other half of the row sat empty.
+ *
+ * Measured from the block's own content rather than from its title, so a block that is
+ * wide on one call and short on another is laid out for what it actually holds. 90
+ * characters is roughly where a value stops fitting on two lines at half width.
+ */
+export function isWide(block: Block): boolean {
+  // PROSE PAIRS UP UNLESS IT IS GENUINELY LONG. At 220 characters "What is NOT funded"
+  // went full width while "What is funded" stayed narrow above it, splitting the one pair
+  // on the page that is meant to be read against itself — funded on the left, not funded
+  // on the right. A few hundred characters reads fine in half a page; only an overview-
+  // length passage needs the whole width, and `Project overview` clears 900 easily.
+  if (block.kind === "prose") return block.lines.join(" ").length > 900;
+  return block.rows.some(([, v]) => v.length > 90);
+}
+
+export function BlockView({ block }: { block: Block }) {
   if (block.kind === "prose") {
     return (
-      <section className="mb-6">
-        <h3 className="mb-1.5 text-sm font-semibold text-ink-800">{block.title}</h3>
+      <Card className="h-full p-4">
+        <h3 className="mb-1.5 text-sm font-semibold text-brand-700">{block.title}</h3>
         <Lines lines={block.lines} missing={block.missing} />
-      </section>
+      </Card>
     );
   }
   const body = (
@@ -188,9 +367,7 @@ function BlockView({ block }: { block: Block }) {
       )}
     </>
   );
-  return block.kind === "cards"
-    ? <Card className="mb-5 p-4">{body}</Card>
-    : <section className="mb-6">{body}</section>;
+  return <Card className="h-full p-4">{body}</Card>;
 }
 
 // ── The decision aid ─────────────────────────────────────────────────────────
@@ -221,17 +398,39 @@ function CriterionRow({ c }: { c: Criterion }) {
           {c.label ?? "Not sure"}
         </span>
         <span className="min-w-24 text-right text-xs text-ink-400">{c.countText}</span>
-        <span className="min-w-20 text-right text-xs font-semibold text-ink-700 tabular-nums">
-          {c.points.toFixed(1)}
-          <span className="font-normal text-ink-400"> / {max.toFixed(0)}</span>
-        </span>
+        {/* AN UNCOUNTED CRITERION PRINTS NO ARITHMETIC. This slot read "7.5 / 15" beside
+            a label of "Not sure" and a count of "not scored" — the owner's words, "if
+            there is a score, then a component is active". It is one statement now: either
+            the points it earned out of its weight, or that it is not in the denominator
+            at all. The weight is still named, because "which 15 points fell out of the
+            score" is the useful part of the sentence. */}
+        {c.counted
+          ? (
+            <span className="min-w-20 text-right text-xs font-semibold text-ink-700 tabular-nums">
+              {c.points.toFixed(1)}
+              <span className="font-normal text-ink-400"> / {max.toFixed(0)}</span>
+            </span>
+          )
+          : (
+            <span
+              className="min-w-20 text-right text-xs text-ink-400 italic"
+              title={`Undetermined, so its ${max.toFixed(0)} points are out of the score `
+                + "entirely — not counted as a failure."}
+            >
+              not counted
+            </span>
+          )}
       </div>
-      <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-ink-100">
-        <div
-          className={`h-full rounded-full ${BAND_BAR[String(c.band)] ?? "bg-ink-300"}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      {/* No bar where there is nothing to measure: an empty track said "zero of its
+          weight", which is the claim this change exists to stop making. */}
+      {c.counted && (
+        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-ink-100">
+          <div
+            className={`h-full rounded-full ${BAND_BAR[String(c.band)] ?? "bg-ink-300"}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -436,7 +635,7 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
 
   const d = data as OpportunityResult & { orgName?: string; link?: string };
   const cov = d.coverage;
-  const pct = cov && cov.total ? Math.round((cov.filled / cov.total) * 100) : null;
+  // `pct` moved into CoverageAside, which owns the whole figure now.
 
   return frame(
     <>
@@ -453,6 +652,11 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
                 {d.funder}
                 {d.reference && <span className="text-ink-400"> · {d.reference}</span>}
               </p>
+              {/* The system's own id for this call. It was readable only inside the edit
+                  form, so somebody looking at the page could not quote the row they were
+                  looking at — which is exactly how a bug report stalls. `select-all` so
+                  one click takes the whole thing. */}
+              <p className="mt-1 font-mono text-xs text-ink-400 select-all">{uid}</p>
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-2">
               <Button variant="secondary" icon={<Pencil className="h-4 w-4" />}
@@ -496,37 +700,73 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
               ? DECISION_TONE[d.analysis.suggestedDecision] : undefined}
           />
         </div>
+
+        {/* WHAT THE TWO WORDS ABOVE MEAN, because they are scored on DIFFERENT scales and
+            a reader comparing them has no way to know that. The owner asked outright:
+            "what is the threshold for saying an opportunity is Strong fit? what are the
+            other qualities?"
+
+            `opportunity_scoring.fit_label` bands the fit at 81 and 51;
+            `recommend_from_composite` bands the suggestion at 90 and 70. So a call can
+            read "Strong fit" and still be suggested as Park — 88 does exactly that — and
+            without the two scales side by side that looks like the page contradicting
+            itself.
+
+            THE FIT BANDS MOVED on 2026-11-18, to the owner's words: "81+ strong · 51–80
+            fair · 50 or less weak". 80 was the one value the old wording could not place
+            — "80+ strong · 51–79 moderate" named it in the first band and left it out of
+            the second — and the three bands are contiguous over the integers now. The
+            numbers here are not retyped: they come from the Python constants through
+            `analysis.fitBands`, because a legend that can disagree with the rule it
+            describes is worse than no legend. */}
+        {d.analysis && !d.analysis.error && (
+          <div className="border-t border-ink-200 bg-ink-50/50 px-4 py-2 text-xs text-ink-500">
+            <strong className="font-semibold text-ink-600">Bid strength</strong>{" "}
+            {d.analysis.fitBands
+              ? `${d.analysis.fitBands.strongAt}+ strong · `
+                + `${d.analysis.fitBands.fairAt}–${d.analysis.fitBands.strongAt - 1} fair · `
+                + `${d.analysis.fitBands.fairAt - 1} or less weak.`
+              : "81+ strong · 51–80 fair · 50 or less weak."}{" "}
+            <strong className="font-semibold text-ink-600">Suggestion</strong>{" "}
+            90+ proceed · 70–89 park · under 70 decline — a failed hard requirement
+            declines whatever the score.
+            {/* AND WHAT IT WAS SCORED ON. Since 2026-11-18 an undetermined criterion
+                leaves the denominator rather than taking half its weight, so the score
+                is renormalised over whatever could be judged. That makes 88-on-nine and
+                88-on-three the same number, and only this line tells them apart. */}
+            {d.analysis.scoredOn?.n != null
+              && d.analysis.scoredOn.of != null
+              && d.analysis.scoredOn.n < d.analysis.scoredOn.of && (
+              <>
+                {" "}
+                <strong className="font-semibold text-ink-600">Scored on</strong>{" "}
+                {d.analysis.scoredOn.n} of {d.analysis.scoredOn.of} criteria — the rest
+                could not be determined from the call or the donor record, so they are out
+                of the score rather than counted against it.
+              </>
+            )}
+          </div>
+        )}
       </Card>
 
       <Section
         step="1" title="The opportunity"
         lead="Every call is restated in the same shape, so two funders' calls can be compared line by line."
-        aside={pct !== null && (
-          <div className="text-right">
-            <div className="text-[0.7rem] font-semibold tracking-[0.06em] text-ink-500 uppercase">
-              Captured from the call
-            </div>
-            <div className="mt-1 flex items-center justify-end gap-2">
-              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-ink-100">
-                <div className="h-full rounded-full bg-accent-600" style={{ width: `${pct}%` }} />
-              </div>
-              <span className="text-sm font-semibold text-ink-700 tabular-nums">
-                {cov.filled}/{cov.total}
-              </span>
-            </div>
-            <p className="mt-1 max-w-[16rem] text-xs text-ink-400">
-              A dash below means this call is silent on that field, not that we stopped tracking it.
-            </p>
-          </div>
-        )}
+        aside={cov
+          ? (
+            <CoverageAside
+              cov={cov}
+              confidence={d.analysis && !d.analysis.error ? d.analysis.confidence : null}
+            />
+          )
+          : undefined}
       />
 
+      {/* The overview carries the same card as every block below it. It used to be the one
+          bare section at the top of a page of cards, which read as a loose paragraph that
+          had come adrift rather than as the call's own summary. */}
       {d.overview.map(([heading, lines, missing], i) => (
-        <section key={i} className="mb-6">
-          <h3 className="mb-1.5 text-sm font-semibold text-ink-800">{heading}</h3>
-          <div className="max-w-3xl">
-            <Lines lines={lines} missing={missing} />
-          </div>
+        <OverviewCard key={i} heading={heading} lines={lines} missing={missing}>
           {d.overviewTruncated && d.link && (
             <p className="mt-2 text-xs text-ink-500">
               Clipped to keep the page readable.{" "}
@@ -537,16 +777,37 @@ export default function OpportunityPage({ uid, user }: { uid: string; user: User
               .
             </p>
           )}
-        </section>
+        </OverviewCard>
       ))}
 
-      {d.pageRows.map((row, i) => (
-        <div key={i} className="grid gap-x-6 md:grid-cols-2">
-          {row.map((col, j) => (
-            <div key={j}>{col.map((b, k) => <BlockView key={k} block={b} />)}</div>
-          ))}
-        </div>
-      ))}
+      {/* ONE FLAT GRID. Every block is an independent card, so they flow.
+
+          It was a separate two-column grid PER `page_rows` ROW, and a row whose two
+          columns held different amounts left a hole under the shorter one while the next
+          row waited for the taller — cards stepped down the page out of line with their
+          neighbours. Flattening removes the stepping entirely: a short card is followed
+          by the next card, not by the bottom of its row.
+
+          THE COST, STATED: the server's column GROUPING is no longer honoured, only its
+          ORDER. `page_rows` decides which blocks sit beside which; this lays them out
+          left-to-right, top-to-bottom in that same sequence and lets the grid pack them.
+          That is a presentation decision taken here on purpose, because the grouping was
+          what produced the ragged gaps the owner reported.
+
+          A block whose values are too long for half a page takes the whole width — see
+          `isWide`. "Scope & focus" carries three comma-separated lists and was wrapping
+          to six lines in a narrow column with the other half of the row empty.
+
+          `grid-flow-row-dense` then backfills the gap a full-width block leaves behind
+          it: without it, the half-width block before a wide one sits alone with an empty
+          half-row beside it, which is the same wasted space in a new place. */}
+      <div className="mb-5 grid grid-flow-row-dense items-start gap-5 md:grid-cols-2">
+        {d.pageRows.flat(2).map((b, i) => (
+          <div key={i} className={isWide(b) ? "md:col-span-2" : undefined}>
+            <BlockView block={b} />
+          </div>
+        ))}
+      </div>
 
       <Section
         step="2" title="Decision aid"

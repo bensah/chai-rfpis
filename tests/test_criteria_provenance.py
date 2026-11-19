@@ -1,0 +1,250 @@
+"""A person's answer to a criterion survives the derivation, and only a person's does.
+
+`core.auto_scorer.auto_score` derives all nine criteria from org profile x donor intel x
+call text and, before migration 102, never read the nine stored columns. That is correct
+for a scanned row and was destructive for a reviewed one: 48 of 56 human-assessed rows
+held criteria the derivation does not reproduce, 30 of them on a different recommendation,
+and since scoring moved to the server the derived answer was what got stored.
+
+The column records WHICH criteria a person answered. These tests pin the two halves that
+make it trustworthy:
+
+  * it records an answer a person gave, and nothing else — not the eight criteria an
+    editor save round-trips untouched, and not a form default landing in a blank column,
+    because either would put a reviewer's name on the scan's own output within one save of
+    every row and leave the scorer deferring to itself;
+  * the scorer overlays those answers and ONLY those, so a profile edit still reaches
+    every criterion nobody has answered.
+"""
+from __future__ import annotations
+
+import ast
+import json
+import unittest
+from pathlib import Path
+
+from core import criteria_provenance as prov
+from core.auto_scorer import auto_score
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class TestRecordingAnAnswer(unittest.TestCase):
+    ROW = {"qualification": "Yes, fully", "strategic_fit": "Not sure",
+           "capacity": None, "geographic_fit": "Yes, our own presence"}
+
+    def test_a_changed_answer_is_recorded_with_its_author(self):
+        out = prov.record(self.ROW, {"qualification": "No, not eligible"}, "a@b.org")
+        self.assertIn("qualification", out)
+        self.assertEqual(out["qualification"]["by"], "a@b.org")
+        self.assertTrue(out["qualification"]["at"])
+
+    def test_answering_a_not_sure_counts(self):
+        """"Not sure" is a stored non-answer, so moving off it IS the person answering."""
+        out = prov.record(self.ROW, {"strategic_fit": "Strongly aligns"}, "a@b.org")
+        self.assertIn("strategic_fit", out)
+
+    def test_a_round_trip_records_nothing(self):
+        """An editor save carries all nine whether or not the reviewer touched them."""
+        unchanged = {k: v for k, v in self.ROW.items() if v is not None}
+        self.assertIsNone(prov.record(self.ROW, unchanged, "a@b.org"))
+
+    def test_a_form_default_landing_in_a_blank_column_is_not_an_answer(self):
+        """`_elig` falls back to the first option when nothing maps, on every save.
+
+        Recording that would put the reviewer's name on an answer the widget chose.
+        """
+        self.assertIsNone(prov.record(self.ROW, {"capacity": "Yes, comfortably"}, "a@b.org"))
+
+    def test_clearing_an_answer_removes_its_author(self):
+        row = {**self.ROW, prov.COLUMN: {"qualification": {"by": "a@b.org", "at": "x"}}}
+        out = prov.record(row, {"qualification": None}, "b@c.org")
+        self.assertNotIn("qualification", out)
+
+    def test_an_earlier_answer_survives_a_later_unrelated_edit(self):
+        row = {**self.ROW, prov.COLUMN: {"geographic_fit": {"by": "old@b.org", "at": "x"}}}
+        out = prov.record(row, {"qualification": "No, not eligible"}, "new@b.org")
+        self.assertEqual(out["geographic_fit"]["by"], "old@b.org")
+        self.assertEqual(out["qualification"]["by"], "new@b.org")
+
+    def test_a_missing_author_is_recorded_rather_than_crashing(self):
+        out = prov.record(self.ROW, {"qualification": "No, not eligible"}, None)
+        self.assertEqual(out["qualification"]["by"], "unknown")
+
+
+class TestReadingTheTwoChannels(unittest.TestCase):
+    def test_the_review_screens_component_overrides_count(self):
+        """They already mean "a reviewer decided this" and never reached the score.
+
+        `matching.composite_match` reads the nine labels and never calls
+        `apply_component_overrides`, so a verdict recorded there moved the Review panel
+        and nothing else. The Review screen saves the override-adjusted LABEL, so reading
+        the column here is what connects it.
+        """
+        row = {"capacity": "No, beyond us",
+               prov.OVERRIDES_COLUMN: {"capacity": {"experience": 0.0}}}
+        self.assertEqual(prov.human_set(row), {"capacity"})
+        self.assertEqual(prov.answers(row), {"capacity": "No, beyond us"})
+
+    def test_both_channels_together(self):
+        row = {"capacity": "No, beyond us", "qualification": "Yes, fully",
+               prov.OVERRIDES_COLUMN: {"capacity": {"experience": 0.0}},
+               prov.COLUMN: {"qualification": {"by": "a@b.org", "at": "x"}}}
+        self.assertEqual(prov.human_set(row), {"capacity", "qualification"})
+
+    def test_json_text_is_accepted(self):
+        """PostgREST hands jsonb back as a dict; a CSV round-trip hands back text."""
+        row = {"qualification": "Yes, fully",
+               prov.COLUMN: json.dumps({"qualification": {"by": "a@b.org", "at": "x"}})}
+        self.assertEqual(prov.human_set(row), {"qualification"})
+
+    def test_rubbish_in_the_column_is_ignored_rather_than_fatal(self):
+        for junk in ("", "not json", "[]", 7, None):
+            self.assertEqual(prov.human_set({prov.COLUMN: junk}), set(), junk)
+
+    def test_a_key_that_is_not_a_criterion_is_ignored(self):
+        self.assertEqual(prov.human_set({prov.COLUMN: {"decision": {"by": "a@b.org"}}}),
+                         set())
+
+    def test_a_recorded_answer_that_is_now_blank_is_not_an_answer(self):
+        for value in (None, "", "   ", "Not sure"):
+            row = {"qualification": value,
+                   prov.COLUMN: {"qualification": {"by": "a@b.org", "at": "x"}}}
+            self.assertEqual(prov.answers(row), {}, value)
+
+    def test_a_stale_not_sure_label_cannot_outrank_the_derivation(self):
+        """AS-260828-184240 on 2026-11-16: every funding_quality component overridden to
+        1.0 while the saved label still read "Not sure". Handing that to the scorer would
+        pin the criterion to the weakest reading in the reviewer's name."""
+        row = {"funding_quality": "Not sure",
+               prov.OVERRIDES_COLUMN: {"funding_quality": {"fq_value": 1.0}}}
+        self.assertIn("funding_quality", prov.human_set(row))
+        self.assertEqual(prov.answers(row), {})
+
+
+class TestTheScorerHonoursThem(unittest.TestCase):
+    CANDIDATE = {
+        "opportunity_title": "Health systems strengthening in Cameroon",
+        "brief_description": ("A call for proposals to strengthen primary health care "
+                              "delivery across several regions. " * 4),
+        "funding_agency": "Example Donor",
+        "call_award_value": 500000,
+    }
+
+    def test_an_answered_criterion_comes_back_as_the_person_answered_it(self):
+        res = auto_score({**self.CANDIDATE, "qualification": "No, not eligible",
+                          prov.COLUMN: {"qualification": {"by": "a@b.org", "at": "x"}}}, {})
+        self.assertEqual(res.get("qualification"), "No, not eligible")
+
+    def test_an_unanswered_criterion_is_still_derived(self):
+        """The failure mode on the other side: seeding the scorer from the stored columns
+        freezes the scan's own guesses and stops a profile edit reaching the score —
+        measured at 178 of 271 rows moving, 16 onto a different recommendation."""
+        stored = {"qualification": "No, not eligible", "capacity": "No, beyond us"}
+        res = auto_score({**self.CANDIDATE, **stored}, {})
+        for criterion, planted in stored.items():
+            self.assertNotEqual(
+                res.get(criterion), planted,
+                f"{criterion} was taken from the row without a provenance record — the "
+                "scan writes those columns too, so this is the scorer deferring to itself")
+
+    def test_the_answer_actually_moves_the_score(self):
+        bare = auto_score(dict(self.CANDIDATE), {})
+        answered = auto_score({**self.CANDIDATE, "qualification": "No, not eligible",
+                               prov.COLUMN: {"qualification": {"by": "a@b.org", "at": "x"}}},
+                              {})
+        self.assertNotEqual(bare.get("alignment_score"), answered.get("alignment_score"))
+
+    def test_a_row_with_no_provenance_scores_exactly_as_before(self):
+        """What makes this safe to land: no row carries the column on day one."""
+        self.assertEqual(auto_score(dict(self.CANDIDATE), {}).get("alignment_score"),
+                         auto_score({**self.CANDIDATE, prov.COLUMN: None}, {})
+                         .get("alignment_score"))
+
+
+class TestTheEditorRecordsIt(unittest.TestCase):
+    def test_the_editor_calls_record_with_the_row_and_the_new_values(self):
+        src = (ROOT / "views" / "rfp_editor.py").read_text(encoding="utf-8")
+        self.assertIn("criteria_provenance.record", src,
+                      "the editor's nine dropdowns are the one place a person answers a "
+                      "whole criterion; if it stops recording that, the scorer goes back "
+                      "to re-deriving over them")
+        for node in ast.walk(ast.parse(src)):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "record"):
+                self.assertEqual(len(node.args), 3,
+                                 "record(row, values, by) — the row is what makes a "
+                                 "round-tripped value distinguishable from an answer")
+                return
+        self.fail("no criteria_provenance.record call found in views/rfp_editor.py")
+
+    def test_the_submit_form_records_against_its_own_defaults(self):
+        """It asks a person all nine, so it must record them — but not its own defaults.
+
+        An insert has no row to compare against, and against an empty one every value
+        looks answered: a submitter who filled in four fields would be on record as
+        asserting the other five. The baseline is the form's defaults instead.
+        """
+        src = (ROOT / "views" / "submit_form.py").read_text(encoding="utf-8")
+        self.assertIn("criteria_provenance.record", src)
+        self.assertIn("_crit_default", src,
+                      "the baseline must come from the same definition the widget uses, "
+                      "or every submission records the difference as a human answer")
+
+    def test_the_forms_default_is_defined_once(self):
+        """Two copies of the default rule would silently forge provenance."""
+        src = (ROOT / "views" / "submit_form.py").read_text(encoding="utf-8")
+        self.assertEqual(src.count('"Not sure" if "Not sure" in opts else opts[0]'), 1)
+        self.assertNotIn('opts.index("Not sure") if "Not sure" in opts else 0', src,
+                         "the widget must take its index from _crit_default, not repeat it")
+
+    def test_a_submission_stamps_the_decision_date_it_captures(self):
+        """Without it a freshly submitted notice reads as a scan row to the re-score job.
+
+        The insert sets no decision_overridden_by, so `score_stamp.human_assessed` would
+        say False on a row whose nine criteria a person just answered.
+        """
+        src = (ROOT / "views" / "submit_form.py").read_text(encoding="utf-8")
+        self.assertIn("decision_date", src)
+
+    @staticmethod
+    def _form_defaults() -> dict[str, str]:
+        """What the submit form shows before anyone touches it.
+
+        DERIVED from the live vocabulary rather than written out, because writing it out
+        is how this test rotted once already: `bid_effort` had no "Not sure" and opened on
+        the BEST answer until 2026-11-17, and a hard-coded copy would have gone on
+        asserting that after the vocabulary changed. Same rule as
+        `views/submit_form.py::_crit_default`.
+        """
+        from core.scorer import CRITERION_RESPONSES
+        return {c: ("Not sure" if "Not sure" in opts else opts[0])
+                for c, opts in CRITERION_RESPONSES.items()}
+
+    def test_an_untouched_submission_records_nothing(self):
+        """The whole form left alone: every value equals its default, so nobody answered."""
+        defaults = self._form_defaults()
+        self.assertIsNone(prov.record(defaults, dict(defaults), "a@b.org"))
+
+    def test_a_submission_records_only_what_the_submitter_answered(self):
+        defaults = self._form_defaults()
+        answered = {**defaults, "qualification": "Yes, fully"}
+        out = prov.record(defaults, answered, "a@b.org")
+        self.assertEqual(set(out), {"qualification"})
+
+    def test_the_fallback_still_holds_for_a_vocabulary_without_not_sure(self):
+        """Every criterion has one today; the next one added might not.
+
+        The fallback stopped being load-bearing when bid_effort gained "Not sure", which
+        is exactly when a rule stops being exercised and starts being able to break
+        unnoticed. A criterion whose options open on the best answer must still be
+        unrecorded when the submitter leaves it there.
+        """
+        baseline = {"bid_effort": "Ample time, sufficient resources"}
+        self.assertIsNone(prov.record(baseline, dict(baseline), "a@b.org"))
+        out = prov.record(baseline, {"bid_effort": "Not enough time, no team"}, "a@b.org")
+        self.assertEqual(set(out), {"bid_effort"})
+
+
+if __name__ == "__main__":
+    unittest.main()

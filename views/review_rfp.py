@@ -25,6 +25,7 @@ from core.scorer import (
     CRITERIA, criterion_score, default_response, score_submission,
 )
 from core.scorer import decline_flags as _scorer_decline_flags
+from core.score_stamp import editor_score_columns
 from core.records import clean_df, drop_concluded
 from db.supabase_client import get_client, safe_execute
 from views.rfp_editor import render_rfp_editor
@@ -767,7 +768,12 @@ with gauge_col:
         below_award_floor=_cderive.below_award_floor(row, _org_prof))
     _pill = {"Proceed": ("#dcf5e3", "#00703C"), "Park": ("#fff4cc", "#8a6d00"),
              "Decline": ("#fde2e2", "#b3261e")}.get(_dec, ("#eee", "#333"))
-    _fit = ("Strong fit" if _comp >= 80 else "Moderate fit" if _comp > 50 else "Low fit")
+    # The bands are core.opportunity_scoring's, not a second copy. This line used to
+    # restate them — ">= 80 / > 50" — and when the owner moved them to 81/51 on
+    # 2026-11-18 the Review screen would have gone on saying "Strong fit" about a call
+    # the Opportunity page called Fair, with nothing to catch it. One function owns them.
+    from core.opportunity_scoring import fit_label as _fit_label
+    _fit = _fit_label(_comp)
 
     # CONFIDENCE — how much DATA backs this prediction (donor mapping + call extraction).
     # A "Proceed" on a 30%-mapped donor is shakier than one on 90% — surface it so the
@@ -1053,8 +1059,11 @@ else:
             **edited_values,
             "decline_flags_present": decline_in == "Yes",
             "key_risks": (risks_in.strip() or None),
-            "alignment_score": live_score,
-            "auto_recommendation": live_rec,
+            # The LIVE score this screen has been showing, written with both freshness
+            # stamps cleared — it is score_submission's answer, not the job's, and a row
+            # that claimed otherwise is what check-rescore was red on. See
+            # core/score_stamp.py.
+            **editor_score_columns(live_score, live_rec),
             "decision": new_decision,
             "decision_note": new_rationale.strip() or None,
             "donor_engaged": new_engaged,

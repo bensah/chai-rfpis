@@ -153,8 +153,22 @@ def bid_effort_label(days_to_deadline: int | None, has_bd_team: bool) -> str | N
 
 # Canonical per-criterion response options (best → worst), reused by every form
 # (Review, Submit, MS Form). Every label is recognised by criterion_score above.
-# "Not sure" → null (missing) for the human-answered eight; bid_effort is
-# auto-derived on a 5/6-point time×resources scale (no "Not sure").
+# "Not sure" → null (missing), and ALL NINE carry it (owner, 2026-11-17).
+#
+# bid_effort is DERIVED on a time×resources scale and for that reason used to have no
+# "Not sure" — the derivation always produces one of the six, so an unknown never arose
+# on that path. But the forms ask a human all nine, and `views/submit_form.py::_crit`
+# falls back to `opts[0]` when there is no "Not sure" to default to: best → worst, so an
+# untouched PREFER-9 asserted "Ample time, sufficient resources" and scored a full 2. A
+# submitter who filled in only the four required fields had told the scorer the bid was
+# comfortably resourced. Measured before the change: an otherwise-untouched form scored
+# 54.5 instead of the 50.0 nine unanswered criteria should give.
+#
+# Adding the option fixes it with no code change anywhere — `_crit` is
+# `opts.index("Not sure") if "Not sure" in opts else 0`, and the React form asks the same
+# question — and it moves no stored row: every value in the live table already maps, and
+# the derivation never returns "Not sure". Same spirit as f32a52d, which stopped PREFER-9
+# asserting a time verdict it never measured.
 CRITERION_RESPONSES: dict[str, list[str]] = {
     "qualification": [
         "Yes, fully", "Mostly, one item unclear", "No, not eligible", "Not sure"],
@@ -175,7 +189,7 @@ CRITERION_RESPONSES: dict[str, list[str]] = {
     "bid_effort": [
         "Ample time, sufficient resources", "Ample time, but no dedicated team",
         "Tight but doable, with a team", "Tight, and no dedicated team",
-        "Not enough time, even with a team", "Not enough time, no team"],
+        "Not enough time, even with a team", "Not enough time, no team", "Not sure"],
 }
 
 
@@ -192,12 +206,14 @@ def default_response(key: str, stored) -> str:
     if sc is None:
         if "Not sure" in opts:
             return "Not sure"
-        # This criterion has no "Not sure" in its vocabulary (only bid_effort). Do NOT
-        # fall back to opts[-1] — the list is ordered best→worst, so that made an
-        # UNDETERMINABLE criterion assert the single most damaging verdict and score 0.
-        # For bid_effort that turned "we never captured a deadline" into "Not enough
-        # time, no team", which then fed the gauge and the auto-decision. Prefer the
-        # Park midpoint (score 1); the best option only if the scale has no midpoint.
+        # UNREACHABLE SINCE 2026-11-17, when bid_effort gained "Not sure" and all nine
+        # criteria came to carry it — but kept, because it is the safe answer for any
+        # vocabulary that loses the option again. Do NOT fall back to opts[-1]: the list
+        # is ordered best→worst, so that made an UNDETERMINABLE criterion assert the
+        # single most damaging verdict and score 0. For bid_effort that turned "we never
+        # captured a deadline" into "Not enough time, no team", which then fed the gauge
+        # and the auto-decision. Prefer the Park midpoint (score 1); the best option only
+        # if the scale has no midpoint.
         mid = [o for o in opts if criterion_score(o) == 1]
         return mid[0] if mid else opts[0]
     for o in opts:
@@ -217,33 +233,78 @@ def _value(v: Any) -> float:
     return _SCORE_TO_FLOAT.get(criterion_score(v), 0.0)
 
 
-# "Not sure" / undetermined criterion → value 1 (Park), NOT 0 (owner 2026-06-29).
-# When a criterion has no detectable components (nothing the call/donor imposes and
-# no proxy), it resolves to "Not sure" and contributes the MIDDLE value so the bid
-# routes to Park (manual review) rather than being penalised as a hard fail. Genuine
-# detected failures still score 0 and gate via the MUST rule (criterion_score == 0).
-_NOT_SURE_FLOAT = 0.5
+# AN UNDETERMINED CRITERION LEAVES THE DENOMINATOR (owner, 2026-11-18). It used to be
+# rated 0.5 — the Park midpoint — and kept its full weight, a rule set on 2026-06-29 so
+# that an unknown criterion routed a bid to manual review instead of failing it. The
+# owner has now reversed it twice in writing:
+#
+#     "if we are unsure we leave it as unsure and don't score it (drops from
+#      denominator)" … "if there is a score, then a component is active."
+#
+# The old rule could not be told apart from a real answer on the page, and that is how it
+# surfaced: MUST 1 printed "Not sure", printed "not scored", and printed 7.5 / 15 with a
+# half-filled bar, all at once. 0.5 × 0.15 × 100 is exactly 7.5. The number was correct
+# arithmetic for a rule nobody could see, sitting beside two statements that denied it.
+#
+# The rule now is match-to-match: a criterion scores only where the call (or the donor
+# record) states the fact AND the tenant has recorded a preference to match it against.
+# Where either side is silent the criterion contributes nothing and is not counted, so
+# the score is the tenant's fit across what could actually be compared, not a number
+# dragged toward 50 by everything we failed to read.
+#
+# WHAT MOVES. Scores spread away from 50: a thin call that happened to look average now
+# reads as whatever its few determinable criteria say, and `scored_weight` (below) says
+# how much of the model that was. A genuine detected failure is unaffected — it scores 0,
+# stays in the denominator, and still gates through the MUST rule.
+_NOT_SURE_FLOAT = 0.5    # retained for callers that still reference it; unused here.
 
 
 def alignment_score(values: Mapping[str, Any]) -> float:
     """Compute alignment score 0-100 from a mapping keyed by the 9 criteria.
 
-    ALL 9 criteria count toward the denominator. A response of "Not sure" / unscored
-    (criterion_score → None) is rated value 1 (0.5) — the Park midpoint — so an
-    UNKNOWN criterion reads as 'needs review', not a hard fail. A clearly DETECTED
-    failure scores 0 and still gates (MUST rule)."""
+    ONLY DETERMINED CRITERIA COUNT. A response of "Not sure" / unscored
+    (criterion_score → None) leaves BOTH the numerator and the denominator, so the score
+    is the weighted fit across the criteria that could actually be judged. A clearly
+    DETECTED failure scores 0, keeps its weight, and still gates (MUST rule).
+
+    With nothing determinable at all the answer is 0.0 — there is no fit to report, and
+    the caller's thresholds route it to Decline exactly as the old 50.0 midpoint did.
+    Use `scored_weight` to tell "nothing could be judged" from "judged, and it failed"."""
     cfg = _load_config()
     total = 0.0
     weight_sum = 0.0
     for c in CRITERIA:
-        sc = criterion_score(values.get(c))      # None → "Not sure" → value 1 (0.5)
+        sc = criterion_score(values.get(c))      # None → "Not sure" → not counted
+        if sc is None:
+            continue
         w = float(cfg.get(c, 0.0))
         weight_sum += w
-        total += w * (_SCORE_TO_FLOAT[sc] if sc is not None else _NOT_SURE_FLOAT)
+        total += w * _SCORE_TO_FLOAT[sc]
     if weight_sum <= 0:
         return 0.0
     score = (total / weight_sum) * 100.0
     return max(0.0, min(100.0, round(score, 1)))
+
+
+def scored_weight(values: Mapping[str, Any]) -> tuple[float, float, int, int]:
+    """How much of the model actually got to speak: (counted, total, n_counted, n).
+
+    `alignment_score` renormalises over the determined criteria, which means 100.0 off one
+    criterion and 100.0 off nine are the same number. They are not the same claim, and a
+    reader has to be able to tell them apart — so the page prints "scored on N of 9" from
+    this, and `core.data_quality` already carries the separate question of how much SOURCE
+    there was to read.
+    """
+    cfg = _load_config()
+    counted = whole = 0.0
+    n_counted = 0
+    for c in CRITERIA:
+        w = float(cfg.get(c, 0.0))
+        whole += w
+        if criterion_score(values.get(c)) is not None:
+            counted += w
+            n_counted += 1
+    return counted, whole, n_counted, len(CRITERIA)
 
 
 # The five MUSTs and four PREFERs, in the order `CRITERIA` declares them. The Review

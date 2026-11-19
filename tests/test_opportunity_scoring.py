@@ -95,11 +95,23 @@ class TestWeightsAndPoints(unittest.TestCase):
             with self.subTest(criterion=c["key"]):
                 self.assertLessEqual(round(c["points"], 6), c["weight"] * 100)
 
-    def test_an_unscored_criterion_takes_the_park_midpoint(self):
+    def test_an_unscored_criterion_takes_nothing_at_all(self):
+        """REVERSED on 2026-11-18, on the owner's instruction.
+
+        This asserted the Park midpoint — `points == weight * 50` — which is where the
+        reported "7.5 / 15 beside the words Not sure" came from. An undetermined
+        criterion now contributes no points and leaves the denominator, so the page has
+        one statement to make about it instead of three that disagreed. The full
+        reasoning and the rest of the rule are in
+        tests/test_unsure_leaves_the_denominator.py.
+        """
         an = osc.analyse({}, {}, None, {})
         for c in an["criteria"]:
             if c["label"] == "Not sure":
-                self.assertAlmostEqual(c["points"], c["weight"] * 50, places=6)
+                with self.subTest(criterion=c["key"]):
+                    self.assertEqual(c["points"], 0.0)
+                    self.assertFalse(c["counted"])
+                    self.assertNotAlmostEqual(c["points"], c["weight"] * 50, places=6)
 
 
 class TestTheDecisionRule(unittest.TestCase):
@@ -141,8 +153,52 @@ class TestTheDecisionRule(unittest.TestCase):
 
     def test_the_fit_label_is_not_the_decision(self):
         self.assertEqual(osc.fit_label(85), "Strong fit")
-        self.assertEqual(osc.fit_label(60), "Moderate fit")
-        self.assertEqual(osc.fit_label(50), "Low fit")
+        self.assertEqual(osc.fit_label(60), "Fair fit")
+        self.assertEqual(osc.fit_label(50), "Weak fit")
+
+    def test_the_bands_are_contiguous_and_leave_no_value_unnamed(self):
+        """THE REASON THE BOUNDARY MOVED (owner, 2026-11-18: "81+ strong · 51-80 fair ·
+        50 or less weak").
+
+        The old bands were ">= 80 strong, > 50 moderate" and the legend read "80+ strong
+        · 51-79 moderate". 80 was claimed by the first band and excluded from the second,
+        so the one value the wording could not place was also the boundary itself. This
+        walks every integer and asserts each lands in exactly the band the owner named.
+        """
+        for n in range(0, 101):
+            want = ("Strong fit" if n >= 81 else "Fair fit" if n >= 51 else "Weak fit")
+            with self.subTest(composite=n):
+                self.assertEqual(osc.fit_label(n), want)
+
+    def test_eighty_is_fair_now_and_eighty_one_is_strong(self):
+        """The boundary itself, named rather than left to the sweep above."""
+        self.assertEqual(osc.fit_label(80), "Fair fit")
+        self.assertEqual(osc.fit_label(81), "Strong fit")
+
+    def test_moderate_is_no_longer_a_fit_band(self):
+        """It names the midpoint of two CRITERION vocabularies — funding_quality and
+        competitiveness — so the same word meant a whole-opportunity band in one place
+        and one criterion's answer in another."""
+        labels = {osc.fit_label(n) for n in range(0, 101)}
+        self.assertNotIn("Moderate fit", labels)
+        self.assertEqual(labels, {"Strong fit", "Fair fit", "Weak fit"})
+
+    def test_the_analysis_publishes_the_bands_for_the_page(self):
+        """The legend used to retype the numbers and went stale the moment they moved."""
+        an = osc.analyse(CANDIDATE, ORG, None, {})
+        self.assertEqual(an["fit_bands"],
+                         {"strong_at": osc.FIT_STRONG_AT, "fair_at": osc.FIT_FAIR_AT})
+        self.assertEqual((osc.FIT_STRONG_AT, osc.FIT_FAIR_AT), (81, 51))
+
+    def test_the_review_screen_does_not_keep_its_own_copy_of_the_bands(self):
+        """`views/review_rfp.py` restated ">= 80 / > 50" inline. With the boundary moved
+        it would have gone on calling a call "Strong fit" that the Opportunity page calls
+        Fair, and nothing would have caught it."""
+        from pathlib import Path
+        src = (Path(__file__).resolve().parents[1] / "views" / "review_rfp.py").read_text(
+            encoding="utf-8")
+        self.assertNotIn('"Moderate fit"', src)
+        self.assertIn("fit_label", src)
 
 
 class TestConfidenceIsReported(unittest.TestCase):
@@ -169,11 +225,25 @@ class TestBlockersAndUnscored(unittest.TestCase):
         for b in an["blockers"]:
             self.assertEqual(b["band"], 0)
 
-    def test_unscored_are_the_ones_with_nothing_to_count(self):
+    def test_unscored_are_the_ones_with_no_answer(self):
+        """`scored` changed meaning on 2026-11-18, and this is the change.
+
+        It used to be `bool(total)` — whether any COMPONENT was counted — which is a
+        different question from whether the criterion has an answer, and the two were
+        printed side by side as if they were the same. `scored` is now `band is not
+        None`, so `unscored` means "we could not determine this" and nothing else.
+
+        The component tally is still a fact and still shown; it is just no longer
+        pretending to answer this question. A criterion can carry an answer with no
+        components behind it — a derivation that read the call directly — so
+        `count_text` saying "not scored" no longer implies the criterion is.
+        """
         an = osc.analyse({}, {}, None, {})
         for u in an["unscored"]:
-            self.assertFalse(u["scored"])
-            self.assertEqual(u["count_text"], "not scored")
+            with self.subTest(criterion=u["key"]):
+                self.assertFalse(u["scored"])
+                self.assertIsNone(u["band"])
+                self.assertEqual(u["points"], 0.0)
 
     def test_labels_map_is_keyed_by_criterion(self):
         an = osc.analyse(CANDIDATE, ORG, None, {})

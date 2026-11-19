@@ -444,5 +444,12 @@ export function createAuthRoutes(
       homeIsDeveloper: await ctx.homeIsDeveloper() }) });
   }
 
-  return { login, me, forcedChange, tokenPeek, tokenRedeem, resetRequest, switchTenant, viewAs };
+  // `issueToken` is exported so Settings → Users can reset somebody else's password
+  // through the SAME minting path self-service uses. A second implementation would be a
+  // second place for the retire-the-old-ones step to be forgotten, and a stale live token
+  // on an account is exactly what that step exists to prevent.
+  return {
+    login, me, forcedChange, tokenPeek, tokenRedeem, resetRequest, switchTenant, viewAs,
+    issueToken,
+  };
 }

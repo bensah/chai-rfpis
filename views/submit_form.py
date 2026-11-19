@@ -31,6 +31,8 @@ import streamlit as st
 from core import dropdowns
 from core.review_week import review_week_label
 from core.scorer import CRITERION_RESPONSES, score_submission
+from core.score_stamp import editor_score_columns
+from core import criteria_provenance
 from core.uid_generator import generate_uid
 from db.supabase_client import get_client
 
@@ -115,6 +117,29 @@ def render_submit_form(
     def _none(v):
         return None if v in (NONE, "", None) else v
 
+    def _crit_default(criterion: str) -> str:
+        """What the dropdown shows before the submitter touches it.
+
+        ONE definition, because two things need it: the widget below, and the baseline
+        `criteria_provenance.record` compares against to decide which answers are the
+        submitter's. If those two ever disagreed, every submission would record the
+        difference as a human answer in the submitter's name.
+
+        "Not sure" where the vocabulary has one, else the first option. Every criterion
+        has one as of 2026-11-17, when `bid_effort` gained it — it was the exception, and
+        because CRITERION_RESPONSES runs best to worst it therefore opened on the BEST
+        answer ("Ample time, sufficient resources"), recording a submitter who never
+        touched it as asserting the bid was comfortably resourced.
+
+        THE FALLBACK STAYS because the rule has to answer for a vocabulary that has no
+        "Not sure", and the next criterion added could be one. It is no longer load-bearing
+        for any live criterion, so the containment it used to provide — an untouched
+        bid_effort equalling this baseline and therefore never being recorded as an answer
+        — is now true for the ordinary reason rather than a deliberate one.
+        """
+        opts = CRITERION_RESPONSES.get(criterion) or list(elig)
+        return "Not sure" if "Not sure" in opts else opts[0]
+
     def _crit(label: str, key: str, criterion: str, desc: str = ""):
         """Per-criterion dropdown using the CURRENT response vocabulary
         (core.scorer.CRITERION_RESPONSES). Renders the question title + its
@@ -122,7 +147,7 @@ def render_submit_form(
         the answer direction is unambiguous. Defaults to 'Not sure' (= unscored /
         missing) so the submitter sets only what they actually know."""
         opts = CRITERION_RESPONSES.get(criterion) or list(elig)
-        didx = opts.index("Not sure") if "Not sure" in opts else 0
+        didx = opts.index(_crit_default(criterion))
         st.markdown(f"**{label}**")
         if desc:
             st.caption(desc)
@@ -370,8 +395,10 @@ def render_submit_form(
         **vals,
         "decline_flags_present": decline_bool,
         "key_risks": _none(key_risks),
-        "alignment_score": align,
-        "auto_recommendation": rec,
+        # An INSERT has no stamp to overwrite — both columns are null on a new row either
+        # way. Written explicitly all the same so every human-facing write path goes
+        # through the one helper and none of them has to be remembered as the exception.
+        **editor_score_columns(align, rec),
         "decision": _none(decision),
         "decision_note": _none(rationale),
         "proposal_lead": resolved.get("prop_lead"),
@@ -379,6 +406,28 @@ def render_submit_form(
         "reviewers": resolved.get("reviewers"),
         "review_week": review_week_label(),
     }
+
+    # THE SUBMITTER ANSWERED THESE QUESTIONS, so the row says who did (migration 102).
+    # This form asks a person all nine criteria, and without a record of that the first
+    # re-score replaces every one of them with the derivation — the fault
+    # `core/criteria_provenance.py` exists to end, on the one path neither the decision
+    # marker nor the editor covers: an insert sets no `decision_overridden_by`, so
+    # `core.score_stamp.human_assessed` reads a freshly submitted notice as a scan row.
+    #
+    # The baseline is the form's OWN defaults, not an empty row: against an empty row
+    # every value looks answered, and a submitter who filled in four fields would be on
+    # record as having asserted the other five.
+    _prov = criteria_provenance.record(
+        {c: _crit_default(c) for c in vals}, vals, user.get("email"))
+    if _prov is not None:
+        row[criteria_provenance.COLUMN] = _prov
+
+    # A decision recorded here is this row's FIRST capture, which is the one moment a
+    # system date may stand in for the day the team decided (owner, 2026-11-09). Stamping
+    # it is what brings a submitted notice under the re-score job's "human work wins"
+    # rule straight away, instead of waiting for someone to open it in the editor.
+    if row.get("decision") and not row.get("decision_date"):
+        row["decision_date"] = date.today().isoformat()
 
     # NO duplicate check here per the new policy. Insert immediately so
     # the submitter never loses their entry. Dedup is enforced at the

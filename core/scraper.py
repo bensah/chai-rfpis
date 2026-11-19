@@ -66,6 +66,48 @@ def last_scan_skipped() -> int:
 # Network defaults — keep per-request timeout aggressive so the orchestrator
 # doesn't hang on slow donor sites.
 HTTP_TIMEOUT = 15
+
+# …EXCEPT FOR A BULK LISTING, which is a different kind of request.
+#
+# The 15s above is right for the hundreds of per-page fetches in a crawl: one
+# slow donor page must not stall the scan, and losing it costs one candidate.
+# A listing fetch is the opposite trade. It is ONE request per source, it returns
+# the whole feed, and losing it costs the ENTIRE SOURCE for that scan — silently,
+# because a source that fails its listing and a source with nothing new both
+# return zero candidates.
+#
+# Observed 2026-11-19: Find a Tender (356 rows in the catalogue, the second
+# largest source) answered in under 15s on one attempt and timed out on the next.
+# The HTTP layer had already retried — the error was "Max retries exceeded" — so
+# the problem is not retries, it is the deadline. The same feed completed
+# comfortably at 60.
+#
+# `_listing_failures` makes the other half visible: see `listing_failures()`.
+LISTING_TIMEOUT = _http._f("RFPIS_LISTING_TIMEOUT", 60)
+
+#: (source name, reason) for every bulk listing that failed this scan. A source
+#: returning nothing because its feed broke must not read like a source with
+#: nothing to return.
+_listing_failures: list[tuple[str, str]] = []
+
+
+def listing_failures() -> list[tuple[str, str]]:
+    """Sources whose bulk listing fetch failed during this scan."""
+    return list(_listing_failures)
+
+
+def reset_listing_failures() -> None:
+    _listing_failures.clear()
+
+
+def note_listing_failure(name: str, exc: object) -> None:
+    """Record — and log loudly — that a source produced nothing because its feed
+    did not answer. Called by every bulk-listing handler's except branch."""
+    reason = f"{type(exc).__name__}: {exc}" if isinstance(exc, BaseException) else str(exc)
+    _listing_failures.append((name, reason[:300]))
+    log.warning("listing fetch FAILED for %s — this source contributes NOTHING to "
+                "this scan, which is not the same as having nothing new: %s",
+                name, reason[:300])
 # Defined in core.http (the layer that now applies it to every request by
 # default) and re-exported here, because ~30 call sites in this module pass it
 # explicitly and a second definition could drift from the one actually sent.
@@ -2018,6 +2060,28 @@ def _scan_grants_gov(name: str, url: str) -> list[dict[str, Any]]:
             desc = re.sub(r"<[^>]+>", " ", desc)
             desc = re.sub(r"\s+", " ", desc).strip()
             cand["brief_description"] = desc[:1800]
+            # …AND AS THE CANDIDATE'S SOURCE TEXT, which is the field everything
+            # downstream actually reads. `extract.build_record` takes `_page_text`
+            # first and stores it as `raw_text`, the text synthesis and the
+            # deterministic extractors both work from; `brief_description` on a
+            # candidate reaches neither.
+            #
+            # grants.gov is a single-page app, so without this the only `_page_text`
+            # a grants.gov row ever had was the rendered shell — nav menu, cookie
+            # notice, "Unsaved changes will be lost" — and the synopsis fetched from
+            # the funder's own API two lines above was never seen again. 168 of 469
+            # live rows hold that shell and nothing else.
+            #
+            # The eligibility paragraph rides along because it is part of the call a
+            # reader needs and is frequently the longest thing grants.gov publishes.
+            _api_text = desc
+            _elig = re.sub(r"\s+", " ",
+                           re.sub(r"<[^>]+>", " ",
+                                  _clean(syn.get("applicantEligibilityDesc") or ""))).strip()
+            if len(_elig) > 20:
+                _api_text = f"{desc}\n\nEligibility: {_elig}"
+            if len(_api_text) > len(cand.get("_page_text") or ""):
+                cand["_page_text"] = _api_text[:20000]
 
         # --- estimated_value: PRIMARY = total program funding, FALLBACK = per-award ceiling.
         # Both fields arrive as strings like "11165000" or "none"/None. ---
@@ -2106,6 +2170,13 @@ def _scan_grants_gov(name: str, url: str) -> list[dict[str, Any]]:
             elig_text = re.sub(r"<[^>]+>", " ", elig_text)
             elig_text = re.sub(r"\s+", " ", elig_text).strip()
             notes_parts.append("Eligibility detail: " + elig_text)
+            # …and into the SCHEMA field it belongs to. `notes` is free text nothing
+            # reads structurally, so the funder's own statement of who may apply —
+            # the single most useful eligibility sentence grants.gov publishes —
+            # reached no column and the opportunity page's "Other conditions" row
+            # sat empty beside it. `extract.build_record` prefers a handler value
+            # here over the synthesised one, because this IS the funder's wording.
+            cand["eligibility_other"] = elig_text[:2000]
             # SAFE US-only drop: only when the eligibility text EXPLICITLY
             # restricts to US/domestic applicants (and doesn't also welcome
             # foreign/international ones). Cuts the HRSA/CDC-domestic noise
@@ -2195,12 +2266,12 @@ def _scan_worldbank(name: str, url: str) -> list[dict[str, Any]]:
         r = _http.get(
             url, params=params,
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-            timeout=HTTP_TIMEOUT,
+            timeout=LISTING_TIMEOUT,
         )
         r.raise_for_status()
         data = r.json() or {}
     except Exception as exc:
-        log.warning("World Bank query failed: %s", exc)
+        note_listing_failure("World Bank", exc)
         return []
     projects = (data.get("projects") or {})
     out: list[dict[str, Any]] = []
@@ -2389,11 +2460,11 @@ def _scan_eu_funding_tenders(name: str, url: str, *,
                 files={"query": ("query.json", json.dumps(q), "application/json"),
                        "languages": ("languages.json", json.dumps(["en"]),
                                      "application/json")},
-                headers={"User-Agent": USER_AGENT}, timeout=HTTP_TIMEOUT)
+                headers={"User-Agent": USER_AGENT}, timeout=LISTING_TIMEOUT)
             r.raise_for_status()
             results = (r.json() or {}).get("results") or []
         except Exception as exc:
-            log.warning("EU F&T page=%s failed: %s", page, exc)
+            note_listing_failure(f"EU F&T (page {page})", exc)
             break
         if not results:
             break
@@ -2522,11 +2593,11 @@ def _scan_worldbank_procurement(name: str, url: str) -> list[dict[str, Any]]:
         r = _http.get(
             url, params={"format": "json", "rows": 100},
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-            timeout=HTTP_TIMEOUT)
+            timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         notices = (r.json() or {}).get("procnotices") or []
     except Exception as exc:
-        log.warning("World Bank procurement failed: %s", exc)
+        note_listing_failure("World Bank procurement", exc)
         return []
     for n in notices:
         ntype = _clean(n.get("notice_type") or "")
@@ -2565,11 +2636,11 @@ def _scan_ocds(name: str, url: str, *, notice_base: str, geo: str
     try:
         r = _http.get(
             url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-            timeout=HTTP_TIMEOUT)
+            timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         releases = (r.json() or {}).get("releases") or []
     except Exception as exc:
-        log.warning("OCDS %s failed: %s", name, exc)
+        note_listing_failure(name, exc)
         return []
     for rel in releases[:80]:
         tags = {str(t).lower() for t in (rel.get("tag") or [])}
@@ -2584,18 +2655,126 @@ def _scan_ocds(name: str, url: str, *, notice_base: str, geo: str
             continue
         rid = _clean(rel.get("id") or rel.get("ocid") or "")
         tp = t.get("tenderPeriod") or {}
-        out.append({
+        body = _ocds_body(t)
+        amount, currency = _ocds_value(t)
+        cand = {
             "opportunity_title": title,
             "opportunity_link": f"{notice_base}{rid}" if rid else notice_base,
             "opportunity_id": _clean(rel.get("ocid") or ""),
             "funding_agency": _clean((rel.get("buyer") or {}).get("name") or "") or name,
             "brief_description": _clean(t.get("description") or "")[:1800] or None,
+            # THE FIELD THAT ACTUALLY REACHES THE STORE. `brief_description` on a
+            # candidate reaches nothing downstream: `extract.build_record` takes
+            # `_page_text` and writes it as `raw_text`, which is what synthesis and
+            # every extractor read. This handler has fetched a description since it
+            # was written and never put it where it would be used — the same trap
+            # the grants.gov and TED handlers were in.
+            "_page_text": (body or None) and body[:20000],
             "date_posted": _parse_iso_date(str(rel.get("date") or "")[:10]),
             "call_submission_deadline": _parse_iso_date(str(tp.get("endDate") or "")[:10]),
+            "call_award_value": amount,
+            "currency": currency,
+            "project_duration": _ocds_duration(t),
+            "submission_format": _clean(t.get("submissionMethodDetails") or "")[:600] or None,
+            "eligibility_other": _clean(t.get("eligibilityCriteria") or "")[:2000] or None,
             "call_geographic_scope": [geo],
             "_source_origin": name,
-        })
+        }
+        out.append({k: v for k, v in cand.items() if v is not None})
     return _dedup_by_link_or_title(out)
+
+
+def _ocds_body(tender: dict[str, Any]) -> str:
+    """The notice as readable text, assembled from the OCDS fields that carry prose.
+
+    A UK notice spreads its substance across several places and the top-level
+    `description` is often one sentence. Find a Tender puts the real content under
+    `lots[].awardCriteria.criteria[].description`; both services carry how-to-bid
+    detail in `submissionMethodDetails`. Pulling them together is what gives the
+    extractors and the synthesis something to work from — measured before this,
+    Contracts Finder rows held a median of 1,262 characters, most of it scraped
+    page furniture rather than the notice.
+
+    Labelled sections rather than a blob: the text is read by a model and by a
+    human on the opportunity page, and "How to submit" above the portal details
+    is the difference between a record and a paste.
+    """
+    parts: list[str] = []
+
+    def _add(label: str, value: Any, limit: int = 6000) -> None:
+        text = _clean(str(value or ""))
+        if text and text.lower() not in ("not specified", "not published", "n/a"):
+            parts.append(f"{label}{text[:limit]}" if label else text[:limit])
+
+    _add("", tender.get("description"))
+    for lot in (tender.get("lots") or [])[:6]:
+        if not isinstance(lot, dict):
+            continue
+        _add("", lot.get("description"), 3000)
+        for crit in ((lot.get("awardCriteria") or {}).get("criteria") or [])[:6]:
+            if isinstance(crit, dict):
+                name = _clean(str(crit.get("name") or ""))
+                _add(f"Award criterion — {name}: " if name else "",
+                     crit.get("description"), 1500)
+    _add("Eligibility: ", tender.get("eligibilityCriteria"), 2500)
+    _add("How to submit: ", tender.get("submissionMethodDetails"), 1500)
+    _add("Procedure: ", tender.get("procurementMethodDetails"), 300)
+
+    # `suitability` is a pair of booleans, and only a TRUE one says anything —
+    # {"sme": false, "vcse": false} is the default on most Contracts Finder
+    # notices and means "not stated", not "these may not apply".
+    suit = tender.get("suitability")
+    if isinstance(suit, dict):
+        flags = [n for n, k in (("small and medium enterprises", "sme"),
+                                ("voluntary, community and social enterprises", "vcse"))
+                 if suit.get(k) is True]
+        if flags:
+            parts.append("Suitable for: " + "; ".join(flags) + ".")
+
+    for doc in (tender.get("documents") or [])[:10]:
+        if not isinstance(doc, dict):
+            continue
+        url = _clean(str(doc.get("url") or doc.get("accessDetails") or ""))
+        desc = _clean(str(doc.get("description") or doc.get("documentType") or ""))
+        if url and desc.lower() != "not published":
+            parts.append(f"{desc}: {url}" if desc else url)
+    return "\n\n".join(p for p in parts if p).strip()
+
+
+def _ocds_value(tender: dict[str, Any]) -> tuple[float | None, str | None]:
+    """(contract value, currency) from `tender.value`, falling back to the lots.
+
+    `amount` is the net figure and `amountGross` includes VAT; the net one is what
+    a bidder prices against, so it is preferred where both are published.
+    """
+    sources = [tender.get("value")]
+    sources += [lot.get("value") for lot in (tender.get("lots") or [])
+                if isinstance(lot, dict)]
+    for value in sources:
+        if not isinstance(value, dict):
+            continue
+        amount = _coerce_money(value.get("amount") or value.get("amountGross"))
+        if amount is not None:
+            return amount, _clean(str(value.get("currency") or "")) or None
+    return None, None
+
+
+def _ocds_duration(tender: dict[str, Any]) -> int | None:
+    """Contract length in whole months, from `contractPeriod`.
+
+    Populated on 99 of 100 Contracts Finder releases and on none of the Find a
+    Tender ones, which is exactly why it is read here rather than left to the text
+    patterns: where the funder publishes the dates there is nothing to infer.
+    """
+    period = tender.get("contractPeriod")
+    if not isinstance(period, dict):
+        return None
+    start = _parse_iso_date(str(period.get("startDate") or "")[:10])
+    end = _parse_iso_date(str(period.get("endDate") or "")[:10])
+    if not start or not end or end <= start:
+        return None
+    months = round((end - start).days / 30.44)
+    return months if 1 <= months <= 120 else None
 
 
 def _scan_ted(name: str, url: str) -> list[dict[str, Any]]:
@@ -2605,20 +2784,33 @@ def _scan_ted(name: str, url: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     # Recent + newest-first (scope=ACTIVE alone returned stale 2016 notices).
     since = (datetime.now() - timedelta(days=120)).strftime("%Y%m%d")
+    # ASK FOR THE NOTICE BODY. This field list used to stop at the title, the
+    # dates and the country, and the handler then set `brief_description: None`
+    # explicitly — so every TED row reached the store with NO source text at all.
+    # Measured 2026-11-19: all 50 live TED rows hold under 400 characters, median
+    # zero, and nothing downstream could read a call out of that.
+    #
+    # It was never a crawling problem. Probing the same endpoint, 25 of 25 health
+    # notices return `description-proc`; we had simply never asked for it.
+    #
+    # `description-lot` rides along because a multi-lot tender puts the substance
+    # per lot and leaves the procurement-level description a single line.
     body = {"query": f"classification-cpv=85* AND publication-date>={since} "
                      "SORT BY publication-date DESC",
             "fields": ["ND", "TI", "PD", "links", "CY", "publication-number",
-                       "deadline-receipt-tender-date-lot"],
+                       "deadline-receipt-tender-date-lot",
+                       "description-proc", "description-lot", "buyer-name",
+                       "total-value", "estimated-value-cur-proc"],
             "limit": 50}
     try:
         r = _http.post(
             url, json=body,
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-            timeout=HTTP_TIMEOUT)
+            timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         notices = (r.json() or {}).get("notices") or []
     except Exception as exc:
-        log.warning("TED failed: %s", exc)
+        note_listing_failure("TED", exc)
         return []
     for n in notices:
         ti = n.get("TI")
@@ -2638,18 +2830,123 @@ def _scan_ted(name: str, url: str) -> list[dict[str, Any]]:
         else:
             deadline = None
         cy = n.get("CY")
+        text, lang = _ted_text(n)
+        buyer = _ted_first_text(n.get("buyer-name"))
+        amount, currency = _ted_value(n)
         out.append({
             "opportunity_title": title,
             "opportunity_link": link,
             "opportunity_id": num,
-            "funding_agency": "EU public procurement (TED)",
-            "brief_description": None,
+            # The BUYER is the body actually letting the contract. "EU public
+            # procurement (TED)" names the portal we read it from, which told a
+            # reviewer nothing and made every TED row look like one funder.
+            "funding_agency": buyer or "EU public procurement (TED)",
+            "brief_description": (text or None) and text[:1800],
+            # `_page_text` is what `extract.build_record` stores as `raw_text` and
+            # what every extractor and the synthesis read. A candidate's
+            # `brief_description` reaches neither, which is the same trap the
+            # grants.gov handler fell into.
+            "_page_text": (text or None) and text[:20000],
+            # NOT "English". TED auto-translates TITLES into every EU language but
+            # leaves the DESCRIPTION in the language it was published in: of 25
+            # health notices probed, 25 had a description and ONE had an English
+            # one. `extract.build_record` used to stamp every row "English"
+            # regardless, so a German tender was filed as an English call and a
+            # reader had no warning before opening it.
+            "solicitation_language": lang,
             "date_posted": _parse_iso_date(str(n.get("PD") or "")[:10]),
             "call_submission_deadline": deadline,
+            "call_award_value": amount,
+            "currency": currency,
             "call_geographic_scope": cy if isinstance(cy, list) else ([cy] if cy else None),
             "_source_origin": name,
         })
     return _dedup_by_link_or_title(out)
+
+
+# TED returns every multilingual value as {iso639-2 code: value}, where the value
+# is a string for a procurement-level field and a LIST for a per-lot one.
+_TED_LANGS = {
+    "eng": "English", "fra": "French", "deu": "German", "ita": "Italian",
+    "spa": "Spanish", "nld": "Dutch", "por": "Portuguese", "pol": "Polish",
+    "swe": "Swedish", "fin": "Finnish", "dan": "Danish", "ron": "Romanian",
+    "ell": "Greek", "ces": "Czech", "hun": "Hungarian", "bul": "Bulgarian",
+    "hrv": "Croatian", "slk": "Slovak", "slv": "Slovenian", "est": "Estonian",
+    "lav": "Latvian", "lit": "Lithuanian", "gle": "Irish", "mlt": "Maltese",
+}
+
+
+def _ted_first_text(value: Any) -> str:
+    """The first usable string out of a TED multilingual value, English first."""
+    if isinstance(value, str):
+        return _clean(value)
+    if not isinstance(value, dict):
+        return ""
+    for key in ["eng"] + [k for k in value if k != "eng"]:
+        v = value.get(key)
+        if isinstance(v, list):
+            v = " ".join(str(x) for x in v if x)
+        v = _clean(str(v or ""))
+        if v:
+            return v
+    return ""
+
+
+def _ted_text(notice: dict[str, Any]) -> tuple[str, str]:
+    """(notice body, the language it is in) — English where TED has it.
+
+    Returns ("", "") when the notice carries no description at all, so the caller
+    stores nothing rather than an empty string that reads as a real value.
+
+    English is preferred and is usually absent: TED translates titles, not
+    bodies. When it is absent the ORIGINAL text is kept and named, because a
+    German tender described in German is a true record of that tender — and far
+    more use to the gate, the scorer and a reader than the blank we stored
+    before. Translating it is a separate question and not this handler's.
+    """
+    best_lang = ""
+    parts: list[str] = []
+    for field in ("description-proc", "description-lot"):
+        value = notice.get(field)
+        if not isinstance(value, dict) or not value:
+            if isinstance(value, str) and _clean(value):
+                parts.append(_clean(value))
+            continue
+        lang = "eng" if "eng" in value else next(iter(value))
+        raw = value.get(lang)
+        if isinstance(raw, list):
+            raw = "\n".join(str(x) for x in raw if x)
+        raw = _clean(str(raw or ""))
+        if not raw:
+            continue
+        # The procurement description decides the language; a lot description in
+        # another language is still worth keeping as text.
+        best_lang = best_lang or lang
+        if raw not in parts:
+            parts.append(raw)
+    text = "\n\n".join(parts).strip()
+    if not text:
+        return "", ""
+    return text, _TED_LANGS.get(best_lang, best_lang or "")
+
+
+def _ted_value(notice: dict[str, Any]) -> tuple[float | None, str | None]:
+    """(total contract value, currency) — both as published, or (None, None).
+
+    This is the value of the CONTRACT, which for a tender is the figure a bidder
+    sizes their response against, so it maps to `call_award_value` the same way a
+    grant's award ceiling does.
+    """
+    amount = _coerce_money(notice.get("total-value"))
+    if amount is None:
+        return None, None
+    currency = notice.get("estimated-value-cur-proc")
+    if isinstance(currency, dict):
+        currency = next(iter(currency.values()), None)
+    if isinstance(currency, list):
+        currency = currency[0] if currency else None
+    currency = _clean(str(currency or "")) or None
+    return amount, currency
 
 
 # ── UNGM notice-detail enrichment ────────────────────────────────────────────
@@ -2663,6 +2960,18 @@ _UNGM_DOC_RE = re.compile(
 _UNGM_PRIMARY_HINT = re.compile(
     r'\b(rfp|rfq|rfi|itb|eoi|request\s+for|tender|proposal|solicitation|bid|notice)\b', re.I)
 _UNGM_TERMS_HINT = re.compile(r'\b(general\s+terms|terms\s+and\s+conditions|conditions)\b', re.I)
+#: Attachments that are the same on every notice. Folding one of these in as the
+#: call text tells a reviewer nothing and makes a thin row look substantial, so
+#: they are removed from consideration before a primary document is chosen.
+#: Matched on the FILENAME, which is where UN agencies are consistent even when
+#: the document's own first page is not.
+_UNGM_BOILERPLATE = re.compile(
+    r"bidder'?s?[_\s-]*instruction|instructions?[_\s-]*to[_\s-]*bidders?|"
+    r"general[_\s-]*(?:condition|term|provision)|terms[_\s-]*and[_\s-]*conditions|"
+    r"code[_\s-]*of[_\s-]*conduct|supplier[_\s-]*(?:registration|code)|"
+    r"ungm[_\s-]*(?:guide|registration|instruction)|how[_\s-]*to[_\s-]*(?:register|access)|"
+    r"privacy|data[_\s-]*protection|anti[_\s-]*fraud|vendor[_\s-]*form|"
+    r"sanctions?[_\s-]*list", re.I)
 # Enrichment is a per-notice fetch (+ PDF downloads), so bound it to the newest N.
 _UNGM_DETAIL_CAP = 40
 
@@ -2747,10 +3056,25 @@ def _enrich_ungm_notice(nid: str, cand: dict[str, Any]) -> None:
             cand["_unspsc"] = unspsc
         # Scan the primary RFP + a General-Terms PDF (bounded) into the call text so the
         # downstream LLM/regex extractor reads the REAL call, not just the listing title.
-        pdfs = [d for d in docs if d["name"].lower().endswith(".pdf")]
+        pdfs = [d for d in docs if d["name"].lower().endswith(".pdf")
+                and not _UNGM_BOILERPLATE.search(d["name"])]
         primary = [d for d in pdfs if _UNGM_PRIMARY_HINT.search(d["name"])][:1]
         terms = [d for d in pdfs if _UNGM_TERMS_HINT.search(d["name"]) and d not in primary][:1]
-        pick = (primary + terms) or pdfs[:1]
+        # NO BLIND FALLBACK TO "WHATEVER PDF IS FIRST".
+        #
+        # `pick = (primary + terms) or pdfs[:1]` meant that when no attachment
+        # looked like the call, we folded in the first one anyway — and the first
+        # attachment on a UN notice is almost always the generic pack every notice
+        # carries. Measured over the 184 live UNGM rows: 99 have a `raw_text` that
+        # STARTS with an attachment marker and 57 name a boilerplate document in
+        # their first 200 characters, which is why "BIDDERS' INSTRUCTIONS ON HOW
+        # TO ACCESS FAO TENDER DOCUMENTS" is the opening line of so many of them.
+        #
+        # That text is worse than nothing. It is identical across notices, so it
+        # tells a reviewer nothing, it pushes the row over the length thresholds
+        # that decide whether anything is wrong, and the synthesis then spends a
+        # model call summarising a form. An empty body is at least true.
+        pick = primary + terms
         texts = []
         # UNGM's DownloadDocument requires a Referer (the notice page) or it returns 0 bytes.
         _dl_hdrs = {"User-Agent": USER_AGENT,
@@ -2767,8 +3091,18 @@ def _enrich_ungm_notice(nid: str, cand: dict[str, Any]) -> None:
         if texts:
             extra = _clean(" ".join(texts))
             cand["_page_text"] = _clean(((cand.get("_page_text") or "") + " " + extra))[:12000]
-            if not cand.get("brief_description"):
-                cand["brief_description"] = extra[:1800]
+            # `brief_description` IS NOT A PLACE TO PUT ATTACHMENT TEXT.
+            #
+            # This used to drop the first 1800 characters of the PDF straight in,
+            # which is precisely what `core/extract.py` forbids: that column holds
+            # the clean org-neutral synthesis and "NEVER the raw attachment text
+            # ('[General_conditions.pdf] GENERAL CONDITIONS OF CONTRACT…')". The
+            # rule was written about this exact string and the writer that
+            # produced it was two files away.
+            #
+            # The text is still kept, in `_page_text`, where it belongs: it is
+            # grounding material for the extractors and the synthesis, not prose
+            # for a reviewer to read.
     except Exception as exc:
         log.debug("ungm enrich parse %s failed: %s", nid, exc)
 
@@ -2791,10 +3125,10 @@ def _scan_ungm(name: str, url: str) -> list[dict[str, Any]]:
                 "SortField": "DatePublished", "SortAscending": False}
         try:
             r = _http.post(endpoint, data=json.dumps(body), headers=hdrs,
-                              timeout=HTTP_TIMEOUT)
+                              timeout=LISTING_TIMEOUT)
             r.raise_for_status()
         except Exception as exc:
-            log.warning("UNGM page=%s failed: %s", page, exc)
+            note_listing_failure(f"UNGM (page {page})", exc)
             break
         rows = BeautifulSoup(r.text, "html.parser").select("div.dataRow[data-noticeid]")
         if not rows:
@@ -3063,11 +3397,11 @@ def _scan_unops(name: str, url: str) -> list[dict[str, Any]]:
     try:
         r = _http.get(api, headers={"User-Agent": USER_AGENT,
                                        "Accept": "application/json"},
-                         timeout=HTTP_TIMEOUT)
+                         timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         recs = (r.json() or {}).get("records") or []
     except Exception as exc:
-        log.warning("UNOPS GrantPlus failed: %s", exc)
+        note_listing_failure("UNOPS GrantPlus", exc)
         return []
     for n in recs:
         if (n.get("stage") or "open").lower() != "open":   # keep only open calls
@@ -3106,11 +3440,11 @@ def _scan_chinnova(name: str, url: str) -> list[dict[str, Any]]:
     try:
         r = _http.get(listing, headers={"User-Agent": USER_AGENT,
                                            "Accept": "text/html"},
-                         timeout=HTTP_TIMEOUT)
+                         timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
     except Exception as exc:
-        log.warning("CHINNOVA failed: %s", exc)
+        note_listing_failure("CHINNOVA", exc)
         return []
     out: list[dict[str, Any]] = []
     for card in soup.select("div.gc-card-body"):
@@ -3158,11 +3492,11 @@ def _scan_grandchallenges_ca(name: str, url: str) -> list[dict[str, Any]]:
     instead: heading → title, card body → description, "by <date>" → deadline."""
     try:
         r = _http.get(url, headers={"User-Agent": USER_AGENT,
-                                       "Accept": "text/html"}, timeout=HTTP_TIMEOUT)
+                                       "Accept": "text/html"}, timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
     except Exception as exc:
-        log.warning("Grand Challenges Canada failed: %s", exc)
+        note_listing_failure("Grand Challenges Canada", exc)
         return []
     base = f"{urlsplit(url).scheme}://{urlsplit(url).netloc}"
     out: list[dict[str, Any]] = []
@@ -3450,11 +3784,11 @@ def _scan_packard(name: str, url: str) -> list[dict[str, Any]]:
     api = "https://www.packard.org/wp-json/wp/v2/funding-opportunity?per_page=30"
     try:
         r = _http.get(api, headers={"User-Agent": USER_AGENT,
-                                       "Accept": "application/json"}, timeout=HTTP_TIMEOUT)
+                                       "Accept": "application/json"}, timeout=LISTING_TIMEOUT)
         r.raise_for_status()
         items = r.json() or []
     except Exception as exc:
-        log.warning("Packard WP REST failed: %s", exc)
+        note_listing_failure("Packard", exc)
         return []
     out: list[dict[str, Any]] = []
     for it in (items if isinstance(items, list) else []):
@@ -3490,11 +3824,11 @@ def _scan_rvo(name: str, url: str) -> list[dict[str, Any]]:
             r = _http.get(api, params=({"page": page} if page else None),
                              headers={"User-Agent": USER_AGENT,
                                       "Accept": "application/json"},
-                             timeout=HTTP_TIMEOUT)
+                             timeout=LISTING_TIMEOUT)
             r.raise_for_status()
             j = r.json() or {}
         except Exception as exc:
-            log.warning("RVO page=%s failed: %s", page, exc)
+            note_listing_failure(f"RVO (page {page})", exc)
             break
         results = j.get("searchResults") or []
         if not results:

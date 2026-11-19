@@ -708,6 +708,14 @@ def run(
     wall = time.time() - wall_start
     serial_estimate = sum(b["duration"] for b in scraped)
     speedup = serial_estimate / wall if wall > 0 else 1.0
+    # SAY IT WAS A REHEARSAL, every time. The counters below read identically
+    # whether or not anything was stored — "new=26" is 26 rows written on a real
+    # run and 26 rows that WOULD be written on a dry one — and on 2026-11-19 that
+    # ambiguity is most of why a dry run was believed harmless when it had in fact
+    # written 26 rows to the shared catalogue. The flag is honest now; so is this.
+    if dry_run:
+        print("DRY RUN — nothing was written. The counts below are what this scan "
+              "WOULD have stored.")
     print(
         f"Scan done · {totals['sources']} source(s) · "
         f"{totals['found']} found · {totals['new']} new · "

@@ -181,18 +181,45 @@ export type ScreenRow = {
   donor_decision?: string | null;
 };
 
+/** Where a row's score stands with the job meant to produce it. Null, or absent on an
+ *  older API, means settled: the stored number is the one the server computed. */
+export type RescoreState = "pending" | "failed";
+
 /**
- * Is this row's stored score older than the edit that should have changed it?
+ * Is a re-score actually on its way for this row?
  *
- * Deliberately NOT "is the score stale against the current profile" — only the job knows
- * the current profile signature, and guessing at it here would put a second opinion about
- * freshness next to the authoritative one. This answers the narrower question a page can
- * actually act on: the row was saved after it was last scored, so a re-score is in flight.
+ * Still deliberately NOT "is the score stale against the current profile" — only the job
+ * knows the current profile signature, and guessing at it here would put a second opinion
+ * about freshness next to the authoritative one.
+ *
+ * WHAT CHANGED, 2026-11-16. This used to be computed here, as
+ * `decision_overridden_at > scored_at`: saved since it was scored, so a re-score must be
+ * in flight. That inference was wrong in both directions of the server's actual behaviour.
+ * `PATCH /pipelines/rfp/:uid` stamps `decision_overridden_at` on every save and queues a
+ * re-score only when the save touched a scoring input; `POST /pipelines/decision` stamps
+ * it and queues `record_decision`, which does not score at all. So changing a next action,
+ * or recording a decision, left the row looking permanently mid-recalculation — three rows
+ * had been spinning since 9 November under scores that were correct and settled.
+ *
+ * The queue is the only thing that knows, and the queue is the server's, so the server now
+ * answers it: `rescore_state`, from `routes_pipelines.rescoreStateByUid`. A row served by
+ * an older API has no such field and simply does not spin, which is the right way for this
+ * to degrade.
  */
-export const scoreIsBehind = (r: {
-  scored_at?: string | null; decision_overridden_at?: string | null;
-}) => Boolean(r.scored_at && r.decision_overridden_at
-  && Date.parse(r.decision_overridden_at) > Date.parse(r.scored_at));
+export const scoreIsBehind = (r: { rescore_state?: RescoreState | null }) =>
+  r.rescore_state === "pending";
+
+/**
+ * Did the re-score this row was waiting for die?
+ *
+ * A separate question from the one above and a louder one. A job that was dispatched and
+ * then failed leaves the row holding a number from BEFORE the edit that queued it, with
+ * nothing in flight to replace it — so a page that only knew about `pending` would show
+ * that number as settled. The save-time path warns when the enqueue itself fails; this is
+ * the case where it started and died, which is what the dispatch-token outage produced.
+ */
+export const rescoreFailed = (r: { rescore_state?: RescoreState | null }) =>
+  r.rescore_state === "failed";
 
 export type Weeks = {
   year: number;
@@ -222,6 +249,10 @@ export type ReviewedRow = ScreenRow & {
    *  `submitted_at`. Resolved by the API so the page does not own a second opinion about
    *  which period a decision belongs to. */
   decided_on: string;
+  /** How the last `rescore` job for this row ended: still in flight, or dead. Answered
+   *  from the job queue by the API — see `scoreIsBehind` for why the page cannot work this
+   *  out from the save stamps. Null when the row is settled; absent on an older API. */
+  rescore_state?: RescoreState | null;
 };
 
 export type Reviewed = {
@@ -423,7 +454,21 @@ export type Shell = {
   seen: number | null;
   unread: number;
   classicUrl: string | null;
+  /** The app owner to contact for account and data requests. Falls back to a visibly
+   *  unconfigured placeholder when ADMIN_CONTACT_EMAIL is not set, in both apps. */
+  adminContactEmail: string;
+  /** False when it is the unset placeholder — do not print it at somebody. */
+  adminContactConfigured?: boolean;
+  /** The parts of the chrome that could not be READ, as opposed to being empty: any of
+   *  "feed", "seen", "meeting", "org", "classicUrl". The shell renders either way — it is
+   *  on every page — so this is how a panel says "unavailable" instead of drawing an empty
+   *  state that reads as a fact about the user's data. Absent on an older API. */
+  unavailable?: string[];
 };
+
+/** Did this part of the chrome fail to load, rather than come back empty? */
+export const shellPartFailed = (s: Shell | null, part: string) =>
+  Boolean(s?.unavailable?.includes(part));
 export const fetchShell = () => call<Shell>("/shell");
 export const markAllRead = () => post<{ ok: true; seen: number }>("/notifications/read");
 
@@ -489,6 +534,8 @@ export type OpportunityBucket = {
   key: string;
   label: string;
   kind: "rows" | "applications";
+  /** The heading this figure files under on Triage — see `bucketGroups` for the order. */
+  group: string;
   /** One line a reader can check the selection against. */
   rule: string;
   count: number;
@@ -525,6 +572,9 @@ export type OpportunityListRow = {
 
 export type OpportunityList = {
   today: string;
+  /** The bucket headings, in the order they read. The server decides it: first-appearance
+   *  order in `buckets` is the DASHBOARD's tile order, which groups differently. */
+  bucketGroups: string[];
   buckets: OpportunityBucket[];
   rows: OpportunityListRow[];
 };
@@ -611,6 +661,9 @@ export type FormOptions = {
   dropdowns: Record<string, string[]>;
   programAreas: string[];
   geoOptions: string[];
+  /** Countries alone — a person's location on the Profile page, where the regions and
+   *  income tiers in `geoOptions` are not answers. */
+  countries: string[];
   criterionAnswers: Record<string, string[]>;
   /** Stored value (lower-cased) → the answer it pre-selects, as
    *  core/scorer.default_response resolves it. Resolved server-side because it
@@ -653,6 +706,65 @@ export const deleteRfp = (uid: string) =>
     `/pipelines/rfp/${encodeURIComponent(uid)}`);
 
 // ── Donors ───────────────────────────────────────────────────────────────────
+/**
+ * Donor writes. Every one QUEUES a job and returns its id — none of them changes a donor
+ * before the caller polls it (`awaitJob`). The rules live in core/donor_write.py so the
+ * runner and the Streamlit page apply the same ones to this shared, cross-tenant table.
+ *
+ * `suggest: true` files a proposal for review instead of writing. Which of the two a
+ * given user is allowed to do is decided in the job, against the users table — not here,
+ * and not by hiding a button.
+ */
+export type DonorJob = { job_id: string; dispatched: boolean; detail: string };
+
+export const createDonor = (
+  name: string, opts: { edited?: Record<string, unknown>; suggest?: boolean; rationale?: string } = {},
+) => call<DonorJob>("/donors", { method: "POST", body: JSON.stringify({ name, ...opts }) });
+
+export const updateDonor = (
+  key: string,
+  opts: {
+    edited: Record<string, unknown>;
+    /** OMIT to leave contacts alone. Sending [] DELETES every contact this donor has. */
+    contacts?: Record<string, unknown>[];
+    suggest?: boolean;
+    rationale?: string;
+  },
+) => call<DonorJob>(`/donors/${encodeURIComponent(key)}`,
+  { method: "PATCH", body: JSON.stringify(opts) });
+
+export const deleteDonor = (key: string) =>
+  call<DonorJob>(`/donors/${encodeURIComponent(key)}`, { method: "DELETE" });
+
+export const deleteDonors = (keys: string[]) =>
+  call<DonorJob>("/donors/delete", { method: "POST", body: JSON.stringify({ keys }) });
+
+/**
+ * The branded donor PDF. A JOB, not a download, and the only donor job that READS.
+ *
+ * It is reportlab — font metrics, an image reader, a page-break engine — so no amount of
+ * work in the browser or the Edge Function would produce the same document. Drawing a
+ * second PDF here instead would mean two layouts for one profile: different fonts, no org
+ * logo, no footer, and a drift that nobody sees because a PDF is read by the person it was
+ * sent to.
+ *
+ * Poll with `awaitJob`; a finished one carries `DonorPdfResult` with a SHORT-LIVED signed
+ * URL. `expiresInS` is worth telling the user, because the natural thing to do with a
+ * download link is paste it into a chat thread.
+ */
+export type DonorPdfResult = {
+  ok: boolean; url: string; filename: string; bytes: number; expiresInS: number;
+  donors: number;
+  /** Selected keys that no longer exist — named rather than silently dropped. */
+  missing: string[];
+  pruned: number; runner: string; summary: string;
+};
+
+export const requestDonorPdf = (
+  keys: string[], opts: { filename?: string; contacts?: boolean } = {},
+) => call<DonorJob>("/donors/pdf",
+  { method: "POST", body: JSON.stringify({ keys, ...opts }) });
+
 export const fetchDonors = () => call<{ donors: Donor[] }>("/donors").then((r) => {
   try {
     localStorage.setItem(DONOR_CACHE_KEY, JSON.stringify(r.donors));
@@ -672,3 +784,964 @@ export function cachedDonors(): Donor[] | null {
 }
 export const fetchContacts = (key: string) =>
   call<{ contacts: Contact[] }>(`/donors/${encodeURIComponent(key)}/contacts`).then((r) => r.contacts);
+
+// ── Report ───────────────────────────────────────────────────────────────────
+//
+// Every figure on the Report page is computed on the server and arrives as a number. The
+// page reads up to 50,000 submissions; shipping those to draw a dozen tiles would cost tens
+// of megabytes per period change, and it would put a second copy of each rule in the
+// browser to disagree with the Python. So these types are shapes to DRAW, not data to
+// reduce — if something here needs arithmetic beyond a percentage of a total, it belongs in
+// supabase/functions/_shared/api/report_section*.ts with a parity check on it.
+
+export type ReportSelection = { period: string; year: number; month: string; view: string };
+export type ReportBounds = { start: string | null; end: string | null };
+
+export type ReportPeriods = {
+  today: string;
+  currentYear: number;
+  options: { periods: string[]; views: string[]; months: string[]; yearMin: number; yearMax: number };
+  selection: ReportSelection;
+  bounds: ReportBounds;
+  label: string;
+  phrase: string;
+  slug: string;
+  cadence: string;
+  bucketLabel: string;
+  /** Null under All time: the window then comes from the rows, so each series brings its own. */
+  buckets: string[] | null;
+};
+
+/** What a saved `?r=` link resolves to, plus everything /report/periods returns. */
+export type ReportSnapshot = ReportPeriods & {
+  rid: string | null;
+  found: boolean;
+  /** An id was asked for and was not there — it may have aged out of the newest 100. */
+  missing: boolean;
+  createdAt: string | null;
+  restored: { secs: string[]; items: string[] };
+  savedSignature: string | null;
+  catalog: {
+    sections: { id: string; label: string; items: { key: string; label: string }[] }[];
+    allKeys: string[];
+    allSecIds: string[];
+  };
+};
+
+const periodQuery = (sel: ReportSelection) =>
+  `?period=${encodeURIComponent(sel.period)}&year=${sel.year}`
+  + `&month=${encodeURIComponent(sel.month)}&view=${encodeURIComponent(sel.view)}`;
+
+export const fetchReportSnapshot = (rid: string | null) =>
+  call<ReportSnapshot>(`/report/snapshot${rid ? `?r=${encodeURIComponent(rid)}` : ""}`);
+
+/** Generate: save the selection, get the short id that goes in the URL. */
+export const saveReportSnapshot = (sel: ReportSelection, secs: string[], items: string[]) =>
+  post<{ rid: string; createdAt: string }>("/report/snapshot", { ...sel, secs, items });
+
+type Bucketed<T> = T & { bucket: string };
+/** Every ranked block ships the full map AND the top slice; the page draws the slice.
+ *  `all` is deliberately loose — the page never reads it, and typing it would be a second
+ *  description of a shape only the server's own parity check needs to be exact about. */
+type Ranked = { all: Record<string, unknown> };
+
+export type ReportSection1 = {
+  selection: ReportSelection; bounds: ReportBounds; label: string; bucketLabel: string;
+  intake: {
+    total: number; duplicates: number;
+    bySource: { source: string; label: string; unique: number; duplicates: number; total: number }[];
+  };
+  scans: {
+    runs: number; found: number; eligible: number; added: number;
+    duplicates: number; rejected: number; errorRuns: number;
+  };
+  discovery: {
+    buckets: Bucketed<{ total: number; bySubmitter: Record<string, number> }>[];
+    submitters: string[];
+    /** True when empty buckets were filled in, so a gap is a real zero and not a missing bar. */
+    zeroFilled: boolean;
+  };
+  donors: { all: Record<string, number>; top: { donor: string; rfps: number }[] };
+  focusAreas: { area: string; calls: number }[];
+  proceedCount: number;
+  keywordSuccess: { keyword: string; hits: number; proceed: number; submitted: number; approved: number }[];
+  sources: {
+    all: Record<string, unknown>;
+    top: { source: string; runs: number; found: number; added: number; rejected: number; avgDur: number; yieldPct: number }[];
+  };
+  cycle: { n: number; median: number; mean: number; min: number; max: number; days: number[] } | null;
+};
+
+export type ReportSection2 = {
+  selection: ReportSelection; bounds: ReportBounds; label: string; bucketLabel: string;
+  meetings: { logged: number; open: number; resolved: number; pctUnresolved: number };
+  donors: { engagements: number; donors: number; avgPerDonor: number; tiedToRfp: number };
+  engagements: Bucketed<{ engagements: number }>[];
+  topDonors: Ranked & { top: { donor: string; touchpoints: number }[] };
+  leads: Ranked & { top: { name: string; submitted: number; unsubmitted: number; total: number }[] };
+  contributors: Ranked & { top: { name: string; submitted: number; unsubmitted: number; total: number }[] };
+  partners: {
+    lead: Ranked & { top: { org: string; rfps: number }[] };
+    sub: Ranked & { top: { org: string; rfps: number }[] };
+  };
+  proceedRows: number;
+};
+
+export type ReportSection3 = {
+  selection: ReportSelection; bounds: ReportBounds; label: string;
+  counts: {
+    total: number; proceed: number; park: number; decline: number; noDecision: number;
+    submitted: number; approved: number; discoveredInPeriod: number;
+  };
+  values: { discovered: number; proceed: number; submitted: number; approved: number };
+  progress: { status: string; rfps: number }[];
+  proceedRows: number;
+};
+
+export type ReportSection4 = {
+  selection: ReportSelection; bounds: ReportBounds; label: string; bucketLabel: string;
+  kpis: {
+    decisions: number;
+    /** Null when no decided row carries both dates — not zero, which would read as "same day". */
+    avgDays: number | null; medianDays: number | null;
+    overridden: number; dated: number;
+  };
+  distribution: { decision: string; count: number }[];
+  distributionOrder: string[];
+  overTime: Bucketed<{ decisions: number }>[];
+  autoRec: { rows: { decision: string; auto: number; team: number }[]; agreed: number; total: number };
+  donor: { all: Record<string, number>; ranked: { decision: string; rfps: number }[]; pending: number; order: string[] };
+};
+
+export type ReportSection5 = {
+  selection: ReportSelection; bounds: ReportBounds; label: string; bucketLabel: string;
+  kpis: { submitted: number; approved: number; winRate: number; securedRatio: number };
+  money: { requested: number; secured: number; unsecured: number; pipeline: number; pipelineRfps: number };
+  /** Rows whose amount has no currency beside it, so their dollars are a guess. */
+  missingCurrency: { approved: number; pipeline: number };
+  conversion: {
+    proceeded: number; submitted: number; approved: number;
+    proceededToSubmitted: number; submittedToApproved: number; endToEnd: number;
+  };
+  outcomes: {
+    uid: string; label: string; funder: string; outcome: string; donorDecision: string;
+    reqUsd: number; secUsd: number; signedUsd: number;
+  }[];
+  grants: {
+    uid: string; grant: string; funder: string; requestedUsd: number; securedUsd: number;
+    donorDecision: string; submissions: number; submittedOn: string | null;
+  }[];
+  cumulative: Bucketed<{ secured: number; cumulative: number }>[];
+};
+
+export const fetchReportSection1 = (s: ReportSelection) => call<ReportSection1>(`/report/section1${periodQuery(s)}`);
+export const fetchReportSection2 = (s: ReportSelection) => call<ReportSection2>(`/report/section2${periodQuery(s)}`);
+export const fetchReportSection3 = (s: ReportSelection) => call<ReportSection3>(`/report/section3${periodQuery(s)}`);
+export const fetchReportSection4 = (s: ReportSelection) => call<ReportSection4>(`/report/section4${periodQuery(s)}`);
+export const fetchReportSection5 = (s: ReportSelection) => call<ReportSection5>(`/report/section5${periodQuery(s)}`);
+
+/**
+ * The six-sheet data export. A JOB, not a download: the workbook is built by openpyxl over
+ * every row in the period, which no Edge Function CPU budget survives.
+ *
+ * Returns the queued job — poll it with `awaitJob`. A finished one carries
+ * `ReportExportResult` in `job.result`, with a SHORT-LIVED signed URL to a private bucket;
+ * `expiresInS` is how long that link lasts, and it is worth saying out loud, because the
+ * natural thing for a reader to do with it is paste it into a chat thread.
+ *
+ * `rid` is the `?r=` report id, which only shapes the filename — the rows come from the
+ * period, not from the snapshot. The period itself is sent so the server resolves it once,
+ * the same way every section route does.
+ */
+export type ReportExportResult = {
+  url: string; filename: string; bytes: number; expiresInS: number;
+  /** Sheet name to row count. A sheet is absent when the period held none of that thing. */
+  sheets: Record<string, number>;
+  pruned: number; runner: string;
+};
+
+export const requestReportExport = (sel: ReportSelection, rid: string | null) =>
+  post<{ job: Job; filename: string }>("/report/export", { ...sel, r: rid ?? "" });
+
+// ── Applications ───────────────────────────────────────────────────────────
+//
+// The rail called this Bids Submitted until 2026-11-16.
+// Every application ever sent to a funder, with no date window. Deliberately NOT the
+// Pipeline's Outcome stage, which answers "what did funders decide in this window" — live
+// the two win rates are 17% and 44%, and both are right because they divide by different
+// things. See supabase/functions/_shared/api/grants.ts.
+
+export type GrantRow = {
+  uid: string; title: string; funder: string; status: string;
+  decision: string; progress: string;
+  approved: boolean; pending: boolean; notApproved: boolean;
+  /** The KPI's unit — zero for a row whose progress never reached Completed. */
+  applications: number;
+  /** The by-funder table's unit — `submissions` filled to 1, with no progress gate. */
+  submissions: number;
+  usdRequested: number; usdSecured: number;
+  /** As entered, shown beside the conversion so the page cannot look like it disagrees
+   *  with the editor. */
+  amountRequested: number | null; amountSecured: number | null;
+  requestCurrency: string; securedCurrency: string;
+  deadline: string | null; dateSubmitted: string | null; expectedAward: string | null;
+  /** The date this page ORDERS and FILTERS by — `date_completed`, else the deadline, else
+   *  the day the row was logged. `dateSource` says which, so a stand-in can be labelled. */
+  periodDate: string | null;
+  dateSource: "completed" | "deadline" | "logged" | "none";
+  role: string; leadApplicant: string; subApplicant: string; proposalLead: string;
+  geography: string[]; link: string;
+};
+
+export type GrantFunderRow = {
+  funder: string; rfps: number; submissions: number;
+  approved: number; pending: number; notApproved: number;
+  requested: number; secured: number;
+};
+
+export type Grants = {
+  counts: { submitted: number; approved: number; pending: number; notApproved: number; rows: number };
+  money: { requested: number; secured: number; unsecured: number; balance: number };
+  winRate: number;
+  rows: GrantRow[];
+  byFunder: GrantFunderRow[];
+  rates: Record<string, [number | null, string | null]>;
+  /** Answered rows the weighted count scores as zero. Reported, never repaired. */
+  ledgerGap: string[];
+  /** The window every figure above was computed for. */
+  period: {
+    selection: GrantSelection;
+    bounds: { start: string | null; end: string | null };
+    label: string;
+  };
+  /**
+   * The years the page may offer: every year with a bid, plus the current one, newest
+   * first, never a future one. Derived from the rows and the clock, so next year appears
+   * on its own without a code change.
+   */
+  years: number[];
+  /** Submitted bids outside the window, so an empty table can be told from no data. */
+  hiddenByPeriod: number;
+};
+
+/**
+ * Two controls, not one: a WINDOW, and the YEAR it is anchored in.
+ *
+ * A rolling window ends on today when the chosen year is the current one (or none is
+ * chosen) and on 31 December of that year otherwise, clamped so it never reaches outside
+ * it. "Last 30 days" of 2025 is 2-31 December 2025. See api/grants.ts for why.
+ */
+export type GrantWindow = "all" | "7d" | "30d" | "90d" | "365d";
+export type GrantSelection = {
+  window: GrantWindow;
+  /** null = the whole record, every year. */
+  year: number | null;
+  /** Only applied when `window` is "all". */
+  quarter: number | null;
+};
+
+/**
+ * Every figure on the Applications page for one window.
+ *
+ * The window is a QUERY PARAMETER rather than something the page applies to what it got,
+ * because the tiles, the money, the win rate and the by-funder table are all aggregates
+ * the server computes. Filtering here would leave them answering a different question from
+ * the list underneath them.
+ */
+export const fetchGrants = (sel?: GrantSelection) => {
+  const p = new URLSearchParams();
+  if (sel) {
+    if (sel.window !== "all") p.set("window", sel.window);
+    if (sel.year) p.set("year", String(sel.year));
+    // A quarter only means something inside a whole year; sending it with a rolling
+    // window would ask the server to honour two windows at once, which it will not.
+    if (sel.year && sel.quarter && sel.window === "all") p.set("quarter", String(sel.quarter));
+  }
+  const qs = p.toString();
+  return call<Grants>(`/grants${qs ? `?${qs}` : ""}`);
+};
+
+// ── Meetings ──────────────────────────────────────────────────────────
+//
+// One read for all four tabs — they are small, they are read together, and four round
+// trips to paint a Monday-morning screen is how a page comes to feel slow.
+
+export type MeetingNote = {
+  id: string; meetingDate: string | null; rfpUid: string; donorTitle: string;
+  remarks: string; actions: string; owner: string; deadline: string | null;
+  resolved: boolean; createdAt: string | null;
+};
+
+export type Engagement = {
+  id: string; date: string | null; donor: string; type: string; format: string;
+  internalLead: string; donorContacts: string; purpose: string; outcome: string;
+  rfpUid: string;
+  /** A NULL in the column reads as not resolved, so this is never null. */
+  resolved: boolean;
+  open: boolean;
+};
+
+export type RotaEntry = { date: string; noteTaker: string; presenter: string; chair: string; cid: string };
+
+export type Actions = {
+  week: { monday: string; sunday: string; label: string };
+  rota: RotaEntry | null;
+  weeks: string[];
+  notes: MeetingNote[];
+  engagements: Engagement[];
+  pending: {
+    notes: MeetingNote[]; engagements: Engagement[];
+    meetingTotal: number; meetingOpen: number; meetingPct: number;
+    engagementTotal: number; engagementOpen: number; engagementPct: number;
+    owners: { name: string; items: number }[];
+  };
+  schedule: RotaEntry[];
+  quarter: { from: string; count: number };
+  canEditSchedule: boolean;
+};
+
+export const fetchActions = (week?: string) =>
+  call<Actions>(`/actions${week ? `?week=${encodeURIComponent(week)}` : ""}`);
+
+export const createNote = (n: Partial<MeetingNote> & { actions: string }) =>
+  post<{ id: string }>("/actions/notes", n);
+/** Sparse: send only what changes. The resolve toggle sends `{resolved}` alone. */
+export const patchNote = (id: string, patch: Record<string, unknown>) =>
+  call<{ ok: true }>(`/actions/notes/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify(patch) });
+
+export const createEngagement = (e: Record<string, unknown>) =>
+  post<{ id: string }>("/actions/engagements", e);
+export const patchEngagement = (id: string, patch: Record<string, unknown>) =>
+  call<{ ok: true }>(`/actions/engagements/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify(patch) });
+
+/** Replaces the whole rota — the store is one blob, as it has always been. */
+export const putSchedule = (schedule: RotaEntry[]) =>
+  call<{ ok: true; count: number }>("/actions/schedule",
+    { method: "PUT", body: JSON.stringify({ schedule }) });
+
+// ── Submit New Notice ────────────────────────────────────────────────────────
+
+/** What the form sends. Every key optional: the server validates, not the client. */
+export type SubmitPayload = {
+  title: string;
+  opportunityId?: string;
+  funder?: string;
+  brief?: string;
+  datePosted?: string;
+  deadline?: string;
+  awardDate?: string;
+  applicantRole?: string;
+  fundingWindow?: string;
+  timeToAward?: string;
+  submissionFormat?: string;
+  link?: string;
+  value?: string;
+  currency?: string;
+  duration?: string;
+  focusTheme?: string;
+  leadApplicant?: string;
+  subApplicant?: string;
+  geo?: string[];
+  programAreas?: string[];
+  criteria?: Record<string, string>;
+  feasibility?: string;
+  declineFlags?: boolean;
+  keyRisks?: string;
+  decision?: string;
+  rationale?: string;
+  proposalLead?: string;
+  contributors?: string[];
+  reviewers?: string[];
+};
+
+export type SubmitResult = {
+  uid: string;
+  alignmentScore: number;
+  autoRecommendation: string;
+  /** The deadline has already passed and nothing marks the bid submitted — the page
+   *  prompts for the one field that stops it reading as a missed opportunity. */
+  needsSubmissionCheck: boolean;
+  warnings: Warning[];
+};
+
+/**
+ * Capture one opportunity. Never refused for being a duplicate — that policy is the
+ * server's and the reasoning is in api/submit.ts.
+ *
+ * `offsetMinutes` is sent, not read from the server, because the UID carries the
+ * submitter's own date and minute the way the Streamlit app's does. The clock stays the
+ * server's; only the zone comes from here.
+ */
+export const submitNotice = (payload: SubmitPayload) =>
+  post<SubmitResult>("/submit", { ...payload, offsetMinutes: -new Date().getTimezoneOffset() });
+
+// ── Search ───────────────────────────────────────────────────────────────────
+//
+// Two halves with two shapes. The in-app search is a static nav registry and two ilike
+// queries, so it answers in the request. Web discovery holds the provider keys, fans one
+// keyword into several searches, fetches candidate pages and filters them through seven
+// rules — 21.4 seconds live — so it is a job the page polls.
+
+export type NavHit = { label: string; href: string; score: number };
+export type OppHit = {
+  title: string; funder: string; deadline: string; decision: string; source: string;
+  uid: string;
+};
+export type DonorHit = { name: string };
+
+export type SiteSearch = {
+  query: string;
+  nav: NavHit[];
+  opportunities: OppHit[];
+  donors: DonorHit[];
+  total: number;
+};
+
+export const siteSearch = (q: string) =>
+  call<SiteSearch>(`/search?q=${encodeURIComponent(q)}`);
+
+/** One hit from the web, as core/web_search.py yields it. */
+export type WebHit = {
+  title: string; link: string; domain: string; snippet: string;
+  deadline?: string | null; page_date?: string | null;
+};
+
+/**
+ * The web job's result.
+ *
+ * `available` is false when no provider key is set, which is an administrator's answer the
+ * browser cannot work out for itself — the environment holding the keys is the Python's.
+ * The `dropped_*` counts are the filter explaining itself: a run that kept 12 of 43 should
+ * say where the other 31 went, or the filter looks like a failure.
+ */
+export type WebSearchResult = {
+  available: boolean;
+  ok?: boolean;
+  mode?: "discovery" | "lookup" | string;
+  error?: string;
+  raw_count?: number;
+  results?: WebHit[];
+  suggest?: string[];
+  dropped_aggregator?: number;
+  dropped_expired?: number;
+  dropped_old?: number;
+  dropped_notrfp?: number;
+  dropped_geo?: number;
+  dropped_scholarship?: number;
+  dropped_offtopic?: number;
+  dropped_lang?: number;
+};
+
+/** Queue one web-discovery run. `fresh` drops the 15-minute cache first. */
+export const startWebSearch = (q: string, fresh = false) =>
+  post<{ jobId: string }>("/search/web", { q, fresh });
+
+export type TrackResult = {
+  action: "track";
+  ok?: boolean; uid?: string | null; skipped?: boolean; reason?: string;
+  routed?: string; rejected?: boolean;
+};
+
+/**
+ * Rate a web hit, or track it into Found Records.
+ *
+ * Both run in Python: the rating writes the ML training label, and tracking scores the
+ * candidate with auto_scorer, checks the deduplicator and may route it to the Sources
+ * registry instead of inserting it. Four outcomes, all the module's judgement.
+ */
+export const searchAction = (
+  action: "feedback" | "track", result: WebHit, verdict?: "good" | "neutral" | "bad",
+) => post<{ jobId: string }>("/search/action", { action, result, verdict });
+
+// ── My Organization ──────────────────────────────────────────────────────────
+//
+// A READ-ONLY view of what the matching engine believes about this tenant, and how much
+// of it is still missing. The editor is Settings → Setup; this page links to it.
+
+export type OrgRatingRow = {
+  key: string; label: string; category: string; value: number; word: string;
+};
+
+export type Organization = {
+  /** core/settings.get_org — the blob merged onto the placeholder defaults, with the
+   *  display name taken from `tenants.name` rather than the blob's own copy. */
+  identity: Record<string, string>;
+  /** core/org_profile.get_profile — the stored overlay merged onto DEFAULT_PROFILE,
+   *  legacy keys renamed on the way in. */
+  profile: Record<string, unknown>;
+  /** Ready for a `src`, whether it was stored as base64 or as a URL. */
+  logo: string | null;
+  /** Resolved server-side, from tables generated out of the Python. */
+  labels: { legalType: string; entityType: string };
+  /** Pre-sorted by `rating_bars_html`'s own order: value descending, then key. */
+  ratings: {
+    domain: OrgRatingRow[];
+    priority: OrgRatingRow[];
+    /** Selected but never graded — plain chips beside the bars. */
+    domainUngraded: string[];
+    priorityUngraded: string[];
+  };
+  completeness: {
+    pct: number;
+    /** The still-unfilled field labels, in the Python's weighted order. */
+    missing: string[];
+    band: "red" | "amber" | "green";
+    /** What is missing before screening can run. Empty = ready. */
+    gap: string[];
+    /** Any geography at all — a different question from `gap`, and it decides whether
+     *  the page warns or merely nudges. */
+    hasGeo: boolean;
+  };
+  team: string[];
+  canEdit: boolean;
+};
+
+export const fetchOrganization = () => call<Organization>("/organization");
+
+// ── Settings → Setup ─────────────────────────────────────────────────────────
+//
+// The EDITOR for the two blobs `/organization` displays. Three saves, not one, because
+// the Streamlit page has three buttons writing three places — see
+// supabase/functions/_shared/api/routes_org_setup.ts. Folding them together would let a
+// half-filled Bid Fitness tab overwrite a complete identity.
+
+export type OrgPartner = { name: string; type: string; status: string[]; country: string };
+
+export type SetupOptions = {
+  legalTypes: string[];
+  entityTypes: string[];
+  stages: string[];
+  cofinancing: string[];
+  /** [label on screen, stored value]. Order matters — the first leaves MUST-4 off. */
+  boards: [string, string][];
+  /** [stored token, label on screen]. The editor shows the label and stores the token. */
+  routes: [string, string][];
+  languages: string[];
+  partnerTypes: string[];
+  partnerStatus: string[];
+  countries: string[];
+  /**
+   * [category, canonical area keys] for the two rating matrices.
+   *
+   * The KEYS travel whole and are never composed in the browser: a stored area is
+   * "IDs - Malaria & NTDs", and that exact string is what the classifier matches an
+   * organisation's areas against a call's and a donor's.
+   */
+  areaTaxonomy: [string, string[]][];
+  /** Key prefix → the category's full name, for display only. */
+  categoryNames: Record<string, string>;
+  /** Stored code → the sentence the editor shows. Display only; the value is the code. */
+  legalTypeLabels: Record<string, string>;
+  entityTypeLabels: Record<string, string>;
+  /** The live donor_intel catalogue, for both relationship pickers. */
+  donors: string[];
+  /** The generated seed unioned with the catalogue's own hosts, cleaned the same way. */
+  portals: string[];
+};
+
+export type OrgSetup = {
+  identity: Record<string, string>;
+  profile: Record<string, unknown>;
+  logo: string | null;
+  /** Structured partners PLUS the legacy flat lists, which the save writes FROM. */
+  partners: OrgPartner[];
+  team: string[];
+  options: SetupOptions;
+  /** The fields a save re-reads, and the only ones a failed write is reported for. */
+  verifiedFields: string[];
+  /**
+   * What the logo uploader will accept.
+   *
+   * The cap is TIGHTER than Streamlit's, deliberately: the image lives on the
+   * organisation record, which the header reads on every page render, so an oversized
+   * one is paid for by everybody in that organisation on every page.
+   */
+  logo_limits: { maxBytes: number; types: string[] };
+};
+
+export type SetupSaved = {
+  identity?: Record<string, string>;
+  profile?: Record<string, unknown>;
+  partners?: OrgPartner[];
+  team?: string[];
+  /** A rename that did not go through. The other fields ARE saved — see the route. */
+  warnings?: Warning[];
+};
+
+const put = <T>(path: string, data: unknown = {}) =>
+  call<T>(path, { method: "PUT", body: JSON.stringify(data) });
+
+// ── Settings → Accounts → Users ──────────────────────────────────────────────
+
+export type UserRights = {
+  profile: boolean; role: boolean; overrides: boolean; reset: boolean; remove: boolean;
+};
+
+export type AdminUser = {
+  id: string; email: string; name: string | null; role: string;
+  is_active: boolean; must_change_password: boolean;
+  department: string | null; program: string | null; job_title: string | null;
+  phone: string | null;
+  last_login_at: string | null; password_changed_at: string | null; created_at: string | null;
+  access_overrides: Record<string, string>;
+  /** The tenants this account belongs to, "(pending)" marked. */
+  tenant: string | null;
+  /** core/user_lifecycle's label, resolved server-side — emoji included. */
+  status: string;
+  /**
+   * What THIS actor may do to THIS account, decided by the server.
+   *
+   * The page could work it out from the role, and then a permission rule would have two
+   * implementations, one of them in a browser where it decides only what is drawn. These
+   * are the same answers the write routes enforce.
+   */
+  rights: UserRights;
+  /**
+   * One row per access surface: what the target's ROLE already grants there, the options
+   * THIS actor may assign, and what is currently stored. Resolved server-side for the
+   * same reason as `rights` — the ceiling and the role matrix are permission logic.
+   */
+  overrides: {
+    surface: string; roleDefault: string; roleDefaultLabel: string;
+    options: string[]; current: string;
+  }[];
+  /** The roles this actor may put on this account, the current one always included. */
+  roles: string[];
+};
+
+export type AdminUsers = {
+  users: AdminUser[];
+  canAdd: boolean;
+  /** The roles this actor may hand out, so the form offers nothing the route refuses. */
+  assignableRoles: string[];
+  /** Only a super_user may choose WHOSE tenant a new account lands in. */
+  canChooseTenant: boolean;
+  addNote: string;
+};
+
+/** Creating an account is QUEUED: the Python inserts the row and creates the tenant. */
+export type InviteQueued = {
+  job_id: string; dispatched: boolean; email: string; detail: string;
+};
+
+export type ResetResult = {
+  sent: boolean;
+  /** The short code, handed back ONLY when no email went. Never the token. */
+  code: string | null;
+  detail: string;
+};
+
+export const fetchUsers = () => call<AdminUsers>("/settings/users");
+export const saveUser = (id: string, form: Record<string, unknown>) =>
+  patch<{ saved: boolean; warnings?: Warning[] }>(
+    `/settings/users/${encodeURIComponent(id)}`, form);
+export const inviteUser = (form: Record<string, unknown>) =>
+  post<InviteQueued>("/settings/users", form);
+
+export type BulkRow = {
+  email: string; name: string; role: string; department: string; areas: string[];
+};
+export type BulkQueued = {
+  queued: { email: string; job_id: string | null; dispatched: boolean }[];
+  detail: string;
+};
+/**
+ * Validated as a batch, queued as rows.
+ *
+ * Every problem across every row comes back BEFORE anything is created — a batch with
+ * one bad row creates nobody. After that each row is its own job, so one that fails at
+ * runtime fails alone.
+ */
+export const inviteUsers = (rows: BulkRow[], form: Record<string, unknown> = {}) =>
+  post<BulkQueued>("/settings/users/bulk", { ...form, rows });
+export const resetUserPassword = (id: string) =>
+  post<ResetResult>(`/settings/users/${encodeURIComponent(id)}/reset`);
+
+// ── Settings → Records ───────────────────────────────────────────────────────
+//
+// One route over several tables. The client names a SPEC KEY ("Meeting Logs"), never a
+// table — see supabase/functions/_shared/api/routes_records.ts for why that distinction
+// is the whole security of the surface.
+
+export type RecordSpec = {
+  table: string;
+  orderCol: string;
+  tableCols: string[];
+  colLabels: Record<string, string>;
+  dateCols: string[];
+  searchCols: string[];
+  advancedFilters: string[];
+  /** [column, kind, label]; kind is date | text | area | bool. */
+  editFields: [string, string, string][];
+  caption: string;
+};
+
+export type RecordsPage = {
+  table: string;
+  /** "aux" is an editable table; "extracted" is the read-only global store. */
+  kind: "aux" | "extracted" | "screened";
+  rows: Record<string, unknown>[];
+  total: number;
+  truncated?: boolean;
+  spec?: RecordSpec;
+  columns?: string[];
+  note?: string;
+  /** The picker's options, from the generated list — carried with every answer. */
+  options?: string[];
+};
+
+export const fetchRecords = (table: string) =>
+  call<RecordsPage>(`/settings/records?table=${encodeURIComponent(table)}`);
+export const saveRecord = (table: string, id: string, values: Record<string, unknown>) =>
+  patch<{ saved: Record<string, unknown> }>("/settings/records", { table, id, values });
+export const deleteRecord = (table: string, id: string) =>
+  del<{ deleted: string }>(
+    `/settings/records?table=${encodeURIComponent(table)}&id=${encodeURIComponent(id)}`);
+
+// ── Settings → Analytics ─────────────────────────────────────────────────────
+
+export type PlatformAnalytics = {
+  /** Deployment-wide discovery. A "system run" excludes every tenant's own screening. */
+  discovery: {
+    runs: number; found: number; rejected: number; catalog: number; last_run: string | null;
+  };
+  tenants: {
+    id: string; name: string | null; status: string; is_platform: boolean;
+    members: number; pending: number; rfps: number;
+    last_screen: string | null; created: string;
+  }[];
+  users: { total: number; active: number; inactive: number; by_role: Record<string, number> };
+};
+
+export const fetchAnalytics = () => call<PlatformAnalytics>("/settings/analytics");
+
+// ── Settings → Manual Scan → history ─────────────────────────────────────────
+
+export type RunSummary = {
+  ts: string; trigger: string; found: number; new: number;
+  /** Null when NO row of the run recorded one — "did not count", not "counted zero". */
+  added: number | null;
+  rejected: number;
+  /** The source rows the run wrote, which is what the sums are over. */
+  sources: number;
+};
+
+export type ScanHistory = {
+  /** This organisation's own screening runs. */
+  screening: { last: RunSummary | null; recent: Record<string, unknown>[] };
+  /** Crawls of the shared store, which belong to no organisation. */
+  extraction: { last: RunSummary | null; recent: Record<string, unknown>[] };
+  matchLabel: string;
+};
+
+export const fetchScanHistory = () => call<ScanHistory>("/settings/scan-history");
+
+// ── Settings → Sources, Learning data, Suggestions ───────────────────────────
+//
+// The three DEVELOPER surfaces. What they have in common is what puts them together:
+// everything on them belongs to every tenant, not to the organisation whose Settings
+// page is open, so each is gated on developer-tenant membership rather than a role.
+
+export type SourcesData = {
+  catalog: Record<string, unknown>[];
+  blocked: { pattern: string; reason: string | null }[];
+  canEditCatalog: boolean;
+  canEditBlocked: boolean;
+  /** Why the catalogue is read-only for this viewer, when it is. */
+  note: string | null;
+};
+
+export type LearningData = {
+  /** Exact over the whole table, NOT derived from `recent` — see the route. */
+  total: number;
+  counts: Record<string, number>;
+  reasons: Record<string, number>;
+  recent: Record<string, unknown>[];
+  windowSize: number;
+  note: string;
+};
+
+export type SuggestionsData = {
+  pending: Record<string, unknown>[];
+  /** False for anybody but a developer-tenant super_user; `pending` is then empty. */
+  canReview: boolean;
+  count: number;
+};
+
+/** A review is QUEUED, never applied in the request — the runner holds the rules. */
+export type ReviewQueued = { job_id: string; dispatched: boolean; detail: string };
+
+export type TenantRow = {
+  id: string; name: string; slug: string | null; kind: string; status: string;
+  is_platform: boolean; is_developer: boolean; share_for_consortium_scoring: boolean;
+  parent_tenant_id: string | null;
+  /** Resolved server-side: a non-super cannot see every organization to look it up. */
+  parent_name: string | null;
+  blacklisted_at: string | null; blacklisted_by: string | null;
+  blacklist_reason: string | null; created_at: string | null;
+  members: number; pending: number;
+};
+
+export type TenantsData = {
+  tenants: TenantRow[];
+  /** Readable by any admin, editable by a super_user only. */
+  canManage: boolean;
+  note: string | null;
+};
+
+export type DeploymentSecret = {
+  name: string; present: boolean; length: number;
+  /** First 8 hex of sha256 — comparable between runtimes, not reversible. */
+  fingerprint?: string | null;
+  project_ref?: string | null;
+  kind?: string;
+  is_service_role?: boolean | null;
+};
+
+export type DeploymentInfo = {
+  runtime: string;
+  secrets: DeploymentSecret[];
+  verdicts: { level: "bad" | "warn" | "good"; text: string }[];
+  extras: { dispatchConfigured: boolean; mailerConfigured: boolean; adminContact: boolean };
+  allowedOrigins: string[];
+  note: string;
+};
+
+/** What the runtime SERVING React is configured with — the half Streamlit cannot see. */
+export const fetchDeployment = () => call<DeploymentInfo>("/settings/deployment");
+
+export const fetchTenants = () => call<TenantsData>("/settings/tenants");
+/** Queued: two of these writes clear a cache a TypeScript write would leave stale. */
+export const tenantAction = (body: Record<string, unknown>) =>
+  post<{ job_id: string; dispatched: boolean; detail: string }>("/settings/tenants", body);
+
+export const fetchSources = () => call<SourcesData>("/settings/sources");
+
+export type RegistryData = {
+  rows: Record<string, unknown>[];
+  canEdit: boolean;
+  counts: { total: number; unclassified: number; confirmed: number; inCatalogue: number };
+  /** What push_primaries will accept, said so the page does not have to guess. */
+  pushRule: string;
+};
+
+/** Every registry WRITE is queued: core/source_registry.py owns the rules. */
+export const fetchRegistry = () => call<RegistryData>("/settings/sources/registry");
+export const registryAction = (body: Record<string, unknown>) =>
+  post<{ job_id: string; dispatched: boolean; detail: string }>(
+    "/settings/sources/registry", body);
+export const saveBlockedTokens = (rows: { pattern: string; reason: string }[]) =>
+  put<{ rows: { pattern: string; reason: string | null }[]; removed: number }>(
+    "/settings/sources/blocked", { rows });
+export const fetchLearning = () => call<LearningData>("/settings/learning");
+export const fetchSuggestions = () => call<SuggestionsData>("/settings/suggestions");
+export const approveSuggestion = (id: string) =>
+  post<ReviewQueued>(`/settings/suggestions/${encodeURIComponent(id)}/approve`);
+export const rejectSuggestion = (id: string, note?: string) =>
+  post<ReviewQueued>(`/settings/suggestions/${encodeURIComponent(id)}/reject`, { note });
+
+// ── Settings → Setup → Scan Preferences ──────────────────────────────────────
+//
+// Three stores, because that is where the data lives: the policy is TENANT-scoped and
+// the search terms and the currency table are deployment-wide. That split is
+// core/settings._TENANT_SCOPED_KEYS, not a choice made in the client.
+
+export type CurrencyRow = {
+  code: string; label: string; symbol: string | null;
+  /** How "£" or "FCFA" in a call's text is matched to a rate. Dropping them kills that. */
+  aliases: string[];
+  usd_rate: number;
+};
+
+export type ScanPrefs = {
+  /** The stored document — what the editor edits. An empty scope stays visibly empty. */
+  stored: Record<string, unknown>;
+  /** What the scan gates on TODAY, profile seeding included. */
+  effective: { countries: { eligible: string[]; broad_terms: string[] };
+               themes: { required_any: string[] } };
+  /** True where the effective scope came from the profile rather than the document. */
+  seeded: { countries: boolean; themes: boolean };
+  searchTerms: string[];
+  currencies: CurrencyRow[];
+  options: {
+    countries: string[]; geoOptions: string[];
+    criteria: string[]; criterionLabels: Record<string, string>;
+  };
+  /** A stored policy that would not parse — the scan is running on no rules at all. */
+  policyParseError: boolean;
+  globalKeys: string[];
+};
+
+export const fetchScanPrefs = () => call<ScanPrefs>("/settings/scan-prefs");
+export const saveScanPolicies = (form: Record<string, unknown>) =>
+  put<{ policy: Record<string, unknown>; seeded: boolean; detail: string }>(
+    "/settings/scan-prefs/policies", form);
+export const saveSearchTerms = (terms: string[]) =>
+  put<{ terms: string[]; detail: string }>("/settings/scan-prefs/search-terms", { terms });
+export const saveCurrencies = (rows: CurrencyRow[]) =>
+  put<{ rows: CurrencyRow[]; dropped: number; detail: string }>(
+    "/settings/scan-prefs/currencies", { rows });
+
+export const fetchSetup = () => call<OrgSetup>("/settings/setup");
+export const saveSetupIdentity = (form: Record<string, unknown>) =>
+  put<SetupSaved>("/settings/setup/identity", form);
+export const saveSetupProfile = (form: Record<string, unknown>) =>
+  put<SetupSaved>("/settings/setup/profile", form);
+export const saveSetupTeam = (names: string[]) =>
+  put<SetupSaved>("/settings/setup/team", { names });
+/** Base64 in JSON, because the image is STORED as base64 either way. */
+export const saveSetupLogo = (data: string, mime: string) =>
+  put<{ logo: string | null; detail: string }>("/settings/setup/logo", { data, mime });
+export const clearSetupLogo = () =>
+  put<{ logo: string | null; detail: string }>("/settings/setup/logo", { clear: true });
+
+// ── Profile ──────────────────────────────────────────────────────────────────
+//
+// Self-service only. Every route is keyed on the session's own id — none of them takes a
+// user id — so there is no shape of request that reaches somebody else's row.
+
+export type MyProfile = {
+  id: string; email: string; name: string | null; role: string;
+  phone: string | null; job_title: string | null; department: string | null;
+  program: string | null; address: string | null; city: string | null;
+  state_region: string | null; country: string | null;
+  created_at: string | null; last_login_at: string | null;
+  password_changed_at: string | null; must_change_password: boolean | null;
+};
+
+export type LoginRow = { at: string; device: string; ip: string };
+
+export type ProfileView = {
+  profile: MyProfile;
+  metrics: { created: string | null; lastLogin: string | null; passwordSet: string | null };
+  /** The last twelve sign-ins: when, which device, which address. Location is
+   *  deliberately not derived — that needs an external geo-IP call. */
+  logins: LoginRow[];
+  passwordRules: string;
+  /** True when deleting this account would leave nobody able to administer the app.
+   *  Enforced server-side as well; this only decides what the page offers. */
+  soleSuperUser: boolean;
+};
+
+export const fetchProfile = () => call<ProfileView>("/profile");
+
+/** The ten self-editable columns. Role is NOT one of them and the server refuses it. */
+export type ProfilePatch = Partial<Pick<MyProfile,
+  "name" | "email" | "phone" | "job_title" | "department" | "program"
+  | "address" | "city" | "state_region" | "country">>;
+
+export const saveProfile = (fields: ProfilePatch) =>
+  patch<{ profile: MyProfile; emailChanged: boolean; notice: string | null }>(
+    "/profile", fields);
+
+/** Changing it needs the current one as proof. The session is deliberately not re-issued. */
+export const changeMyPassword = (current: string, password: string, confirm: string) =>
+  post<{ ok: true }>("/profile/password", { current, password, confirm });
+
+/** Irreversible. Takes the account's own email back as confirmation. */
+export const deleteMyAccount = (confirmEmail: string) =>
+  call<{ ok: true }>("/profile", {
+    method: "DELETE", body: JSON.stringify({ confirmEmail }),
+  });

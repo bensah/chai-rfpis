@@ -11,17 +11,22 @@
  * notifications with an unread count, the account menu, the tenant identity,
  * the super_user view-as banner, breadcrumbs and the version footer.
  */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import {
   Bell, ChevronsLeft, ChevronsRight, Eye, HelpCircle, LogOut, Menu, Search, Settings, User as UserIcon, X,
 } from "lucide-react";
-import { fetchShell, markAllRead, signOut, viewAs, type Shell, type User } from "../api";
+import {
+  // `viewAs` is deliberately NOT imported any more. Leaving a view-as means clearing the
+  // `?tenant=` param as well as the session, and the param lives in App — so the shell
+  // takes a handler rather than calling half of the operation itself. See ViewAsBanner.
+  fetchShell, markAllRead, shellPartFailed, signOut, type Shell, type User,
+} from "../api";
 import { goToCrumb, hrefOf, Link, navigate, navTrail, PAGES, type PageKey } from "../router";
 import { NAV_ICON } from "./navIcons";
 import Popover from "./Popover";
 import HowToUse from "./HowToUse";
 import { fmtDay, fmtScan, nextScheduledScan, relativeTime } from "./time";
-import { Badge, Button, IconButton, Notice, fieldClass } from "../ui";
+import { Badge, Button, IconButton, Notice, field, fieldClass } from "../ui";
 
 export const APP_NAME = "RFP Intelligence System";
 export const APP_SHORT = "RFPIS";
@@ -37,6 +42,11 @@ const isAdmin = (u: User) => u.role === "admin" || u.role === "super_user";
  *  a section headed "Organisation" directly above an item called "My Organization" reads
  *  as a mistake even though both are only labels. */
 const GROUPS: { label: string; pages: PageKey[] }[] = [
+  // `opportunities` (Triage) was in this list for a few hours on 2026-11-18 and is not
+  // any more: the owner put the list inside Pipeline > Screened rather than give it a
+  // rail entry of its own. A Dashboard figure still opens it, and Pipeline > Screened is
+  // where you reach it on purpose. Putting it back here would be the same list twice in
+  // one sidebar — see router.tsx for why the KEY still exists.
   { label: "Workspace", pages: ["home", "pipelines", "grants", "actions", "report", "donors"] },
   // `settings` was listed here until it left the rail. `allowed()` filtered it out, so
   // the group named a page that could never render — harmless to run and misleading to
@@ -45,7 +55,12 @@ const GROUPS: { label: string; pages: PageKey[] }[] = [
   { label: "Organization", pages: ["organization", "submit-new-rfp", "alerts"] },
 ];
 
-export default function Layout({ user, page, children }: { user: User; page: PageKey; children: ReactNode }) {
+export default function Layout({ user, page, children, onReturnToMyAccount }: {
+  user: User; page: PageKey; children: ReactNode;
+  /** Leave a super_user view-as. App owns it because leaving means clearing the
+   *  `?tenant=` param as well as the session, and App is where the param lives. */
+  onReturnToMyAccount: () => void;
+}) {
   const [shell, setShell] = useState<Shell | null>(null);
   const [drawer, setDrawer] = useState(false);
   // STAYS OPEN ACROSS PAGES, on purpose (owner, 2026-11-09). The guide explains the
@@ -113,7 +128,7 @@ export default function Layout({ user, page, children }: { user: User; page: Pag
         />
         <main className="flex-1 px-4 pt-6 pb-14 sm:px-6 lg:px-8">
           <div className="mx-auto w-full max-w-[82rem]">
-            <ViewAsBanner user={user} />
+            <ViewAsBanner user={user} onReturn={onReturnToMyAccount} />
             {children}
           </div>
         </main>
@@ -420,7 +435,7 @@ function QuickSearch() {
         <input
           value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search"
           placeholder="Search pages, opportunities, donors…"
-          className={`${fieldClass} h-9 w-56 bg-ink-50 py-0 pl-9 lg:w-72`}
+          className={field("h-9 w-56 bg-ink-50 py-0 pl-9 lg:w-72")}
         />
       </form>
       <div className="md:hidden">
@@ -461,7 +476,15 @@ function Notifications({ shell, onRead, close }: { shell: Shell | null; onRead: 
         )}
       </div>
       <div className="mt-3 space-y-2.5">
-        {!feed.length && <p className="py-4 text-center text-xs text-ink-500">No recent activity yet.</p>}
+        {/* "No recent activity yet" is a claim about the org's week, so it is only made
+            when the feed was actually read. A read that failed says so instead — the two
+            used to look identical, which is how a broken bell passed for a quiet one. */}
+        {!feed.length && (shellPartFailed(shell, "feed")
+          ? <p className="py-4 text-center text-xs text-ink-500">
+              Notifications couldn't be loaded. Reload the page to try again.
+            </p>
+          : <p className="py-4 text-center text-xs text-ink-500">No recent activity yet.</p>
+        )}
         {feed.slice(0, 15).map((it, i) => {
           const isNew = shell?.seen == null || it.ts > shell.seen;
           const to = it.nav === "opportunity" && it.uid ? hrefOf("opportunity", { uid: it.uid }) : hrefOf(it.nav as PageKey);
@@ -551,8 +574,21 @@ function Breadcrumbs({ page }: { page: PageKey }) {
   );
 }
 
-/** app_header._render_super_view_banner */
-function ViewAsBanner({ user }: { user: User }) {
+/** app_header._render_super_view_banner
+ *
+ *  THE BUTTON NO LONGER CALLS viewAs ITSELF. It used to be
+ *  `onClick={() => viewAs(null).catch(() => undefined)}`, and that was wrong twice over.
+ *
+ *  Clearing the session is only half of leaving a view-as: the `?tenant=` param SELECTS
+ *  the view, so with it left in place App's own effect re-applied it on the very next
+ *  render and put the reader straight back. Owner, 2026-11-18: "clicking Return to my
+ *  account refuses to do so". It did not refuse — it returned and was immediately undone.
+ *
+ *  And `.catch(() => undefined)` meant a real failure (a 403, a dropped connection) looked
+ *  exactly like that: a button that does nothing, silently. Both halves now live in
+ *  `App.returnToMyAccount`, which owns the param as well as the session and reports what
+ *  goes wrong. */
+function ViewAsBanner({ user, onReturn }: { user: User; onReturn: () => void }) {
   if (!user.view) return null;
   return (
     <Notice tone="warn" icon={<Eye className="h-4 w-4" />} className="mb-5 items-center">
@@ -561,7 +597,7 @@ function ViewAsBanner({ user }: { user: User }) {
           Viewing <strong>{user.view.name || "another tenant"}</strong> as super_user — every page is scoped to this
           tenant. Cross-tenant analytics live in Settings → Analytics.
         </span>
-        <Button size="sm" onClick={() => viewAs(null).catch(() => undefined)}>Return to my account</Button>
+        <Button size="sm" onClick={onReturn}>Return to my account</Button>
       </div>
     </Notice>
   );

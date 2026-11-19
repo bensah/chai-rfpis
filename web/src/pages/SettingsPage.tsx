@@ -1,16 +1,34 @@
 /**
- * Settings (app_pages/admin.py). Phase 0 builds the tab structure and two pieces:
- * Accounts → Active tenant (render_active_tenant) and, for the super_user, a test of the
- * background-job loop under Accounts → Deployment. Every other tab links to the classic app
- * until its phase lands.
+ * Settings (app_pages/admin.py). ALL EIGHT TABS ARE BUILT — Setup, Users, Sources,
+ * Records, Scan, Analytics, Suggestions and Archive, plus the Accounts sub-tabs. The
+ * ClassicPage below this is a fallback that nothing reaches today; it is kept for a tab
+ * added to the list before its panel exists, because showing the classic page is a better
+ * failure there than a blank tab.
+ *
+ * ACCOUNTS → DEPLOYMENT IS NOT A PORT. It reports what the *Edge Function* runtime is
+ * configured with, which is the half `core/env_diag.py` cannot see from the Python
+ * process — the two panels are meant to be read side by side when a deployment and a
+ * laptop disagree about the data.
  */
 import { useEffect, useState } from "react";
 import {
-  Archive as Archive0, CheckCircle2, ExternalLink, PlayCircle, Settings as SettingsIcon,
+  AlertTriangle, Archive as Archive0, CheckCircle2, ExternalLink, PlayCircle,
+  Settings as SettingsIcon,
 } from "lucide-react";
-import { fetchHome, startJob, switchTenant, type HomeKpis, type Job, type User } from "../api";
+import {
+  fetchHome, startJob, switchTenant,
+  type HomeKpis, type Job, type Shell, type User,
+} from "../api";
 import { JOB_STATUS_LABEL, useJob } from "../jobs";
 import ClassicPage from "./ClassicPage";
+import SetupTab from "../settings/SetupTab";
+import UsersTab from "../settings/UsersTab";
+import { BlacklistedPanel, TenantsPanel } from "../settings/TenantsTab";
+import DeploymentPanel from "../settings/DeploymentPanel";
+import RecordsTab from "../settings/RecordsTab";
+import ScanTab from "../settings/ScanTab";
+import AnalyticsTab from "../settings/AnalyticsTab";
+import { LearningTab, SourcesTab, SuggestionsTab } from "../settings/PlatformTabs";
 import { hrefOf } from "../router";
 import {
   Badge, Button, Card, Eyebrow, LinkButton, Notice, PageHeader, Select,
@@ -48,13 +66,19 @@ function Tabs({ tabs, active, onPick, variant = "solid" }: {
   );
 }
 
-export default function SettingsPage({ user, classicUrl }: { user: User; classicUrl: string | null }) {
+export default function SettingsPage({ user, classicUrl, shell }: {
+  user: User; classicUrl: string | null; shell?: Shell | null;
+}) {
   const dev = !!user.homeIsDeveloper;
   const devSuper = isSuper(user) && dev;
   // admin.py's tab list and order.
   const tabs = ["Setup", "Accounts", "Records", "Archive", ...(dev ? ["Sources"] : []), "Manual Scan",
     ...(dev ? ["Learning data"] : []), ...(devSuper ? ["Suggestions"] : []), ...(isSuper(user) ? ["Analytics"] : [])];
-  const [tab, setTab] = useState("Accounts");
+  // Setup, as the Streamlit page opens — `st.tabs` lands on the first, which is Setup.
+  // It opened on Accounts while Accounts was the only tab that had been built, and
+  // leaving it there now would mean the two apps disagree about what Settings IS at a
+  // glance, which is the same argument the Records picker's order rests on.
+  const [tab, setTab] = useState(tabs[0]);
   const acctTabs = [...(isSuper(user) ? [] : ["Active tenant"]), "Users", "Tenants", "Blacklisted",
     ...(isSuper(user) ? ["Deployment"] : [])];
   const [acct, setAcct] = useState(acctTabs[0]);
@@ -63,22 +87,45 @@ export default function SettingsPage({ user, classicUrl }: { user: User; classic
     <section>
       <PageHeader
         title={<span className="flex items-center gap-2.5"><SettingsIcon className="h-6 w-6 text-accent-600" strokeWidth={1.9} /> Settings</span>}
-        lead="Accounts, tenants, records and the scan — everything an administrator controls."
+        lead="Your organisation’s profile and people, the records behind the app, and the scan — everything an administrator controls."
       />
       <Tabs tabs={tabs} active={tab} onPick={setTab} />
       <div className="mt-6">
-        {tab === "Archive" ? (
+        {tab === "Setup" ? (
+          <SetupTab />
+        ) : tab === "Records" ? (
+          <RecordsTab />
+        ) : tab === "Manual Scan" ? (
+          <ScanTab user={user} />
+        ) : tab === "Analytics" ? (
+          <AnalyticsTab />
+        ) : tab === "Sources" ? (
+          <SourcesTab />
+        ) : tab === "Learning data" ? (
+          <LearningTab />
+        ) : tab === "Suggestions" ? (
+          <SuggestionsTab />
+        ) : tab === "Archive" ? (
           <Archive />
         ) : tab !== "Accounts" ? (
+          // UNREACHABLE TODAY: every tab above is handled. It stays as the fallback for
+          // a tab added to the list before its panel exists — showing the classic page
+          // is the right failure there, because the work is still reachable rather than
+          // the tab being blank.
           <ClassicPage page="settings" classicUrl={classicUrl} />
         ) : (
           <>
             <Tabs tabs={acctTabs} active={acct} onPick={setAcct} variant="quiet" />
-            {/* Deployment shows the job test and, under it, the classic link for env_diag. */}
+            {/* Deployment, in the order somebody debugs: what this runtime holds, whether
+                the contact address resolves, then a live round-trip of the job loop. */}
             <div className="mt-5 space-y-6">
               {acct === "Active tenant" && <ActiveTenant user={user} />}
+              {acct === "Users" && <UsersTab />}
+              {acct === "Tenants" && <TenantsPanel />}
+              {acct === "Blacklisted" && <BlacklistedPanel />}
+              {acct === "Deployment" && <DeploymentPanel />}
+              {acct === "Deployment" && <ContactCheck shell={shell} />}
               {acct === "Deployment" && <JobTest />}
-              {acct !== "Active tenant" && <ClassicPage page="settings" classicUrl={classicUrl} />}
             </div>
           </>
         )}
@@ -255,6 +302,46 @@ function Archive() {
           Expired unreviewed
         </LinkButton>
       </div>
+    </Card>
+  );
+}
+
+/**
+ * Is there a real address for somebody to contact?
+ *
+ * `ADMIN_CONTACT_EMAIL` is what every "ask an administrator" message points at — on the
+ * Help page, on a suspended organisation, on an access refusal. Unset, both apps fall
+ * back to the same obviously-fake placeholder, which is the right behaviour for a
+ * developer reading a config file and useless to a user reading a Help page: they would
+ * email it and hear nothing.
+ *
+ * So the Help page says "your administrator" instead of printing it, and this panel —
+ * where an administrator would actually look — says it needs setting, and where.
+ */
+function ContactCheck({ shell }: { shell?: Shell | null }) {
+  if (!shell) return null;
+  const configured = shell.adminContactConfigured !== false;
+  return (
+    <Card className="max-w-2xl p-6">
+      <Eyebrow>Contact address</Eyebrow>
+      {configured ? (
+        <p className="mt-1 text-sm leading-relaxed text-ink-600">
+          Messages that tell somebody to contact an administrator point at{" "}
+          <strong className="text-brand-700">{shell.adminContactEmail}</strong>.
+        </p>
+      ) : (
+        <>
+          <Notice tone="warn" className="mt-2" icon={<AlertTriangle className="h-4 w-4" />}>
+            No contact address is configured, so nobody can be told who to ask.
+          </Notice>
+          <p className="mt-3 text-sm leading-relaxed text-ink-600">
+            Set <code>ADMIN_CONTACT_EMAIL</code> in this deployment's environment — the
+            <code> .env</code> beside the app, and the Edge Function's secrets. Until
+            then the Help page says “your administrator” rather than printing the
+            placeholder <code>{shell.adminContactEmail}</code>, which nobody reads.
+          </p>
+        </>
+      )}
     </Card>
   );
 }
