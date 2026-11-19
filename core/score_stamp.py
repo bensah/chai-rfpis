@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -91,13 +92,50 @@ def _weights_digest() -> str:
         return "nofile"
 
 
+class BundledSignatureError(RuntimeError):
+    """Raised when `profile_sig` is called from the browser's bundled copy of core/."""
+
+
+def _running_in_the_browser_bundle() -> bool:
+    """Is this the Pyodide copy of core/ rather than the server's working tree?
+
+    Pyodide reports `sys.platform == "emscripten"`, which nothing else in this project
+    does, so it needs no cooperation from the caller and cannot be faked by a stale file.
+    """
+    return sys.platform == "emscripten"
+
+
 def profile_sig(org_profile: Any, org_settings: Any) -> str:
     """THE signature, for every caller. 12 hex characters, as migration 101 expects.
 
     Takes the org profile and settings already in hand rather than fetching them: two of
     the three callers are mid-render with the profile loaded, and reading it again inside
     a Streamlit page would cost a round trip per rerun.
+
+    IT REFUSES TO ANSWER FROM THE BROWSER BUNDLE, and the reason is specific rather than
+    defensive. `web/scripts/build-py-bundle.mjs` copies core/ AND config/ into
+    `web/public/py/bundle.json` once, when the dev server starts — Vite's HMR never
+    rebuilds it. This function hashes `config/scoring_weights.yaml` along with
+    SCORING_RULE_VERSION, so a server left running across a rule change would give a
+    browser computing the OLD signature from the OLD YAML while the server computes the
+    new one: two halves of the app disagreeing about which stored scores are current, with
+    no error anywhere and nothing on screen to suggest it.
+
+    Nothing in the browser path calls this today — `core/live_scoring` is the only
+    importer inside core/ and the Pyodide worker does not reach it. "Today" is the whole
+    of that guarantee, which is why this is a raise and not a comment asking people not
+    to. A signature is a claim about freshness; computing one from a snapshot of unknown
+    age is the one thing it must never do.
+
+    The server is unaffected: `sys.platform` is "emscripten" only under Pyodide.
     """
+    if _running_in_the_browser_bundle():
+        raise BundledSignatureError(
+            "profile_sig must not be computed in the browser: core/ and "
+            "config/scoring_weights.yaml reach it through web/public/py/bundle.json, "
+            "which is built once at dev-server start and never refreshed. The signature "
+            "it produced would describe whatever the bundle was built from, not the "
+            "current rules. Ask the server for it.")
     basis = (json.dumps(org_profile, sort_keys=True, default=str)
              + json.dumps(org_settings, sort_keys=True, default=str)
              + "|" + SCORING_RULE_VERSION + "|" + _weights_digest())
