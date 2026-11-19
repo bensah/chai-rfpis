@@ -1064,6 +1064,36 @@ def _extract_amount(title: str, text: str) -> tuple[float | None, str | None]:
     return (None, None) if (env_v and _MULTI_AWARD_RE.search(text or "")) else (env_v, env_c)
 
 
+def _page_title(soup: "BeautifulSoup | None") -> str | None:
+    """The call's own title, from its detail page.
+
+    `<h1>` first and `<title>` second, because a detail page's `<title>` is routinely
+    padded with the site name ("… | Unitaid") while the `<h1>` is the call itself.
+    Whatever comes back is trimmed of a trailing " | Site" / " - Site" suffix and
+    rejected if it is too short to be a title or is itself a generic label.
+    """
+    if soup is None:
+        return None
+    for getter in (lambda: soup.find("h1"), lambda: soup.find("title")):
+        try:
+            node = getter()
+        except Exception:
+            continue
+        if not node:
+            continue
+        raw = _clean(node.get_text(" ", strip=True))
+        # Strip a trailing site-name suffix: "A Call for Proposals | Unitaid".
+        for sep in ("|", " - ", "–", "—"):
+            if sep in raw:
+                head = raw.split(sep)[0].strip()
+                if len(head) >= 25:
+                    raw = head
+                break
+        if len(raw) >= 25 and raw.lower() not in _GENERIC_LINK_LABELS:
+            return raw[:300]
+    return None
+
+
 def _enrich_candidate(cand: dict[str, Any]) -> dict[str, Any]:
     """Fetch the candidate's detail page and fill in missing fields.
 
@@ -1165,6 +1195,24 @@ def _enrich_candidate(cand: dict[str, Any]) -> dict[str, Any]:
             _pd = _extract_page_date(soup)
             if _pd:
                 cand["date_posted"] = _pd
+        # THE CALL'S OWN TITLE, when the listing only gave us a button.
+        #
+        # A card that links every call with the words "Learn more" hands the harvest a
+        # title that names nothing. Unitaid's whole listing is built that way, and the
+        # first call ingested from it landed in the catalogue as `opportunity_name =
+        # "Learn more"` with its real title — "Delivering Greater Health Equity and
+        # Impact through People-Centered, Integrated TB and Hepatitis C Care in
+        # High-Transmission and Vulnerable Settings" — sitting unread in `raw_text`.
+        #
+        # Only ever replaces a GENERIC label, never a real listing title: a listing
+        # heading is usually the better of the two, because detail pages tend to pad
+        # <title> with the site name. `_GENERIC_LINK_LABELS` is the same set the in-scrape
+        # dedup uses to decide a label witnesses nothing.
+        if str(cand.get("opportunity_title") or "").strip().lower() in _GENERIC_LINK_LABELS:
+            _real = _page_title(soup)
+            if _real:
+                cand["opportunity_title"] = _real
+                cand["_title_from_detail_page"] = True
 
     # Keep the FULL detail-page body so build_record's regex AND LLM see it — not just
     # the local one-shot _extract_amount below. Without this, an amount / tier table that
