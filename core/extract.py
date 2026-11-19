@@ -742,18 +742,39 @@ def _synthesise_in_place(rec: dict[str, Any]) -> None:
 
 def extract_and_store(candidate: dict[str, Any], policies: dict[str, Any], *,
                       scan_year: int | None = None, use_llm: bool = True,
-                      llm_arbiter=None) -> tuple[str | None, str]:
+                      llm_arbiter=None, dry_run: bool = False) -> tuple[str | None, str]:
     """Build + upsert into extracted_solicitations. Returns (uid|None, reason).
 
     A None uid with a `store-error:` reason means the record PASSED the gate but the DB
     WRITE failed (RLS/connectivity) — an infra error the caller must count apart from a
     gate DECLINE (a genuine "not a fundable opportunity"). A gate reject returns the
-    gate's own verdict as the reason."""
+    gate's own verdict as the reason.
+
+    `dry_run` BUILDS THE RECORD AND DOES NOT WRITE IT, and that is a fix rather
+    than a feature. `scripts/run_scan.py --dry-run` is documented as "log nothing,
+    just print", and `core/scan_pipeline.py` gates its `rfp_submissions` writes on
+    the flag — but it called THIS function unguarded at two places, so a run
+    advertised as dry wrote the catalogue. On 2026-11-19 one such run added 26
+    rows to the live store; the person who ran it was arguing for caution at the
+    time and had read the one gate that supported what they wanted to believe.
+    Three sessions share this tree and any of them could have reached for the same
+    flag for the same reason.
+
+    Everything except the write still happens, deliberately: the gate, the
+    extraction, the deterministic pass and the synthesis all run, so a dry run
+    rehearses what WOULD be stored rather than taking a shortcut and reporting a
+    result the real path would not produce. The uid returned is the record's own,
+    so the caller's counters still describe the rehearsal honestly.
+    """
     rec, reason = build_record(candidate, policies, scan_year=scan_year,
                                use_llm=use_llm, llm_arbiter=llm_arbiter)
     if rec is None:
         return None, reason                       # gate DECLINE — reason = gate verdict
     _synthesise_in_place(rec)
+    if dry_run:
+        log.info("extract: DRY RUN — would store %s (%s), not written",
+                 rec.get("uid"), rec.get("opportunity_name"))
+        return rec.get("uid"), reason
     uid = extracted_store.upsert_extracted(rec)
     if uid is None:                               # gate PASSED but the write failed
         return None, "store-error: write to extracted_solicitations failed (see log)"

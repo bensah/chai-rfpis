@@ -759,7 +759,7 @@ def ingest_candidates(
                 if (not cand.get("extraction_uid")
                         and is_eligible(cand, policies, geo_org_gates=False,
                                          theme_gate=False)[0]):
-                    extraction.extract_and_store(cand, policies)
+                    extraction.extract_and_store(cand, policies, dry_run=dry_run)
             except Exception as _exc:
                 log.debug("shadow extract (reject path) skipped: %s", _exc)
             # Learn donor intel even from calls THIS org won't pursue by TYPE (the
@@ -899,7 +899,8 @@ def ingest_candidates(
         _stored_uid, _store_reason = None, "extraction_uid (already stored)"
         if not cand.get("extraction_uid"):
             try:
-                _stored_uid, _store_reason = extraction.extract_and_store(cand, policies)
+                _stored_uid, _store_reason = extraction.extract_and_store(
+                    cand, policies, dry_run=dry_run)
             except Exception as _exc:
                 _store_reason = f"error: {_exc}"
                 log.debug("extract_and_store skipped: %s", _exc)
