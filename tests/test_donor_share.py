@@ -303,7 +303,26 @@ class TestNoStreamlitOrDatabase(unittest.TestCase):
 
 
 class TestPdf(unittest.TestCase):
-    """Rendering, where reportlab is available. Skipped loudly where it is not."""
+    """Rendering, where reportlab is available. Skipped loudly where it is not.
+
+    THE ORG LOOKUP IS STUBBED FOR EVERY TEST HERE, and that is a fix rather than
+    tidiness. `donor_pdf` reads the deploying org's name and logo for the letterhead
+    through `core.settings`, which is a DATABASE read — the only one in the module, and
+    the one this file's own docstring wrongly claimed it did not make.
+
+    With credentials that read returns in milliseconds, which is why it passed locally
+    and in every local run of the gate. CI has no `.env` and no Supabase credentials on
+    purpose (`.github/workflows/tests.yml`: "NO SECRETS, deliberately. The suite passes
+    on a bare checkout"), so there the call blocks on a connection that cannot be made.
+    The module TIMED OUT AFTER 900 SECONDS and reported 0 tests, which took down the
+    whole run on PR #306 — a module that passes everywhere a developer looks and fails
+    only where nobody is watching.
+
+    So the stub is not about speed. A unit test of a PDF renderer has no business
+    reaching a database at all, and the single test that cares about the lookup
+    (`test_the_org_lookup_failing_does_not_fail_the_pdf`) installs its own throwing stub
+    over this one and asserts the failure path explicitly.
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -311,6 +330,16 @@ class TestPdf(unittest.TestCase):
             import reportlab  # noqa: F401
         except ImportError:
             raise unittest.SkipTest("reportlab is not installed in this environment")
+
+    def setUp(self):
+        import core.settings as settings
+        self._orig = (settings.get_org, settings.get_org_logo)
+        settings.get_org = lambda *a, **k: {"name": "Test Org"}
+        settings.get_org_logo = lambda *a, **k: None
+
+    def tearDown(self):
+        import core.settings as settings
+        settings.get_org, settings.get_org_logo = self._orig
 
     def test_it_returns_a_pdf(self):
         data = S.donor_pdf(["# A Donor", "", "Overview", "- **Website:** https://x.org"])

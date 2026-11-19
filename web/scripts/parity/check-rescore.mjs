@@ -93,10 +93,24 @@ let pinFailures = 0;
 }
 
 // ── 1. The stored score, against what the screens would compute ──────────────
-let current = 0, stale = 0, untagged = 0, unstamped = 0, wrong = 0, missing = 0;
+//
+// THE VERDICT IS PYTHON'S NOW. This used to re-derive it here — null-check the stamp,
+// compare the signature, else call the row current — which is a second definition of what
+// a stamp means, and it drifted exactly as a second definition does: `rescore_py` passed
+// a null signature for weeks (it imported a `profile_signature` that did not exist and
+// swallowed the ImportError), `if (sig && ...)` therefore never fired, and every stamped
+// row was reported as current. The check could not distinguish a stale score from a wrong
+// one and said nothing about it.
+//
+// `core.score_stamp.stamp_state` is the single definition and `stored.state` is its
+// answer. Two of its five words were unavailable to the old derivation at any price:
+// `deferred` (unstamped because a human assessed the row, so the re-score job will NEVER
+// re-stamp it) and `unknown` (stamped, but the signature could not be read — the absence
+// of evidence, not evidence of currency).
+const seen = { current: 0, stale: 0, unverified: 0, deferred: 0, unknown: 0 };
+let untagged = 0, wrong = 0, missing = 0;
 const wrongRows = [];
 for (const [tenant, items] of Object.entries(report)) {
-  const sig = sigs[tenant];
   for (const it of items) {
     const s = it.stored ?? {}, fresh = it.scan ?? {};
     if (fresh.error) continue;
@@ -110,18 +124,13 @@ for (const [tenant, items] of Object.entries(report)) {
       untagged++;
       continue;
     }
-    if (s.profile_sig === undefined || s.profile_sig === null) {
-      // The column is there and empty: the job has not reached this row. That is UNVERIFIED,
-      // not stale and not wrong — the row predates server-owned scoring, and calling it
-      // stale would report every row as a problem the morning 101 lands.
-      unstamped++;
-      continue;
-    }
-    if (sig && s.profile_sig !== sig) {
-      stale++;
-      continue;
-    }
-    current++;
+    const state = s.state ?? "unknown";
+    if (state in seen) seen[state]++;
+    // ONLY `current` IS ASSERTED. A row that claims to be scored under the signature in
+    // force, and then disagrees with a fresh computation, is the one fault server-owned
+    // scoring introduces — nothing recomputes at read time to cover it. Stale, unverified
+    // and deferred rows make no such claim, so there is nothing to contradict.
+    if (state !== "current") continue;
     if (s.rec !== fresh.rec || moved(s.score, fresh.score)) {
       wrong++;
       if (wrongRows.length < 8) {
@@ -135,17 +144,28 @@ if (untagged) {
   console.log(`  cannot run yet: ${untagged} rows have no score_profile_sig COLUMN — migration 101 ` +
     "is not applied, so there is no way to tell a current score from a stale one.");
 } else {
-  console.log(`  ${current} rows claim to be current, ${stale} are stale (the job has not caught up), ` +
-    `${unstamped} are unverified (never stamped: the job has not run on them), ` +
-    `${missing} have never been scored`);
-  if (current === 0 && unstamped) {
-    console.log("  nothing to verify yet: migration 101 is applied but no row has been stamped, " +
-      "so no stored score YET CLAIMS to be current. This section starts reporting the moment " +
-      "the rescore job writes its first row.");
+  console.log(`  ${seen.current} current (claim to be scored under the signature in force)`);
+  console.log(`  ${seen.stale} stale — a re-score fixes these`);
+  console.log(`  ${seen.unverified} unverified — the job has not reached them yet`);
+  console.log(`  ${seen.deferred} deferred — a human assessed them, so the job will NEVER re-stamp ` +
+    "them; they are permanently outside what this section asserts");
+  if (seen.unknown) {
+    console.log(`  ${seen.unknown} UNKNOWN — stamped, but the current signature could not be read. ` +
+      "That is this harness failing, not a fact about the rows: see rescore_py's import of " +
+      "core.live_scoring.profile_signature.");
+  }
+  console.log(`  ${missing} have never been scored`);
+  if (seen.current === 0 && (seen.unverified || seen.deferred)) {
+    console.log("  nothing to verify yet: no stored score CLAIMS to be current, so there is " +
+      "nothing this section can contradict. It starts reporting the moment the rescore job " +
+      "stamps its first row.");
   }
   console.log(`  current-but-wrong: ${wrong}`);
   if (wrongRows.length) console.log(wrongRows.join("\n"));
   failures += wrong;
+  // An `unknown` row means the check silently lost its ability to classify. That is the
+  // defect this section was blind to for weeks, so it fails rather than reports.
+  failures += seen.unknown;
 }
 
 // ── 2. The CLI re-score, reported only ───────────────────────────────────────
