@@ -23,7 +23,24 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 MINUTES WAS SIZED FOR A SCAN THAT NEVER CALLED AN LLM, and it stopped fitting
+    # the moment one did. Measured 2026-11-20, same day, same catalogue:
+    #
+    #   15:11 run, no LLM credentials      21m38s, completed
+    #   15:47 run, credentials present     CANCELLED at exactly 30m15s
+    #
+    # The scrape phase is not the cost — it finished in 3m30s on the second run. The
+    # remaining 26 minutes were ingest plus synthesis, and the job was killed partway
+    # through with 80 rows written and the per-tenant screening never reached. A scan
+    # cut off mid-ingest is the bad failure: it writes a partial week and reports
+    # "cancelled", which reads like someone pressed a button rather than like a job
+    # that needed more time.
+    #
+    # 60 gives synthesis the room the 400-call ceiling never bounded, and costs
+    # nothing to reserve — a job that finishes early releases the runner, and Actions
+    # minutes are free on a public repository. Revisit it alongside
+    # LLM_SYNTH_STORE_MAX_CALLS, since the two together set the worst case.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -72,10 +89,16 @@ jobs:
           # Everything above is the LEGACY single-endpoint arrangement: one base URL, one
           # key, one model. `core/llm_client` has had multi-vendor failover for a while —
           # `RFPIS_LLM_PROVIDERS` names a chain and `_provider_fallback` walks it when the
-          # first vendor errors — but none of those variables were passed here, so the
-          # weekly scan has been running with NO chain and NO fallback. When its single
-          # endpoint rate-limited, synthesis dropped straight to regex, silently: measured
-          # on a TED run, 11 of 26 rows came back with no description at all.
+          # first vendor errors — but none of those variables were passed here.
+          #
+          # CORRECTED 2026-11-20. This comment first blamed rate-limiting for the raw
+          # briefs. The 15:11 run that day settled it and the answer was blunter: the
+          # repository held NO LLM secrets at all, of any name. `Provider.configured`
+          # requires a key for a non-loopback host, so nothing was ever callable and the
+          # log says so outright — "llm_synthesis DISABLED ... storing RAW brief", three
+          # times in one run. The weekly scan had never once synthesised anything on
+          # Actions. Rate-limiting was a guess that fitted the symptom; it was not the
+          # cause, and it took reading the secret list to find that out.
           #
           # With the chain, Cerebras absorbs the normal load and Ollama is the fallback,
           # which is what makes a small Ollama balance last — it is only spent when
