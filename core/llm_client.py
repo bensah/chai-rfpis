@@ -36,10 +36,76 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 log = logging.getLogger(__name__)
 
 _LAST_PROVIDER = ""
+
+#: How many times a RATE-LIMITED call waits and retries the SAME endpoint before
+#: the chain moves on. See `_rate_limit_pause` for why this exists at all.
+_RATE_LIMIT_RETRIES = int(os.environ.get("RFPIS_LLM_RATE_LIMIT_RETRIES") or 3)
+
+#: Upper bound on a single wait, so a provider that returns a wild `Retry-After`
+#: cannot park the scan for the rest of its job timeout.
+_RATE_LIMIT_MAX_WAIT = float(os.environ.get("RFPIS_LLM_RATE_LIMIT_MAX_WAIT") or 20)
+
+
+def _retry_after(exc: Exception) -> float | None:
+    """Seconds the provider itself asked us to wait, if it said so.
+
+    Read from the response headers rather than guessed. Best-effort: an SDK that
+    shapes its exceptions differently costs us the default backoff, not
+    correctness.
+    """
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None) or {}
+    for key in ("retry-after", "Retry-After",
+                "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"):
+        raw = headers.get(key) if hasattr(headers, "get") else None
+        if raw is None:
+            continue
+        try:
+            return float(str(raw).rstrip("s"))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    """A 429, however the SDK spells it."""
+    if type(exc).__name__ == "RateLimitError":
+        return True
+    return getattr(exc, "status_code", None) == 429
+
+
+def _rate_limit_pause(exc: Exception, attempt: int) -> float | None:
+    """How long to wait before retrying the SAME endpoint, or None to move on.
+
+    A 429 IS THE ONE ERROR WHERE ADVANCING IS THE WRONG MOVE, and that is the
+    whole reason this function exists.
+
+    Every other failure — a dead model, an auth error, a 402 — means this vendor
+    cannot serve the call at all, so the next one should. "Requests per minute
+    limit exceeded" means the opposite: this vendor is willing and we asked too
+    fast. Advancing on it converts a one-second wait into a paid call somewhere
+    else, every single time.
+
+    Measured 2026-11-20: synthesis runs in the SEQUENTIAL ingest phase, not under
+    SCAN_PARALLELISM, and still took 47 rate-limit errors from Cerebras in 26
+    minutes — a call every two to three seconds is simply above the per-minute
+    allowance. With `max_retries=0` on every client in this repo, each one of
+    those 47 went straight to the paid fallback. The arrangement was sold as
+    "Ollama is only spent when Cerebras is throttled"; at that rate it would have
+    been spent constantly, which is the opposite of the intent.
+    """
+    if attempt >= _RATE_LIMIT_RETRIES or not _is_rate_limit(exc):
+        return None
+    asked = _retry_after(exc)
+    # 1s, 2s, 4s when the provider does not say — short, because the window it is
+    # protecting is a minute, not an hour.
+    wait = asked if asked and asked > 0 else float(2 ** attempt)
+    return min(wait, _RATE_LIMIT_MAX_WAIT)
 
 
 def last_provider() -> str:
@@ -124,20 +190,33 @@ def chat_with_fallback(client, models, **create_kwargs):
     global _LAST_PROVIDER
     last_exc: Exception | None = None
     for m in models:
-        try:
-            resp = client.chat.completions.create(model=m, **create_kwargs)
-            content = (resp.choices[0].message.content or "") if resp.choices else ""
-            if content:
-                if last_exc is not None:
-                    log.info("llm fell back to model %s after earlier failure", m)
-                _LAST_PROVIDER = "(caller)"
-                return content, m, resp
-            last_exc = RuntimeError("empty response")
-        except Exception as exc:  # noqa: BLE001 — try the next model on ANY failure
-            last_exc = exc
-            log.warning("llm model %s failed: %s: %s; trying next fallback",
-                        m, type(exc).__name__, exc)
-            continue
+        attempt = 0
+        while True:
+            try:
+                resp = client.chat.completions.create(model=m, **create_kwargs)
+                content = (resp.choices[0].message.content or "") if resp.choices else ""
+                if content:
+                    if last_exc is not None:
+                        log.info("llm fell back to model %s after earlier failure", m)
+                    _LAST_PROVIDER = "(caller)"
+                    return content, m, resp
+                last_exc = RuntimeError("empty response")
+                break
+            except Exception as exc:  # noqa: BLE001 — try the next model on ANY failure
+                last_exc = exc
+                pause = _rate_limit_pause(exc, attempt)
+                if pause is not None:
+                    # Same endpoint, after a wait: a 429 means "too fast", not
+                    # "broken", and the next provider costs money.
+                    log.warning("llm model %s rate-limited; waiting %.1fs and "
+                                "retrying the same endpoint (attempt %d/%d)",
+                                m, pause, attempt + 1, _RATE_LIMIT_RETRIES)
+                    time.sleep(pause)
+                    attempt += 1
+                    continue
+                log.warning("llm model %s failed: %s: %s; trying next fallback",
+                            m, type(exc).__name__, exc)
+                break
     if last_exc is not None:
         log.warning("all llm models failed %s: %s", models, last_exc)
     return _provider_fallback(client, last_exc, **create_kwargs)
