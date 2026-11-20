@@ -1064,6 +1064,36 @@ def _extract_amount(title: str, text: str) -> tuple[float | None, str | None]:
     return (None, None) if (env_v and _MULTI_AWARD_RE.search(text or "")) else (env_v, env_c)
 
 
+def _page_title(soup: "BeautifulSoup | None") -> str | None:
+    """The call's own title, from its detail page.
+
+    `<h1>` first and `<title>` second, because a detail page's `<title>` is routinely
+    padded with the site name ("… | Unitaid") while the `<h1>` is the call itself.
+    Whatever comes back is trimmed of a trailing " | Site" / " - Site" suffix and
+    rejected if it is too short to be a title or is itself a generic label.
+    """
+    if soup is None:
+        return None
+    for getter in (lambda: soup.find("h1"), lambda: soup.find("title")):
+        try:
+            node = getter()
+        except Exception:
+            continue
+        if not node:
+            continue
+        raw = _clean(node.get_text(" ", strip=True))
+        # Strip a trailing site-name suffix: "A Call for Proposals | Unitaid".
+        for sep in ("|", " - ", "–", "—"):
+            if sep in raw:
+                head = raw.split(sep)[0].strip()
+                if len(head) >= 25:
+                    raw = head
+                break
+        if len(raw) >= 25 and raw.lower() not in _GENERIC_LINK_LABELS:
+            return raw[:300]
+    return None
+
+
 def _enrich_candidate(cand: dict[str, Any]) -> dict[str, Any]:
     """Fetch the candidate's detail page and fill in missing fields.
 
@@ -1165,6 +1195,24 @@ def _enrich_candidate(cand: dict[str, Any]) -> dict[str, Any]:
             _pd = _extract_page_date(soup)
             if _pd:
                 cand["date_posted"] = _pd
+        # THE CALL'S OWN TITLE, when the listing only gave us a button.
+        #
+        # A card that links every call with the words "Learn more" hands the harvest a
+        # title that names nothing. Unitaid's whole listing is built that way, and the
+        # first call ingested from it landed in the catalogue as `opportunity_name =
+        # "Learn more"` with its real title — "Delivering Greater Health Equity and
+        # Impact through People-Centered, Integrated TB and Hepatitis C Care in
+        # High-Transmission and Vulnerable Settings" — sitting unread in `raw_text`.
+        #
+        # Only ever replaces a GENERIC label, never a real listing title: a listing
+        # heading is usually the better of the two, because detail pages tend to pad
+        # <title> with the site name. `_GENERIC_LINK_LABELS` is the same set the in-scrape
+        # dedup uses to decide a label witnesses nothing.
+        if str(cand.get("opportunity_title") or "").strip().lower() in _GENERIC_LINK_LABELS:
+            _real = _page_title(soup)
+            if _real:
+                cand["opportunity_title"] = _real
+                cand["_title_from_detail_page"] = True
 
     # Keep the FULL detail-page body so build_record's regex AND LLM see it — not just
     # the local one-shot _extract_amount below. Without this, an amount / tier table that
@@ -3959,8 +4007,22 @@ def _extract_candidates_from_html(name: str, url: str, html_text: str, *,
         url_yr = _detect_url_year(full)
         if url_yr and url_yr < date.today().year:
             continue
-        # … and by title fragment ("what we do and don't fund", etc.)
-        if _BLOG_TITLE_RE.search(text):
+        # … and by title fragment ("what we do and don't fund", etc.) — BUT NOT when the
+        # URL is a specific opportunity path, for the same reason that bypasses the
+        # title-length floor above: the path is stronger evidence than the label.
+        #
+        # THIS IS WHAT HID UNITAID'S CALLS. Every call on
+        # https://unitaid.org/calls-for-proposals/ is linked by the words "Learn more",
+        # and `_BLOG_TITLE_RE` carries `learn (about|how|more)` to reject explainers like
+        # "Learn more about our approach". So all nine anchors were discarded here, at
+        # the harvest, and the scan reported `found=1` — the one link that survived was
+        # /game-changing-innovations/, which is not a call at all.
+        #
+        # A card's call-to-action is not a blog title. "Learn more" pointing at
+        # /call-for-proposal/ is a solicitation; "Learn more" pointing at /about/ is not,
+        # and `_BLOG_URL_RE`, `_is_junk_anchor` and the same-host check above still catch
+        # that one. Measured 2026-11-19: 9 anchors on the page, 0 surviving this line.
+        if not strong and _BLOG_TITLE_RE.search(text):
             continue
         # Heuristic: title OR url must mention something granty (strong
         # opportunity-path links already qualify).
@@ -4360,14 +4422,51 @@ def _funder_from_source_name(name: str) -> str:
     return re.sub(r"\s+(RSS|API|Feed)$", "", base, flags=re.IGNORECASE)
 
 
+#: Link labels that say "there is more over there" and nothing about WHICH call.
+#:
+#: These are NOT `_NAV_TEXT`, and the difference matters. `_NAV_TEXT` REJECTS an anchor —
+#: a pagination number or a language toggle is not a solicitation at all. These phrases
+#: do label real solicitations; they just label every one of them identically, so they
+#: are useless as an identity and must never merge two rows.
+_GENERIC_LINK_LABELS = frozenset({
+    "learn more", "read more", "more", "view more", "see more", "find out more",
+    "discover more", "details", "more details", "see details", "view details",
+    "view", "open", "apply", "apply now", "go", "link", "here", "click here",
+})
+
+
 def _dedup_by_link_or_title(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """In-scrape dedup — same link / same title in one batch."""
+    """In-scrape dedup — same link / same title in one batch.
+
+    A GENERIC LINK LABEL IS NOT A TITLE, and that exception is why Unitaid published
+    nine calls and this app tracked one.
+
+    Every call on https://unitaid.org/calls-for-proposals/ is linked by the words
+    "Learn more". The nine anchors differ only in `?sf_id=`, so nine candidate rows
+    arrived here all titled "Learn more", and the title branch below discarded eight of
+    them. The scan then reported `found=1`, which read as a quiet funder rather than as
+    a fault. Measured 2026-11-19: nine anchors on the page, one distinct anchor text.
+
+    `_NAV_TEXT` did not help and must not be extended to cover this. That set REJECTS an
+    anchor outright — it is for pagination numbers and language toggles, things that are
+    not solicitations. "Learn more" points AT a solicitation; adding it there would have
+    thrown away all nine instead of eight.
+
+    Title dedup still earns its place: the same call listed twice under one heading is
+    common, and the link is often different between the two. It simply must not fire on a
+    label that every call on the page shares.
+    """
     seen_links: set[str] = set()
     seen_titles: set[str] = set()
     out: list[dict[str, Any]] = []
     for r in rows:
         link = (r.get("opportunity_link") or "").lower().rstrip("/")
         title = (r.get("opportunity_title") or "").lower().strip()
+        # A generic label identifies nothing, so it cannot witness a duplicate. The row
+        # keeps the label as its title for now; the per-call deep read replaces it with
+        # the heading on the call's own page.
+        if title in _GENERIC_LINK_LABELS:
+            title = ""
         if link and link in seen_links:
             continue
         if title and title in seen_titles:

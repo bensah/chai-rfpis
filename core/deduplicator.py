@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 from difflib import SequenceMatcher
 from typing import Any, Iterable, Mapping
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from db.supabase_client import get_client
 
@@ -108,12 +108,76 @@ def _funders_equivalent(a: str | None, b: str | None) -> bool:
     return False
 
 
-def _norm_url(u: str | None) -> str:
+#: Query parameters that identify a VISIT rather than a page. Everything else is kept,
+#: because on a great many funder sites the query string IS the call's identity.
+#:
+#: Deliberately short and unambiguous. A longer guess-list would start dropping the
+#: parameters this function exists to preserve — `id`, `ref` and `source` all look like
+#: tracking and all name real records somewhere.
+_TRACKING_PARAMS = frozenset({
+    "fbclid", "gclid", "msclkid", "dclid", "yclid", "igshid",
+    "mc_cid", "mc_eid", "_ga", "_gl", "cb", "_",
+})
+
+
+def _norm_url_page(u: str | None) -> str:
+    """The PAGE a link points at — host and path, query ignored.
+
+    This is what `_norm_url` used to return for every URL. It still has one job: telling
+    whether two calls were listed on the SAME page, which is the condition rule 1b needs
+    and the only thing the query-stripped form was ever good for.
+    """
     if not u:
         return ""
     try:
         p = urlsplit(u.strip())
-        # Drop query/fragment + trailing slash; lowercase scheme/host.
+        host = p.netloc.lower()
+        host = host[4:] if host.startswith("www.") else host
+        path = p.path.rstrip("/")
+        return urlunsplit(("", host, path, "", "")) if host else path
+    except Exception:
+        return u.strip().lower()
+
+
+def _meaningful_query(query: str) -> str:
+    """The query string with visit-tracking stripped, sorted so order cannot matter."""
+    if not query:
+        return ""
+    kept = [(k, v) for k, v in parse_qsl(query, keep_blank_values=True)
+            if k.lower() not in _TRACKING_PARAMS and not k.lower().startswith("utm_")]
+    return urlencode(sorted(kept))
+
+
+def _norm_url(u: str | None) -> str:
+    """A URL reduced to what actually identifies the PAGE.
+
+    THE QUERY STRING IS KEPT, and that is a fix made on 2026-11-19. This dropped it
+    outright, and `compare` (rule 2) treats an identical link as DISPOSITIVE proof that
+    two candidates are the same call — so every funder whose calls differ only by a query
+    parameter collapsed into one.
+
+    Unitaid is the case that exposed it. Its nine live calls are
+
+        https://unitaid.org/call-for-proposal/?sf_id=119TE000000bdC5YAI
+        https://unitaid.org/call-for-proposal/?sf_id=119Vj000003ax1RIAQ
+        ... seven more, same host, same path
+
+    which all normalised to `//unitaid.org/call-for-proposal`. The scan's own log said
+    so and nobody read it as a fault: "ok: 1 candidate(s) in 3s", against a listing page
+    carrying nine. A source that returns one call looks like a quiet funder, not a bug.
+
+    This is not a Unitaid quirk. Any Salesforce-backed listing — and anything else that
+    addresses records by query parameter rather than by path — had the same shape, and
+    the symptom everywhere is silent under-collection rather than an error.
+
+    Tracking parameters still go, because those identify a visit and not a page; the
+    list is deliberately short (see `_TRACKING_PARAMS`).
+    """
+    if not u:
+        return ""
+    try:
+        p = urlsplit(u.strip())
+        # Drop the fragment and the trailing slash; lowercase scheme/host.
         path = p.path.rstrip("/")
         # …and drop the scheme and a leading "www." entirely. http vs https, and
         # www.donor.org vs donor.org, are the same page every time, and rule 2
@@ -124,7 +188,9 @@ def _norm_url(u: str | None) -> str:
         # The PATH keeps its case, because servers do distinguish it.
         host = p.netloc.lower()
         host = host[4:] if host.startswith("www.") else host
-        return urlunsplit(("", host, path, "", "")) if host else path
+        query = _meaningful_query(p.query)
+        return urlunsplit(("", host, path, query, "")) if host else (
+            f"{path}?{query}" if query else path)
     except Exception:
         return u.strip().lower()
 
@@ -222,6 +288,8 @@ def find_duplicates(
 
     cand_oppid = _norm_oppid(candidate.get("opportunity_id"))
     cand_link = _norm_url(candidate.get("opportunity_link"))
+    # The PAGE a call was listed on, query ignored — see rule 1b.
+    cand_page = _norm_url_page(candidate.get("opportunity_link"))
     cand_title = _norm_title(candidate.get("opportunity_title"))
     cand_agency = (candidate.get("funding_agency") or "").strip().lower()
     cand_deadline = str(candidate.get("call_submission_deadline") or "").strip()
@@ -242,13 +310,31 @@ def find_duplicates(
             matches.append({**row, "_reason": f"opportunity_id match: {cand_oppid}"})
             continue
 
-        # 2. Identical link — unless both carry DIFFERENT reference numbers. Some
-        # portals list every call on one page with no per-call URL (the Global
-        # Fund's Oracle negotiation list), so the link (query stripped) is shared;
-        # there, the portal's own numbers settle it: different calls, no match.
+        # 1b. SAME LISTING PAGE, DIFFERENT PORTAL NUMBERS → different calls, and stop
+        # looking. Some portals put every call on one page with no per-call path (the
+        # Global Fund's Oracle negotiation list, where only `&negotiation=` differs);
+        # there the portal's own reference numbers settle it.
+        #
+        # THIS USED TO LIVE INSIDE RULE 2 and depended on the bug fixed in `_norm_url`.
+        # While the query was being stripped, two Global Fund negotiations produced an
+        # identical normalised link, so the veto was reached and they were correctly
+        # separated. Once the query was kept they stopped colliding, rule 2 no longer
+        # fired, and the pair fell through to rule 3 — which matched them at 95% title
+        # similarity, because "HIV - Long-term Support for Community Engagement" and
+        # "TB - Long-term Support ..." differ by three characters.
+        #
+        # So the veto was never really about the link being identical; it is about two
+        # calls on one page carrying different numbers. It is stated that way now, on the
+        # PAGE (host + path, query ignored) rather than on the full link, which keeps the
+        # Global Fund behaviour exactly and no longer depends on how `_norm_url` treats a
+        # query string.
+        if (cand_oppid and row_oppid and cand_oppid != row_oppid
+                and cand_page and _norm_url_page(row.get("opportunity_link")) == cand_page):
+            continue
+
+        # 2. Identical link. Rule 1b has already separated the shared-page cases, so an
+        # identical link here means the same call.
         if cand_link and _norm_url(row.get("opportunity_link")) == cand_link:
-            if cand_oppid and row_oppid and cand_oppid != row_oppid:
-                continue
             matches.append({**row, "_reason": "identical link"})
             continue
 

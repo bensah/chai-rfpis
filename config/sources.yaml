@@ -80,7 +80,14 @@ sources:
     priority: 1
   - name: Unitaid
     method: html
-    url: https://unitaid.org/call-for-proposals/
+    # SINGULAR "call-for-proposal", and the plural was not a typo that failed loudly.
+    # https://unitaid.org/call-for-proposals/ answers 200 and REDIRECTS to
+    # https://unitaid.org/ — so every scan since this entry was written has crawled
+    # Unitaid's homepage and found no calls, while reporting a healthy 200 and a page
+    # full of links. A source that 404s gets noticed; one that quietly serves the wrong
+    # page does not. Checked 2026-11-19: the singular URL returns 121KB of listings, the
+    # plural 219KB of homepage.
+    url: https://unitaid.org/call-for-proposal/
     priority: 1
   - name: Gavi
     # 404 on /about-us/work-us/rfps-eois — Gavi moved their procurement

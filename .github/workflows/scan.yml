@@ -67,6 +67,35 @@ jobs:
           LLM_SYNTH_BASE_URL: ${{ secrets.LLM_SYNTH_BASE_URL }}
           LLM_SYNTH_API_KEY: ${{ secrets.LLM_SYNTH_API_KEY }}
           LLM_SYNTH_MODEL: ${{ secrets.LLM_SYNTH_MODEL }}
+          # THE PROVIDER CHAIN, WHICH THIS WORKFLOW DID NOT HAVE (added 2026-11-19).
+          #
+          # Everything above is the LEGACY single-endpoint arrangement: one base URL, one
+          # key, one model. `core/llm_client` has had multi-vendor failover for a while —
+          # `RFPIS_LLM_PROVIDERS` names a chain and `_provider_fallback` walks it when the
+          # first vendor errors — but none of those variables were passed here, so the
+          # weekly scan has been running with NO chain and NO fallback. When its single
+          # endpoint rate-limited, synthesis dropped straight to regex, silently: measured
+          # on a TED run, 11 of 26 rows came back with no description at all.
+          #
+          # With the chain, Cerebras absorbs the normal load and Ollama is the fallback,
+          # which is what makes a small Ollama balance last — it is only spent when
+          # Cerebras is throttled. Proven locally 2026-11-19: a forced Cerebras failure
+          # fell through and Ollama answered.
+          #
+          # Both are no-ops until the secrets exist, so this is safe to merge before they
+          # are added — the scan simply keeps using the legacy endpoint alone.
+          RFPIS_LLM_PROVIDERS: ${{ vars.RFPIS_LLM_PROVIDERS || 'cerebras,ollama' }}
+          RFPIS_LLM_CEREBRAS_API_KEY: ${{ secrets.RFPIS_LLM_CEREBRAS_API_KEY }}
+          # PER-RUN SPEND CEILING. Measured 2026-11-19: one synthesis call is ~5,670
+          # tokens (4,061 prompt + 1,609 completion). Real intake over the last ten weekly
+          # scans was 32-117 new rows, median ~55 — roughly 312k tokens a week.
+          #
+          # The code default is 400 calls, about 2.27M tokens: seven times a normal week,
+          # so it guards against nothing that actually happens and would let one runaway
+          # unattended Friday run spend a whole prepaid balance. 150 covers every week
+          # observed (max 117) with headroom and bounds the worst case to ~850k tokens.
+          # Raise it with a repo variable if a week genuinely needs more.
+          LLM_SYNTH_STORE_MAX_CALLS: ${{ vars.LLM_SYNTH_STORE_MAX_CALLS || '150' }}
           # New-opportunity email (core/pipeline_digest.py): after each tenant is screened,
           # members are emailed the new Proceed / Park calls. Same Resend sender as the app's
           # account emails — add RESEND_API_KEY and RESEND_FROM_EMAIL as repo Actions secrets
