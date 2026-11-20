@@ -183,8 +183,19 @@ def _provider_fallback(client, last_exc, **create_kwargs):
             resp = alt.chat.completions.create(model=p.model, **create_kwargs)
             content = (resp.choices[0].message.content or "") if resp.choices else ""
             if content:
-                log.info("llm fell back to provider %s (%s) after %s",
-                         p.name, p.model, type(last_exc).__name__ if last_exc else "exhaustion")
+                # WARNING, not INFO, and the level is the whole point.
+                #
+                # Failure logs at WARNING and success logged at INFO, so an unconfigured
+                # root logger — which is what `scripts/run_scan.py` runs under — showed
+                # every failed vendor and no successful one. On 2026-11-20 that produced
+                # a scan log containing 47 cerebras rate-limit errors and not one line
+                # naming a provider, which reads exactly like a fallback that never fired.
+                # It could not be told apart from one that fired and worked every time,
+                # and the database could not settle it either: no row records which
+                # vendor wrote it. A failover that cannot be observed is a failover
+                # nobody can trust, so the handover is now as loud as the failure.
+                log.warning("llm fell back to provider %s (%s) after %s",
+                            p.name, p.model, type(last_exc).__name__ if last_exc else "exhaustion")
                 _LAST_PROVIDER = p.name
                 return content, p.model, resp
             log.warning("llm provider %s returned an empty response", p.name)
